@@ -65,7 +65,7 @@ class Settings:
                 ).split(",")
                 if p.strip()
             ),
-            allow_hidden_default=_env_bool("ALLOW_HIDDEN_DEFAULT", False),
+            allow_hidden_default=_env_bool("ALLOW_HIDDEN_DEFAULT", True),
             allowed_hosts=tuple(
                 p.strip()
                 for p in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
