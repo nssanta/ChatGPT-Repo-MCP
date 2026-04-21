@@ -21,6 +21,7 @@ def make_settings(tmp_path: Path) -> Settings:
         subprocess_timeout=5,
         blocked_globs=(".env", ".env.*", "**/.git/**"),
         allow_hidden_default=False,
+        allowed_hosts=("127.0.0.1", "localhost"),
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import Settings
 from .fs_tools import (
@@ -30,7 +31,17 @@ from .git_tools import (
 
 settings = Settings.from_env()
 
-mcp = FastMCP(settings.app_name, json_response=True)
+mcp = FastMCP(
+    settings.app_name,
+    host=settings.host,
+    port=settings.port,
+    streamable_http_path="/mcp",
+    json_response=True,
+    transport_security=TransportSecuritySettings(
+        allowed_hosts=list(settings.allowed_hosts),
+        allowed_origins=[],
+    ),
+)
 
 READ_ONLY = {
     "readOnlyHint": True,
@@ -40,6 +51,7 @@ READ_ONLY = {
 
 
 @mcp.tool(
+    name="repo_info",
     annotations={**READ_ONLY, "title": "Repository Info"},
 )
 def repo_info_tool() -> dict:
@@ -53,6 +65,7 @@ def repo_info_tool() -> dict:
 
 
 @mcp.tool(
+    name="list_dir",
     annotations={**READ_ONLY, "title": "List Directory"},
 )
 def list_dir_tool(path: str = ".", include_hidden: bool = False, limit: int = 200) -> dict:
@@ -61,6 +74,7 @@ def list_dir_tool(path: str = ".", include_hidden: bool = False, limit: int = 20
 
 
 @mcp.tool(
+    name="tree",
     annotations={**READ_ONLY, "title": "Tree"},
 )
 def tree_tool(path: str = ".", depth: int = 4, include_hidden: bool = False) -> dict:
@@ -69,6 +83,7 @@ def tree_tool(path: str = ".", depth: int = 4, include_hidden: bool = False) -> 
 
 
 @mcp.tool(
+    name="read_text_file",
     annotations={**READ_ONLY, "title": "Read Text File"},
 )
 def read_text_file_tool(
@@ -88,6 +103,7 @@ def read_text_file_tool(
 
 
 @mcp.tool(
+    name="read_multiple_files",
     annotations={**READ_ONLY, "title": "Read Multiple Files"},
 )
 def read_multiple_files_tool(paths: list[str]) -> dict:
@@ -96,6 +112,7 @@ def read_multiple_files_tool(paths: list[str]) -> dict:
 
 
 @mcp.tool(
+    name="file_metadata",
     annotations={**READ_ONLY, "title": "File Metadata"},
 )
 def file_metadata_tool(path: str, include_stat: bool = True) -> dict:
@@ -104,6 +121,7 @@ def file_metadata_tool(path: str, include_stat: bool = True) -> dict:
 
 
 @mcp.tool(
+    name="find_files",
     annotations={**READ_ONLY, "title": "Find Files"},
 )
 def find_files_tool(
@@ -123,6 +141,7 @@ def find_files_tool(
 
 
 @mcp.tool(
+    name="search_text",
     annotations={**READ_ONLY, "title": "Search Text"},
 )
 def search_text_tool(
@@ -144,6 +163,7 @@ def search_text_tool(
 
 
 @mcp.tool(
+    name="symbol_search",
     annotations={**READ_ONLY, "title": "Symbol Search"},
 )
 def symbol_search_tool(symbol: str, path: str = ".", limit: int = 100) -> dict:
@@ -152,6 +172,7 @@ def symbol_search_tool(symbol: str, path: str = ".", limit: int = 100) -> dict:
 
 
 @mcp.tool(
+    name="recent_changes",
     annotations={**READ_ONLY, "title": "Recent Changes"},
 )
 def recent_changes_tool(path: str = ".", limit: int = 100) -> dict:
@@ -160,6 +181,7 @@ def recent_changes_tool(path: str = ".", limit: int = 100) -> dict:
 
 
 @mcp.tool(
+    name="todo_scan",
     annotations={**READ_ONLY, "title": "Todo Scan"},
 )
 def todo_scan_tool(path: str = ".", limit: int = 100) -> dict:
@@ -168,6 +190,7 @@ def todo_scan_tool(path: str = ".", limit: int = 100) -> dict:
 
 
 @mcp.tool(
+    name="dependency_map",
     annotations={**READ_ONLY, "title": "Dependency Map"},
 )
 def dependency_map_tool(path: str = ".") -> dict:
@@ -176,6 +199,7 @@ def dependency_map_tool(path: str = ".") -> dict:
 
 
 @mcp.tool(
+    name="git_status",
     annotations={**READ_ONLY, "title": "Git Status"},
 )
 def git_status_tool(short: bool = True) -> dict:
@@ -184,6 +208,7 @@ def git_status_tool(short: bool = True) -> dict:
 
 
 @mcp.tool(
+    name="git_diff",
     annotations={**READ_ONLY, "title": "Git Diff"},
 )
 def git_diff_tool(
@@ -196,6 +221,7 @@ def git_diff_tool(
 
 
 @mcp.tool(
+    name="git_log",
     annotations={**READ_ONLY, "title": "Git Log"},
 )
 def git_log_tool(limit: int = 20, pathspec: str | None = None, since: str | None = None) -> dict:
@@ -204,6 +230,7 @@ def git_log_tool(limit: int = 20, pathspec: str | None = None, since: str | None
 
 
 @mcp.tool(
+    name="git_show",
     annotations={**READ_ONLY, "title": "Git Show"},
 )
 def git_show_tool(revision: str, path: str | None = None) -> dict:
@@ -212,6 +239,7 @@ def git_show_tool(revision: str, path: str | None = None) -> dict:
 
 
 @mcp.tool(
+    name="git_branches",
     annotations={**READ_ONLY, "title": "Git Branches"},
 )
 def git_branches_tool(all_branches: bool = True) -> dict:
@@ -220,6 +248,7 @@ def git_branches_tool(all_branches: bool = True) -> dict:
 
 
 @mcp.tool(
+    name="git_blame",
     annotations={**READ_ONLY, "title": "Git Blame"},
 )
 def git_blame_tool(path: str, start_line: int = 1, end_line: int | None = None) -> dict:
@@ -228,6 +257,7 @@ def git_blame_tool(path: str, start_line: int = 1, end_line: int | None = None) 
 
 
 @mcp.tool(
+    name="git_grep",
     annotations={**READ_ONLY, "title": "Git Grep"},
 )
 def git_grep_tool(

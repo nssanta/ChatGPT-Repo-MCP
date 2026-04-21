@@ -4,7 +4,7 @@ from .server import mcp, settings
 
 
 def main() -> None:
-    mcp.run(transport=settings.transport, host=settings.host, port=settings.port)
+    mcp.run(transport=settings.transport)
 
 
 if __name__ == "__main__":

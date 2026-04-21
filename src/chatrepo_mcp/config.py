@@ -36,6 +36,7 @@ class Settings:
     subprocess_timeout: int
     blocked_globs: tuple[str, ...]
     allow_hidden_default: bool
+    allowed_hosts: tuple[str, ...]
 
     @staticmethod
     def from_env() -> "Settings":
@@ -48,13 +49,13 @@ class Settings:
             port=_env_int("PORT", 8000),
             transport=os.getenv("TRANSPORT", "streamable-http"),
             project_root=project_root,
-            max_file_bytes=_env_int("MAX_FILE_BYTES", 262_144),
-            max_response_chars=_env_int("MAX_RESPONSE_CHARS", 40_000),
-            max_read_files=_env_int("MAX_READ_FILES", 8),
-            max_search_results=_env_int("MAX_SEARCH_RESULTS", 100),
-            max_tree_entries=_env_int("MAX_TREE_ENTRIES", 500),
-            max_diff_bytes=_env_int("MAX_DIFF_BYTES", 131_072),
-            max_log_commits=_env_int("MAX_LOG_COMMITS", 50),
+            max_file_bytes=_env_int("MAX_FILE_BYTES", 5_000_000),
+            max_response_chars=_env_int("MAX_RESPONSE_CHARS", 1_000_000),
+            max_read_files=_env_int("MAX_READ_FILES", 25),
+            max_search_results=_env_int("MAX_SEARCH_RESULTS", 500),
+            max_tree_entries=_env_int("MAX_TREE_ENTRIES", 5_000),
+            max_diff_bytes=_env_int("MAX_DIFF_BYTES", 1_000_000),
+            max_log_commits=_env_int("MAX_LOG_COMMITS", 100),
             subprocess_timeout=_env_int("SUBPROCESS_TIMEOUT", 15),
             blocked_globs=tuple(
                 p.strip()
@@ -65,4 +66,9 @@ class Settings:
                 if p.strip()
             ),
             allow_hidden_default=_env_bool("ALLOW_HIDDEN_DEFAULT", False),
+            allowed_hosts=tuple(
+                p.strip()
+                for p in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
+                if p.strip()
+            ),
         )
