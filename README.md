@@ -7,7 +7,7 @@
 
 Read-only MCP server for ChatGPT that gives the model deep access to **one Git repository** on your VPS.
 
-[Русская версия](README_PUBLIC_RU.md) | [English](README_PUBLIC_EN.md)
+[Русская версия](README_RU.md) | [English](README.md)
 
 * * *
 
@@ -129,8 +129,7 @@ Recommended deployment shape:
 ```text
 chatrepo-mcp/
 ├── README.md
-├── README_PUBLIC_EN.md
-├── README_PUBLIC_RU.md
+├── README_RU.md
 ├── pyproject.toml
 ├── docs/
 │   ├── ARCHITECTURE.md
