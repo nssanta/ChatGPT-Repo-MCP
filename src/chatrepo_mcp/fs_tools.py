@@ -60,7 +60,7 @@ def repo_info(settings: Settings) -> dict[str, Any]:
     }
 
 
-def list_dir(path: str, settings: Settings, include_hidden: bool = False, limit: int = 200) -> dict[str, Any]:
+def list_dir(path: str, settings: Settings, include_hidden: bool = True, limit: int = 200) -> dict[str, Any]:
     target = resolve_repo_path(path, settings, allow_hidden=include_hidden)
     if not target.is_dir():
         raise ValueError(f"not a directory: {path}")
@@ -84,7 +84,7 @@ def list_dir(path: str, settings: Settings, include_hidden: bool = False, limit:
     return {"path": rel_posix(root, target), "entries": entries, "truncated": len(entries) >= limit}
 
 
-def tree(path: str, settings: Settings, depth: int = 4, include_hidden: bool = False) -> dict[str, Any]:
+def tree(path: str, settings: Settings, depth: int = 4, include_hidden: bool = True) -> dict[str, Any]:
     target = resolve_repo_path(path, settings, allow_hidden=include_hidden)
     if not target.is_dir():
         raise ValueError(f"not a directory: {path}")
@@ -128,7 +128,7 @@ def read_text_file(
     end_line: int | None = None,
     with_line_numbers: bool = True,
 ) -> dict[str, Any]:
-    target = resolve_repo_path(path, settings)
+    target = resolve_repo_path(path, settings, allow_hidden=settings.allow_hidden_default)
     if not target.is_file():
         raise ValueError(f"not a file: {path}")
     if not _is_probably_text(target):
@@ -201,7 +201,7 @@ def find_files(
     pattern: str,
     settings: Settings,
     path: str = ".",
-    include_hidden: bool = False,
+    include_hidden: bool = True,
     limit: int = 200,
 ) -> dict[str, Any]:
     target = resolve_repo_path(path, settings, allow_hidden=include_hidden)

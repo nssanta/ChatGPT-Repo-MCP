@@ -69,7 +69,7 @@ def repo_info_tool() -> dict:
     name="list_dir",
     annotations={**READ_ONLY, "title": "List Directory"},
 )
-def list_dir_tool(path: str = ".", include_hidden: bool = False, limit: int = 200) -> dict:
+def list_dir_tool(path: str = ".", include_hidden: bool = True, limit: int = 200) -> dict:
     """List files and directories under a repo-relative path."""
     return list_dir(path=path, settings=settings, include_hidden=include_hidden, limit=limit)
 
@@ -78,7 +78,7 @@ def list_dir_tool(path: str = ".", include_hidden: bool = False, limit: int = 20
     name="tree",
     annotations={**READ_ONLY, "title": "Tree"},
 )
-def tree_tool(path: str = ".", depth: int = 4, include_hidden: bool = False) -> dict:
+def tree_tool(path: str = ".", depth: int = 4, include_hidden: bool = True) -> dict:
     """Return a textual directory tree for a repo-relative path."""
     return tree(path=path, settings=settings, depth=depth, include_hidden=include_hidden)
 
@@ -128,7 +128,7 @@ def file_metadata_tool(path: str, include_stat: bool = True) -> dict:
 def find_files_tool(
     pattern: str,
     path: str = ".",
-    include_hidden: bool = False,
+    include_hidden: bool = True,
     limit: int = 200,
 ) -> dict:
     """Find files by glob pattern below a repo-relative path."""

@@ -20,7 +20,8 @@ def is_hidden_relative(rel_path: str) -> bool:
 
 
 def is_blocked_relative(rel_path: str, settings: Settings) -> bool:
-    rel_path = rel_path.lstrip("./")
+    if rel_path.startswith("./"):
+        rel_path = rel_path[2:]
     for pattern in settings.blocked_globs:
         if fnmatch.fnmatch(rel_path, pattern):
             return True

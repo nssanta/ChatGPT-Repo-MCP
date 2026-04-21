@@ -1,10 +1,11 @@
 from pathlib import Path
 
 from chatrepo_mcp.config import Settings
+from chatrepo_mcp.fs_tools import read_text_file
 from chatrepo_mcp.security import SecurityError, resolve_repo_path
 
 
-def make_settings(tmp_path: Path) -> Settings:
+def make_settings(tmp_path: Path, allow_hidden_default: bool = False) -> Settings:
     return Settings(
         app_name="test",
         host="127.0.0.1",
@@ -20,7 +21,7 @@ def make_settings(tmp_path: Path) -> Settings:
         max_log_commits=10,
         subprocess_timeout=5,
         blocked_globs=(".env", ".env.*", "**/.git/**"),
-        allow_hidden_default=False,
+        allow_hidden_default=allow_hidden_default,
         allowed_hosts=("127.0.0.1", "localhost"),
         enable_dns_rebinding_protection=True,
     )
@@ -38,6 +39,30 @@ def test_resolve_repo_path_rejects_escape(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     try:
         resolve_repo_path("../etc/passwd", settings)
+        assert False, "expected SecurityError"
+    except SecurityError:
+        assert True
+
+
+def test_read_text_file_allows_hidden_when_configured(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, allow_hidden_default=True)
+    p = tmp_path / ".claude" / "MEMORY.md"
+    p.parent.mkdir(parents=True)
+    p.write_text("memory\n", encoding="utf-8")
+
+    result = read_text_file(".claude/MEMORY.md", settings)
+
+    assert result["path"] == ".claude/MEMORY.md"
+    assert result["line_count"] == 1
+
+
+def test_read_text_file_still_blocks_secret_globs(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, allow_hidden_default=True)
+    p = tmp_path / ".env"
+    p.write_text("SECRET=value\n", encoding="utf-8")
+
+    try:
+        read_text_file(".env", settings)
         assert False, "expected SecurityError"
     except SecurityError:
         assert True
