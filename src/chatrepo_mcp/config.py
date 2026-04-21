@@ -37,6 +37,7 @@ class Settings:
     blocked_globs: tuple[str, ...]
     allow_hidden_default: bool
     allowed_hosts: tuple[str, ...]
+    enable_dns_rebinding_protection: bool
 
     @staticmethod
     def from_env() -> "Settings":
@@ -71,4 +72,5 @@ class Settings:
                 for p in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
                 if p.strip()
             ),
+            enable_dns_rebinding_protection=_env_bool("ENABLE_DNS_REBINDING_PROTECTION", True),
         )

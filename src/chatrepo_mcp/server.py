@@ -38,6 +38,7 @@ mcp = FastMCP(
     streamable_http_path="/mcp",
     json_response=True,
     transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=settings.enable_dns_rebinding_protection,
         allowed_hosts=list(settings.allowed_hosts),
         allowed_origins=[],
     ),
