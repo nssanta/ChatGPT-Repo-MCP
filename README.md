@@ -1,29 +1,40 @@
-# chatrepo-mcp
+# ChatRepo MCP
 
-Read-only MCP server for ChatGPT developer mode that gives the model deep visibility into **one Git repository** on your VPS.
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](#)
+[![MCP](https://img.shields.io/badge/MCP-Remote%20Server-black)](#)
+[![Read Only](https://img.shields.io/badge/Mode-Read%20Only-green)](#)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## What this project is
+Read-only MCP server for ChatGPT that gives the model deep access to **one Git repository** on your VPS.
 
-This server is designed as a **safe v1** for codebase analysis in chat:
+[Русская версия](README_PUBLIC_RU.md) | [English](README_PUBLIC_EN.md)
 
-- repository overview
-- file tree browsing
-- reading files
-- searching code and text
-- recent file changes
-- TODO / FIXME scanning
-- dependency manifest extraction
-- Git status / diff / log / show / blame / branches / grep
+* * *
 
-It is intentionally **read-only**. There are **no write tools**, no shell execution tool, no commit/push, and no patch application in this version.
+## What Is This?
 
-## Why this shape
+This project turns a single local repository into a **safe remote MCP app** for ChatGPT.
 
-The current OpenAI Apps / ChatGPT setup requires an MCP server to expose capabilities to ChatGPT, while UI is optional. ChatGPT developer mode supports **SSE** and **streaming HTTP** transports, and supports **OAuth**, **No Authentication**, and **Mixed Authentication** when creating an app. The official Apps SDK docs also recommend using the official SDKs and marking read-only tools with `readOnlyHint=true`. The official Python SDK supports FastMCP and Streamable HTTP.
+It is built for codebase work in chat:
 
-## Tool surface
+- inspect repository structure
+- read files and compare modules
+- search code and text
+- scan TODO / FIXME markers
+- inspect recent file changes
+- analyze Git history, diffs, branches, blame, and grep results
 
-### Filesystem / repo analysis
+The first version is intentionally **read-only**:
+- no file writes
+- no patch application
+- no shell execution tool
+- no commit or push actions
+
+* * *
+
+## Tool Surface
+
+### Repository / Files
 
 - `repo_info`
 - `list_dir`
@@ -48,123 +59,159 @@ The current OpenAI Apps / ChatGPT setup requires an MCP server to expose capabil
 - `git_blame`
 - `git_grep`
 
-## Security model
+* * *
 
-This project is opinionated:
+## Why This Exists
 
-- one repository root only
+ChatGPT can reason much better about a project when it can see the real repository context.
+
+This server gives ChatGPT a practical codebase surface similar to what developers expect from modern coding agents, while keeping the safety boundary tight:
+
+- one repository only
+- read-only tools only
 - path validation on every file operation
 - blocked secret patterns by default
-- no arbitrary command execution tool
-- `.git` is blocked from file reads, while Git commands still run inside the repo
-- file size and output limits prevent accidental giant payloads
+- capped file and command output
 
-Default blocked patterns include:
+* * *
 
-- `.env`
-- `.env.*`
-- `*.pem`
-- `*.key`
-- `*.p12`
-- `*.pfx`
-- `**/.git/**`
-- `**/.venv/**`
-- `**/node_modules/**`
-
-You can change the list in `.env`.
-
-## Recommended v1 deployment choice
-
-For the first real deployment, use:
-
-- **Python**
-- **FastMCP**
-- **streamable-http**
-- **Ubuntu 24**
-- **one repo**
-- **read-only**
-- **ChatGPT app auth = No Authentication**
-- secrets blocked at the server level
-
-That keeps the initial version small and practical, while leaving room for OAuth and write tools later.
-
-## Quick start
+## Quick Start
 
 ```bash
+git clone <your-repo-with-this-project>.git
+cd chatrepo-mcp
+
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -e .
 
 cp .env.example .env
-# edit PROJECT_ROOT and optional limits
+# set PROJECT_ROOT to the repository you want to inspect
 
 python -m chatrepo_mcp
 ```
 
-The MCP endpoint will be served at:
+By default, the MCP endpoint is:
 
 ```text
 http://127.0.0.1:8000/mcp
 ```
 
-## Ubuntu VPS install path suggestion
+* * *
 
-```text
-/opt/myproject        # target repository to inspect
-/opt/chatrepo-mcp     # this MCP project
+## Configuration
+
+Minimal `.env` example:
+
+```env
+APP_NAME=ChatRepo MCP
+HOST=127.0.0.1
+PORT=8000
+PROJECT_ROOT=/opt/myproject
+MAX_FILE_BYTES=200000
+MAX_READ_LINES=1200
+MAX_SEARCH_RESULTS=100
+BLOCKED_PATTERNS=.env,.env.*,*.pem,*.key,*.p12,*.pfx,**/.git/**,**/.venv/**,**/node_modules/**
 ```
 
-## ChatGPT app settings
+Recommended deployment shape:
 
-In ChatGPT developer mode:
+```text
+/opt/myproject        # target repository
+/opt/chatrepo-mcp     # this MCP server
+```
 
-- **Name:** Repo Reader
-- **Description:** Read-only repository and git analysis for one project
-- **URL:** `https://YOUR_DOMAIN/mcp`
-- **Authentication:** `Без авторизации` for v1
+* * *
 
-See `docs/CONNECT_CHATGPT.md`.
-
-## Project layout
+## Project Structure
 
 ```text
 chatrepo-mcp/
-├── .env.example
-├── pyproject.toml
 ├── README.md
+├── README_PUBLIC_EN.md
+├── README_PUBLIC_RU.md
+├── pyproject.toml
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── DEPLOY_VPS.md
 │   └── CONNECT_CHATGPT.md
+├── deploy/
+│   ├── caddy/
+│   ├── nginx/
+│   └── systemd/
 ├── scripts/
 │   ├── install_ubuntu.sh
 │   └── smoke_test.sh
-├── deploy/
-│   ├── systemd/chatrepo-mcp.service
-│   ├── nginx/chatrepo-mcp.conf.example
-│   └── caddy/Caddyfile.example
-└── src/chatrepo_mcp/
-    ├── __init__.py
-    ├── __main__.py
-    ├── config.py
-    ├── fs_tools.py
-    ├── git_tools.py
-    ├── server.py
-    └── security.py
+├── src/chatrepo_mcp/
+│   ├── __main__.py
+│   ├── config.py
+│   ├── fs_tools.py
+│   ├── git_tools.py
+│   ├── security.py
+│   └── server.py
+└── tests/
 ```
 
-## Notes
+* * *
 
-This repository is a **strong starter**. You will still need to fill in real deployment values:
+## Security Model
 
-- domain
-- actual repository path
-- public HTTPS
-- service user and permissions
+This server is designed to expose repository context, not secrets.
 
-If later you want parity closer to Codex / Claude Code, the next phase is:
+Default protections:
 
-- optional GitHub layer for PRs/issues
-- optional write tools with explicit approval
-- optional UI for file tree / diff viewer
+- restricted to one repository root
+- blocks common secret and key files
+- blocks direct `.git` file reads
+- validates every path before access
+- uses size and output limits to avoid oversized responses
+
+* * *
+
+## ChatGPT Connection
+
+After deployment behind public HTTPS, create a custom MCP app in ChatGPT and point it to:
+
+```text
+https://YOUR_DOMAIN/mcp
+```
+
+Suggested app settings:
+
+- **Name:** Repo Reader
+- **Description:** Read-only repository and git analysis for one project
+- **Authentication:** No Authentication for v1
+
+Detailed setup:
+- `docs/DEPLOY_VPS.md`
+- `docs/CONNECT_CHATGPT.md`
+
+* * *
+
+## Use Cases
+
+- onboarding into an unfamiliar codebase
+- architecture exploration
+- bug investigation
+- change impact analysis
+- repository review
+- Git history inspection in chat
+
+* * *
+
+## Roadmap
+
+Possible next steps:
+
+- GitHub layer for PRs and issues
+- write tools with explicit approval
+- safe test runner
+- richer symbol indexing
+- optional UI for tree and diff views
+
+* * *
+
+## License
+
+MIT — see [LICENSE](LICENSE)
