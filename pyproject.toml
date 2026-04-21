@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chatrepo-mcp"
+version = "0.1.0"
+description = "Read-only MCP server for ChatGPT to inspect one repository with filesystem and Git tools"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "OpenAI ChatGPT" }
+]
+dependencies = [
+  "mcp>=1.0.0",
+  "pydantic>=2.7.0",
+]
+keywords = ["mcp", "chatgpt", "git", "repository", "developer-tools"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+]
+
+[project.scripts]
+chatrepo-mcp = "chatrepo_mcp.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
