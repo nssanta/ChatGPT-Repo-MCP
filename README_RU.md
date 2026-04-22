@@ -2,12 +2,27 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](#)
 [![MCP](https://img.shields.io/badge/MCP-Remote%20Server-black)](#)
-[![Read Only](https://img.shields.io/badge/Mode-Read%20Only-green)](#)
+[![Safe Writes](https://img.shields.io/badge/Mode-Safe%20Writes-orange)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Read-only MCP сервер для ChatGPT, который даёт модели глубокий доступ к **одному Git-репозиторию** на вашем VPS.
+MCP сервер для ChatGPT, который даёт модели глубокий доступ к **одному Git-репозиторию** на вашем VPS и умеет безопасно редактировать текстовые файлы.
 
-[Русская версия](README_PUBLIC_RU.md) | [English](README_PUBLIC_EN.md)
+[Русская версия](README_RU.md) | [English](README.md)
+
+* * *
+
+## Скриншоты
+
+Добавьте два скриншота в `docs/assets/`:
+
+- `docs/assets/chatgpt-repo-mcp-tools.png` — список tools/app в ChatGPT с подключённым ChatRepo MCP
+- `docs/assets/chatgpt-repo-mcp-edit-diff.png` — preview/diff правки из write tool в ChatGPT
+
+После добавления файлов эти ссылки отрендерятся на GitHub:
+
+![ChatRepo MCP tools в ChatGPT](docs/assets/chatgpt-repo-mcp-tools.png)
+
+![ChatRepo MCP preview diff правки](docs/assets/chatgpt-repo-mcp-edit-diff.png)
 
 * * *
 
@@ -24,9 +39,12 @@ Read-only MCP сервер для ChatGPT, который даёт модели 
 - смотреть недавние изменения файлов
 - анализировать Git-историю, diff, ветки, blame и grep
 
-Первая версия специально сделана **только для чтения**:
-- без записи файлов
-- без применения патчей
+Основной режим — чтение и анализ, плюс защищённый слой редактирования UTF-8 файлов:
+- запись текстовых файлов по policy
+- точечные replace / insert / delete
+- создание / перемещение / удаление файлов
+- atomic batch edits
+- diff preview и SHA-256 защита от stale writes
 - без shell execution
 - без commit и push
 
@@ -59,6 +77,18 @@ Read-only MCP сервер для ChatGPT, который даёт модели 
 - `git_blame`
 - `git_grep`
 
+### Безопасное редактирование
+
+- `write_text_file`
+- `replace_text_in_file`
+- `insert_text_in_file`
+- `delete_text_in_file`
+- `create_text_file`
+- `move_path`
+- `delete_path`
+- `ensure_directory`
+- `batch_edit_files`
+
 * * *
 
 ## Зачем это нужно
@@ -68,7 +98,7 @@ ChatGPT гораздо лучше понимает проект, когда ви
 Этот сервер даёт сильный набор возможностей для анализа кодовой базы в чате и при этом держит безопасные границы:
 
 - только одна репа
-- только read-only тулзы
+- read-only тулзы плюс write tools для текстовых файлов
 - валидация пути на каждой файловой операции
 - блокировка секретов по шаблонам
 - лимиты на размер чтения и объём вывода
@@ -113,6 +143,13 @@ MAX_FILE_BYTES=200000
 MAX_READ_LINES=1200
 MAX_SEARCH_RESULTS=100
 BLOCKED_PATTERNS=.env,.env.*,*.pem,*.key,*.p12,*.pfx,**/.git/**,**/.venv/**,**/node_modules/**
+WRITABLE_GLOBS=**/*
+MAX_WRITE_FILE_BYTES=1000000
+MAX_BATCH_OPERATIONS=50
+MAX_COMBINED_DIFF_CHARS=300000
+REQUIRE_EXPECTED_HASH_FOR_WRITES=true
+DANGEROUSLY_ALLOW_ALL_WRITES=true
+ALLOW_MOVE_DELETE_OPERATIONS=true
 ```
 
 Рекомендуемая схема размещения:
@@ -166,6 +203,10 @@ chatrepo-mcp/
 - запрет прямого чтения `.git`
 - проверка каждого пути перед доступом
 - лимиты на размер файлов и вывода
+- `BLOCKED_GLOBS` сильнее write allowlist
+- бинарные и non-UTF-8 файлы не редактируются
+- write tools по умолчанию делают `dry_run=true`
+- batch edits могут выполняться атомарно с rollback
 
 * * *
 
@@ -180,7 +221,7 @@ https://YOUR_DOMAIN/mcp
 Рекомендуемые настройки приложения:
 
 - **Название:** Repo Reader
-- **Описание:** Read-only repository and git analysis for one project
+- **Описание:** Repository and git analysis with safe text edits for one project
 - **Аутентификация:** Без авторизации для v1
 
 Подробные инструкции:
@@ -203,7 +244,6 @@ https://YOUR_DOMAIN/mcp
 ## Дальше можно добавить
 
 - GitHub слой для PR и issues
-- write-тулзы с явным подтверждением
 - безопасный запуск тестов
 - более умный symbol indexing
 - optional UI для дерева и diff
