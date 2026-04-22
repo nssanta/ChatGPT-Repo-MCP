@@ -38,6 +38,8 @@ class Settings:
     allow_hidden_default: bool
     allowed_hosts: tuple[str, ...]
     enable_dns_rebinding_protection: bool
+    canonical_namespace: str
+    ephemeral_handles_supported: bool
 
     @staticmethod
     def from_env() -> "Settings":
@@ -73,4 +75,6 @@ class Settings:
                 if p.strip()
             ),
             enable_dns_rebinding_protection=_env_bool("ENABLE_DNS_REBINDING_PROTECTION", True),
+            canonical_namespace=os.getenv("CANONICAL_NAMESPACE", "/Eva_Ai"),
+            ephemeral_handles_supported=_env_bool("EPHEMERAL_HANDLES_SUPPORTED", False),
         )

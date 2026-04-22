@@ -24,6 +24,8 @@ def make_settings(tmp_path: Path, allow_hidden_default: bool = False) -> Setting
         allow_hidden_default=allow_hidden_default,
         allowed_hosts=("127.0.0.1", "localhost"),
         enable_dns_rebinding_protection=True,
+        canonical_namespace="/Eva_Ai",
+        ephemeral_handles_supported=False,
     )
 
 
@@ -135,3 +137,14 @@ def test_symlink_to_blocked_path_is_hidden(tmp_path: Path) -> None:
     result = list_dir("tests", settings, include_hidden=True)
 
     assert result["entries"] == []
+
+
+def test_settings_defaults_to_canonical_namespace(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.delenv("CANONICAL_NAMESPACE", raising=False)
+    monkeypatch.delenv("EPHEMERAL_HANDLES_SUPPORTED", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.canonical_namespace == "/Eva_Ai"
+    assert settings.ephemeral_handles_supported is False

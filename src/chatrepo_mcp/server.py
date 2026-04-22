@@ -304,7 +304,17 @@ TOOL_NAMES = [
     "doctor",
     "context_bootstrap",
     "batch_call",
+    "smoke_all",
 ]
+
+
+def _namespace_info() -> dict:
+    return {
+        "canonical_namespace": settings.canonical_namespace,
+        "canonical_tool_prefix": f"{settings.canonical_namespace}/",
+        "ephemeral_handles_supported": settings.ephemeral_handles_supported,
+        "ephemeral_handles_note": "Use the canonical namespace for stable calls; link_* handles are session-scoped and should not be treated as durable.",
+    }
 
 
 def _batch_dispatch(tool: str, args: dict | None = None) -> dict:
@@ -361,8 +371,55 @@ def doctor_tool() -> dict:
             checks[key] = {"ok": key == "blocked_policy", "error": str(exc)}
     return {
         "project_root": str(settings.project_root),
+        **_namespace_info(),
         "tools": TOOL_NAMES,
         "tool_count": len(TOOL_NAMES),
+        "checks": checks,
+    }
+
+
+@mcp.tool(
+    name="smoke_all",
+    annotations={**READ_ONLY, "title": "Smoke All"},
+)
+def smoke_all_tool() -> dict:
+    """Run the standard Eva_Ai MCP smoke test in one call."""
+    checks = []
+    for name, args in [
+        ("repo_info", {}),
+        ("read_text_file", {"path": ".claude/MEMORY.md", "start_line": 1, "end_line": 1}),
+        ("list_dir", {"path": ".", "limit": 300}),
+        ("search_text", {"query": "tts_synthesizing", "path": ".", "limit": 3}),
+        ("symbol_search", {"symbol": "tts_synthesizing", "path": ".", "limit": 3}),
+        ("git_status", {"short": True}),
+        ("git_log", {"limit": 3}),
+        ("git_show", {"revision": "HEAD"}),
+        ("read_text_file", {"path": ".env", "start_line": 1, "end_line": 1}),
+    ]:
+        key = "blocked_policy" if name == "read_text_file" and args["path"] == ".env" else name
+        try:
+            result = _batch_dispatch(name, args)
+            ok = key != "blocked_policy"
+            item = {"name": key, "tool": name, "ok": ok}
+            if name == "list_dir":
+                names = [entry["name"] for entry in result.get("entries", [])]
+                item["blocked_visible"] = [
+                    value for value in [".env", ".git", "node_modules", ".venv"] if value in names
+                ]
+                item["ok"] = not item["blocked_visible"]
+            elif name in {"search_text", "symbol_search", "git_log"}:
+                item["count"] = result.get("count")
+            elif name == "repo_info":
+                item["project_root"] = result.get("project_root")
+                item["git_error"] = result.get("git_error")
+                item["ok"] = not result.get("git_error")
+            checks.append(item)
+        except Exception as exc:  # noqa: BLE001
+            checks.append({"name": key, "tool": name, "ok": key == "blocked_policy", "error": str(exc)})
+    return {
+        **_namespace_info(),
+        "project_root": str(settings.project_root),
+        "ok": all(item["ok"] for item in checks),
         "checks": checks,
     }
 
