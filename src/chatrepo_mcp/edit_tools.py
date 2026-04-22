@@ -21,6 +21,11 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def current_text_sha256(path: str, settings: Settings) -> str:
+    target, _ = resolve_write_path(path, settings)
+    return sha256_text(_read_existing_text(target, settings))
+
+
 def _line_delta(old_text: str, new_text: str) -> tuple[int, int]:
     added = 0
     removed = 0

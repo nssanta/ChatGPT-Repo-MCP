@@ -5,10 +5,10 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import Settings
 from .edit_tools import (
+    current_text_sha256,
     delete_text_in_file,
     insert_text_in_file,
     replace_text_in_file,
-    sha256_text,
     write_text_file,
 )
 from .fs_tools import (
@@ -432,8 +432,7 @@ def smoke_all_tool() -> dict:
         if name == "replace_text_in_file":
             key = "write_dry_run"
             try:
-                current = read_text_file(".claude/MEMORY.md", settings, with_line_numbers=False)["content"]
-                args["expected_sha256"] = sha256_text(current)
+                args["expected_sha256"] = current_text_sha256(".claude/MEMORY.md", settings)
             except Exception:
                 pass
         try:

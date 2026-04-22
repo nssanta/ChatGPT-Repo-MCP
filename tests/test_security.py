@@ -65,6 +65,7 @@ def test_read_text_file_allows_hidden_when_configured(tmp_path: Path) -> None:
 
     assert result["path"] == ".claude/MEMORY.md"
     assert result["line_count"] == 1
+    assert result["sha256"]
 
 
 def test_read_text_file_still_blocks_secret_globs(tmp_path: Path) -> None:

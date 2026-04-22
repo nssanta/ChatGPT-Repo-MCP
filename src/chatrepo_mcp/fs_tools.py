@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import tomllib
+from hashlib import sha256
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
@@ -218,6 +219,7 @@ def read_text_file(
         "end_line": end_line,
         "content": rendered,
         "line_count": len(lines),
+        "sha256": sha256(text.encode("utf-8")).hexdigest(),
     }
 
 
