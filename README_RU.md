@@ -15,14 +15,14 @@ MCP сервер для ChatGPT, который даёт модели глубо
 
 Добавьте два скриншота в `docs/assets/`:
 
-- `docs/assets/chatgpt-repo-mcp-tools.png` — список tools/app в ChatGPT с подключённым ChatRepo MCP
-- `docs/assets/chatgpt-repo-mcp-edit-diff.png` — preview/diff правки из write tool в ChatGPT
+- `docs/assets/chatgpt-repo-mcp-overview-en.png` — скрин ChatGPT на английском с подключённым ChatRepo MCP
+- `docs/assets/chatgpt-repo-mcp-overview-ru.png` — скрин ChatGPT на русском с подключённым ChatRepo MCP
 
 После добавления файлов эти ссылки отрендерятся на GitHub:
 
-![ChatRepo MCP tools в ChatGPT](docs/assets/chatgpt-repo-mcp-tools.png)
+![Обзор ChatRepo MCP на английском](docs/assets/chatgpt-repo-mcp-overview-en.png)
 
-![ChatRepo MCP preview diff правки](docs/assets/chatgpt-repo-mcp-edit-diff.png)
+![Обзор ChatRepo MCP на русском](docs/assets/chatgpt-repo-mcp-overview-ru.png)
 
 * * *
 
