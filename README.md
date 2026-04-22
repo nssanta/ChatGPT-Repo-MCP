@@ -13,16 +13,13 @@ MCP server for ChatGPT that gives the model deep access to **one Git repository*
 
 ## Screenshots
 
-Add two screenshots to `docs/assets/`:
+Add the English screenshot to `docs/assets/`:
 
 - `docs/assets/chatgpt-repo-mcp-overview-en.png` — English ChatGPT overview with ChatRepo MCP connected
-- `docs/assets/chatgpt-repo-mcp-overview-ru.png` — Russian ChatGPT overview with ChatRepo MCP connected
 
-After adding the files, these links will render in GitHub:
+After adding the file, this link will render in GitHub:
 
 ![ChatRepo MCP overview in English](docs/assets/chatgpt-repo-mcp-overview-en.png)
-
-![ChatRepo MCP overview in Russian](docs/assets/chatgpt-repo-mcp-overview-ru.png)
 
 * * *
 
