@@ -26,6 +26,15 @@ def make_settings(tmp_path: Path, allow_hidden_default: bool = False) -> Setting
         enable_dns_rebinding_protection=True,
         canonical_namespace="/Eva_Ai",
         ephemeral_handles_supported=False,
+        writable_globs=(
+            ".claude/**",
+            "missions/**",
+            "docs/**",
+            "reports/**",
+        ),
+        max_write_file_bytes=1000,
+        dangerously_allow_all_writes=False,
+        require_expected_hash_for_writes=True,
     )
 
 

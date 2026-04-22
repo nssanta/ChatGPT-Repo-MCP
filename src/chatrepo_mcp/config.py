@@ -19,6 +19,10 @@ def _env_int(name: str, default: int) -> int:
     return int(raw)
 
 
+def _env_csv(name: str, default: str) -> tuple[str, ...]:
+    return tuple(p.strip() for p in os.getenv(name, default).split(",") if p.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str
@@ -40,6 +44,10 @@ class Settings:
     enable_dns_rebinding_protection: bool
     canonical_namespace: str
     ephemeral_handles_supported: bool
+    writable_globs: tuple[str, ...]
+    max_write_file_bytes: int
+    dangerously_allow_all_writes: bool
+    require_expected_hash_for_writes: bool
 
     @staticmethod
     def from_env() -> "Settings":
@@ -60,21 +68,20 @@ class Settings:
             max_diff_bytes=_env_int("MAX_DIFF_BYTES", 1_000_000),
             max_log_commits=_env_int("MAX_LOG_COMMITS", 100),
             subprocess_timeout=_env_int("SUBPROCESS_TIMEOUT", 15),
-            blocked_globs=tuple(
-                p.strip()
-                for p in os.getenv(
-                    "BLOCKED_GLOBS",
-                    ".env,.env.*,*.pem,*.key,*.p12,*.pfx,**/.git/**,**/.venv/**,**/node_modules/**",
-                ).split(",")
-                if p.strip()
+            blocked_globs=_env_csv(
+                "BLOCKED_GLOBS",
+                ".env,.env.*,*.pem,*.key,*.p12,*.pfx,**/.git/**,**/.venv/**,**/node_modules/**",
             ),
             allow_hidden_default=_env_bool("ALLOW_HIDDEN_DEFAULT", True),
-            allowed_hosts=tuple(
-                p.strip()
-                for p in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
-                if p.strip()
-            ),
+            allowed_hosts=_env_csv("ALLOWED_HOSTS", "127.0.0.1,localhost"),
             enable_dns_rebinding_protection=_env_bool("ENABLE_DNS_REBINDING_PROTECTION", True),
             canonical_namespace=os.getenv("CANONICAL_NAMESPACE", "/Eva_Ai"),
             ephemeral_handles_supported=_env_bool("EPHEMERAL_HANDLES_SUPPORTED", False),
+            writable_globs=_env_csv(
+                "WRITABLE_GLOBS",
+                ".claude/**,missions/**,docs/**,reports/**",
+            ),
+            max_write_file_bytes=_env_int("MAX_WRITE_FILE_BYTES", 1_000_000),
+            dangerously_allow_all_writes=_env_bool("DANGEROUSLY_ALLOW_ALL_WRITES", False),
+            require_expected_hash_for_writes=_env_bool("REQUIRE_EXPECTED_HASH_FOR_WRITES", True),
         )

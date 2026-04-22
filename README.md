@@ -2,10 +2,10 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](#)
 [![MCP](https://img.shields.io/badge/MCP-Remote%20Server-black)](#)
-[![Read Only](https://img.shields.io/badge/Mode-Read%20Only-green)](#)
+[![Safe Writes](https://img.shields.io/badge/Mode-Safe%20Writes-orange)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Read-only MCP server for ChatGPT that gives the model deep access to **one Git repository** on your VPS.
+MCP server for ChatGPT that gives the model deep access to **one Git repository** on your VPS, with optional allowlisted text-edit tools.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -24,9 +24,11 @@ It is built for codebase work in chat:
 - inspect recent file changes
 - analyze Git history, diffs, branches, blame, and grep results
 
-The first version is intentionally **read-only**:
-- no file writes
-- no patch application
+The default surface is read-heavy, with a guarded write layer for selected text files:
+- allowlisted file writes only
+- exact replace / insert / delete helpers
+- unified diff previews
+- expected SHA-256 checks for stale-write protection
 - no shell execution tool
 - no commit or push actions
 
@@ -59,6 +61,13 @@ The first version is intentionally **read-only**:
 - `git_blame`
 - `git_grep`
 
+### Safe Text Edits
+
+- `write_text_file`
+- `replace_text_in_file`
+- `insert_text_in_file`
+- `delete_text_in_file`
+
 * * *
 
 ## Why This Exists
@@ -68,7 +77,7 @@ ChatGPT can reason much better about a project when it can see the real reposito
 This server gives ChatGPT a practical codebase surface similar to what developers expect from modern coding agents, while keeping the safety boundary tight:
 
 - one repository only
-- read-only tools only
+- read-only tools plus allowlisted write tools
 - path validation on every file operation
 - blocked secret patterns by default
 - capped file and command output
@@ -113,6 +122,10 @@ MAX_FILE_BYTES=200000
 MAX_READ_LINES=1200
 MAX_SEARCH_RESULTS=100
 BLOCKED_PATTERNS=.env,.env.*,*.pem,*.key,*.p12,*.pfx,**/.git/**,**/.venv/**,**/node_modules/**
+WRITABLE_GLOBS=.claude/**,missions/**,docs/**,reports/**
+MAX_WRITE_FILE_BYTES=1000000
+REQUIRE_EXPECTED_HASH_FOR_WRITES=true
+DANGEROUSLY_ALLOW_ALL_WRITES=false
 ```
 
 Recommended deployment shape:
@@ -165,6 +178,24 @@ Default protections:
 - blocks direct `.git` file reads
 - validates every path before access
 - uses size and output limits to avoid oversized responses
+- write tools require paths to match `WRITABLE_GLOBS`
+- `BLOCKED_GLOBS` always wins over write allowlists
+- `WRITABLE_GLOBS=*` is ignored unless `DANGEROUSLY_ALLOW_ALL_WRITES=true`
+- write tools default to `dry_run=true` and return unified diffs plus old/new SHA-256 hashes
+
+Example dry-run replace:
+
+```json
+{
+  "path": "missions/CURRENT.md",
+  "find": "old text",
+  "replace": "new text",
+  "expected_sha256": "<current file sha256>",
+  "dry_run": true
+}
+```
+
+Apply the same edit by sending `dry_run=false` after reviewing the returned diff.
 
 * * *
 
@@ -179,7 +210,7 @@ https://YOUR_DOMAIN/mcp
 Suggested app settings:
 
 - **Name:** Repo Reader
-- **Description:** Read-only repository and git analysis for one project
+- **Description:** Repository and git analysis for one project, with allowlisted text edits
 - **Authentication:** No Authentication for v1
 
 Detailed setup:

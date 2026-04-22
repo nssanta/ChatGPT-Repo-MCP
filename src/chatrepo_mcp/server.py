@@ -4,6 +4,13 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import Settings
+from .edit_tools import (
+    delete_text_in_file,
+    insert_text_in_file,
+    replace_text_in_file,
+    sha256_text,
+    write_text_file,
+)
 from .fs_tools import (
     dependency_map,
     file_metadata,
@@ -47,6 +54,12 @@ mcp = FastMCP(
 READ_ONLY = {
     "readOnlyHint": True,
     "destructiveHint": False,
+    "openWorldHint": False,
+}
+
+WRITE_ACTION = {
+    "readOnlyHint": False,
+    "destructiveHint": True,
     "openWorldHint": False,
 }
 
@@ -305,6 +318,10 @@ TOOL_NAMES = [
     "context_bootstrap",
     "batch_call",
     "smoke_all",
+    "write_text_file",
+    "replace_text_in_file",
+    "insert_text_in_file",
+    "delete_text_in_file",
 ]
 
 
@@ -339,10 +356,23 @@ def _batch_dispatch(tool: str, args: dict | None = None) -> dict:
         "git_branches": lambda: git_branches(settings=settings, **args),
         "git_blame": lambda: git_blame(settings=settings, **args),
         "git_grep": lambda: git_grep(settings=settings, **args),
+        "replace_text_in_file": lambda: replace_text_in_file(settings=settings, **args)
+        if args.get("dry_run") is True
+        else (_ for _ in ()).throw(ValueError("batch_call only allows write tools when dry_run=true")),
     }
     if tool not in handlers:
         raise ValueError(f"tool is not allowed for batch_call: {tool}")
     return handlers[tool]()
+
+
+def _write_config_info() -> dict:
+    return {
+        "write_tools_enabled": True,
+        "writable_globs": list(settings.writable_globs),
+        "max_write_file_bytes": settings.max_write_file_bytes,
+        "dangerously_allow_all_writes": settings.dangerously_allow_all_writes,
+        "require_expected_hash_for_writes": settings.require_expected_hash_for_writes,
+    }
 
 
 @mcp.tool(
@@ -372,6 +402,7 @@ def doctor_tool() -> dict:
     return {
         "project_root": str(settings.project_root),
         **_namespace_info(),
+        **_write_config_info(),
         "tools": TOOL_NAMES,
         "tool_count": len(TOOL_NAMES),
         "checks": checks,
@@ -395,8 +426,16 @@ def smoke_all_tool() -> dict:
         ("git_log", {"limit": 3}),
         ("git_show", {"revision": "HEAD"}),
         ("read_text_file", {"path": ".env", "start_line": 1, "end_line": 1}),
+        ("replace_text_in_file", {"path": ".claude/MEMORY.md", "find": "\n", "replace": "\n", "dry_run": True}),
     ]:
         key = "blocked_policy" if name == "read_text_file" and args["path"] == ".env" else name
+        if name == "replace_text_in_file":
+            key = "write_dry_run"
+            try:
+                current = read_text_file(".claude/MEMORY.md", settings, with_line_numbers=False)["content"]
+                args["expected_sha256"] = sha256_text(current)
+            except Exception:
+                pass
         try:
             result = _batch_dispatch(name, args)
             ok = key != "blocked_policy"
@@ -418,6 +457,7 @@ def smoke_all_tool() -> dict:
             checks.append({"name": key, "tool": name, "ok": key == "blocked_policy", "error": str(exc)})
     return {
         **_namespace_info(),
+        **_write_config_info(),
         "project_root": str(settings.project_root),
         "ok": all(item["ok"] for item in checks),
         "checks": checks,
@@ -467,3 +507,97 @@ def batch_call_tool(calls: list[dict]) -> dict:
         except Exception as exc:  # noqa: BLE001
             results.append({"tool": tool, "ok": False, "error": str(exc)})
     return {"results": results, "count": len(results)}
+
+
+@mcp.tool(
+    name="write_text_file",
+    annotations={**WRITE_ACTION, "title": "Write Text File"},
+)
+def write_text_file_tool(
+    path: str,
+    content: str,
+    create_if_missing: bool = False,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to replace the entire contents of an allowed UTF-8 repo text file."""
+    return write_text_file(
+        path=path,
+        content=content,
+        settings=settings,
+        create_if_missing=create_if_missing,
+        expected_sha256=expected_sha256,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool(
+    name="replace_text_in_file",
+    annotations={**WRITE_ACTION, "title": "Replace Text In File"},
+)
+def replace_text_in_file_tool(
+    path: str,
+    find: str,
+    replace: str,
+    replace_all: bool = False,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to replace an exact text fragment in an allowed UTF-8 repo file."""
+    return replace_text_in_file(
+        path=path,
+        find=find,
+        replace=replace,
+        settings=settings,
+        replace_all=replace_all,
+        expected_sha256=expected_sha256,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool(
+    name="insert_text_in_file",
+    annotations={**WRITE_ACTION, "title": "Insert Text In File"},
+)
+def insert_text_in_file_tool(
+    path: str,
+    anchor: str,
+    position: str,
+    content: str,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to insert text before or after an exact anchor in an allowed repo file."""
+    return insert_text_in_file(
+        path=path,
+        anchor=anchor,
+        position=position,
+        content=content,
+        settings=settings,
+        expected_sha256=expected_sha256,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool(
+    name="delete_text_in_file",
+    annotations={**WRITE_ACTION, "title": "Delete Text In File"},
+)
+def delete_text_in_file_tool(
+    path: str,
+    find: str | None = None,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to delete exact text or a line range from an allowed repo file."""
+    return delete_text_in_file(
+        path=path,
+        settings=settings,
+        find=find,
+        start_line=start_line,
+        end_line=end_line,
+        expected_sha256=expected_sha256,
+        dry_run=dry_run,
+    )

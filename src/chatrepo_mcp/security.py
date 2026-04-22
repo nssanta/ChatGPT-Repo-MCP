@@ -31,10 +31,14 @@ def normalize_rel_path(rel_path: str) -> str:
 
 
 def is_blocked_relative(rel_path: str, settings: Settings) -> bool:
+    return matches_any_glob(rel_path, settings.blocked_globs)
+
+
+def matches_any_glob(rel_path: str, patterns: tuple[str, ...]) -> bool:
     rel_path = normalize_rel_path(rel_path)
     parts = Path(rel_path).parts
     name = parts[-1] if parts else rel_path
-    for pattern in settings.blocked_globs:
+    for pattern in patterns:
         pattern = normalize_rel_path(pattern)
         if pattern.startswith("**/") and pattern.endswith("/**"):
             blocked_part = pattern[3:-3]
