@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import tomllib
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .security import rel_posix, resolve_repo_path
+from .security import is_allowed_relative, is_blocked_relative, rel_posix, rel_posix_lexical, resolve_repo_path
 
 
 TEXT_EXTENSIONS = {
@@ -42,6 +44,64 @@ def _read_text(path: Path, settings: Settings) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def _safe_rel(root: Path, path: Path) -> str | None:
+    try:
+        return rel_posix_lexical(root, path)
+    except ValueError:
+        return None
+
+
+def _entry_allowed(root: Path, path: Path, settings: Settings, *, allow_hidden: bool) -> tuple[bool, str | None]:
+    rel = _safe_rel(root, path)
+    if rel is None:
+        return False, None
+    if not is_allowed_relative(rel, settings, allow_hidden=allow_hidden):
+        return False, rel
+    if path.is_symlink():
+        try:
+            resolved_rel = rel_posix(root, path)
+        except ValueError:
+            return False, rel
+        if not is_allowed_relative(resolved_rel, settings, allow_hidden=allow_hidden):
+            return False, rel
+    return True, rel
+
+
+def _iter_files(root: Path, target: Path, settings: Settings, *, allow_hidden: bool) -> list[Path]:
+    files: list[Path] = []
+    if target.is_file():
+        ok, _ = _entry_allowed(root, target, settings, allow_hidden=allow_hidden)
+        return [target] if ok else []
+
+    for current, dirnames, filenames in os.walk(target, followlinks=False):
+        current_path = Path(current)
+        kept_dirs = []
+        for dirname in dirnames:
+            child = current_path / dirname
+            ok, _ = _entry_allowed(root, child, settings, allow_hidden=allow_hidden)
+            if ok:
+                kept_dirs.append(dirname)
+        dirnames[:] = kept_dirs
+        for filename in filenames:
+            child = current_path / filename
+            ok, _ = _entry_allowed(root, child, settings, allow_hidden=allow_hidden)
+            if ok:
+                files.append(child)
+    return files
+
+
+def _rg_exclude_globs(settings: Settings) -> list[str]:
+    globs: list[str] = []
+    for pattern in settings.blocked_globs:
+        globs.extend(["--glob", f"!{pattern}"])
+        if pattern.startswith("**/") and pattern.endswith("/**"):
+            name = pattern[3:-3]
+            globs.extend(["--glob", f"!{name}", "--glob", f"!**/{name}/**"])
+        elif "/" not in pattern:
+            globs.extend(["--glob", f"!**/{pattern}"])
+    return globs
+
+
 def repo_info(settings: Settings) -> dict[str, Any]:
     root = settings.project_root.resolve()
     return {
@@ -68,17 +128,18 @@ def list_dir(path: str, settings: Settings, include_hidden: bool = True, limit: 
     entries = []
     root = settings.project_root.resolve()
     for entry in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
-        rel = rel_posix(root, entry)
-        if not include_hidden and any(part.startswith(".") for part in Path(rel).parts):
+        ok, rel = _entry_allowed(root, entry, settings, allow_hidden=include_hidden)
+        if not ok or rel is None:
             continue
         if len(entries) >= min(limit, settings.max_tree_entries):
             break
+        stat = entry.lstat()
         entries.append(
             {
                 "name": entry.name,
                 "path": rel,
-                "type": "dir" if entry.is_dir() else "file",
-                "size": entry.stat().st_size if entry.is_file() else None,
+                "type": "symlink" if entry.is_symlink() else "dir" if entry.is_dir() else "file",
+                "size": stat.st_size if entry.is_file() or entry.is_symlink() else None,
             }
         )
     return {"path": rel_posix(root, target), "entries": entries, "truncated": len(entries) >= limit}
@@ -101,8 +162,8 @@ def tree(path: str, settings: Settings, depth: int = 4, include_hidden: bool = T
 
         children = []
         for child in sorted(node.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
-            rel = rel_posix(root, child)
-            if not include_hidden and any(part.startswith(".") for part in Path(rel).parts):
+            ok, _ = _entry_allowed(root, child, settings, allow_hidden=include_hidden)
+            if not ok:
                 continue
             children.append(child)
 
@@ -211,11 +272,10 @@ def find_files(
     limit = min(limit, settings.max_tree_entries)
     root = settings.project_root.resolve()
     matches: list[str] = []
-    for found in target.rglob(pattern):
-        rel = rel_posix(root, found)
-        if not include_hidden and any(part.startswith(".") for part in Path(rel).parts):
-            continue
-        matches.append(rel)
+    for found in _iter_files(root, target, settings, allow_hidden=include_hidden):
+        rel = rel_posix_lexical(root, found)
+        if fnmatch(found.name, pattern) or fnmatch(rel, pattern) or found.match(pattern):
+            matches.append(rel)
         if len(matches) >= limit:
             break
     return {"pattern": pattern, "path": rel_posix(root, target), "matches": matches, "count": len(matches)}
@@ -231,31 +291,56 @@ def search_text(
 ) -> dict[str, Any]:
     target = resolve_repo_path(path, settings, allow_hidden=settings.allow_hidden_default)
     limit = min(limit, settings.max_search_results)
-
-    flags = 0 if case_sensitive else re.IGNORECASE
-    compiled = re.compile(query if regex else re.escape(query), flags)
-
     results: list[dict[str, Any]] = []
     root = settings.project_root.resolve()
 
-    if target.is_file():
-        candidates = [target]
-    else:
-        candidates = [p for p in target.rglob("*") if p.is_file()]
+    ok, rel_path = _entry_allowed(root, target, settings, allow_hidden=settings.allow_hidden_default)
+    if not ok or rel_path is None:
+        return {"query": query, "regex": regex, "results": [], "count": 0}
 
-    for file_path in candidates:
-        rel = rel_posix(root, file_path)
-        if any(part.startswith(".") for part in Path(rel).parts) and not settings.allow_hidden_default:
+    cmd = [
+        "rg",
+        "--hidden",
+        "-nI",
+        "--with-filename",
+        "--no-heading",
+        "--color",
+        "never",
+        "--max-count",
+        str(max(limit, 1)),
+    ]
+    if not regex:
+        cmd.append("--fixed-strings")
+    if not case_sensitive:
+        cmd.append("--ignore-case")
+    cmd.extend(_rg_exclude_globs(settings))
+    cmd.extend(["--", query, rel_path])
+
+    proc = subprocess.run(
+        cmd,
+        cwd=str(root),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=settings.subprocess_timeout,
+    )
+    if proc.returncode not in {0, 1}:
+        stderr = proc.stderr.strip() or proc.stdout.strip()
+        raise RuntimeError(stderr or "ripgrep search failed")
+
+    for line in proc.stdout.splitlines():
+        file_path, line_no, text = line.split(":", 2) if line.count(":") >= 2 else (None, None, None)
+        if file_path is None or line_no is None or text is None:
             continue
-        try:
-            text = _read_text(file_path, settings)
-        except Exception:
+        if file_path.startswith("./"):
+            file_path = file_path[2:]
+        if not line_no.isdigit():
             continue
-        for idx, line in enumerate(text.splitlines(), start=1):
-            if compiled.search(line):
-                results.append({"path": rel, "line": idx, "text": _truncate(line, 400)})
-                if len(results) >= limit:
-                    return {"query": query, "regex": regex, "results": results, "count": len(results)}
+        if not is_allowed_relative(file_path, settings, allow_hidden=settings.allow_hidden_default):
+            continue
+        results.append({"path": file_path, "line": int(line_no), "text": _truncate(text, 400)})
+        if len(results) >= limit:
+            break
     return {"query": query, "regex": regex, "results": results, "count": len(results)}
 
 
@@ -279,7 +364,10 @@ def symbol_search(symbol: str, settings: Settings, path: str = ".", limit: int =
                 results.append(item)
             if len(results) >= limit:
                 return {"symbol": symbol, "results": results, "count": len(results)}
-    return {"symbol": symbol, "results": results, "count": len(results)}
+    if not results:
+        batch = search_text(symbol, settings, path=path, regex=False, case_sensitive=True, limit=limit)
+        results.extend(batch["results"])
+    return {"symbol": symbol, "results": results[:limit], "count": len(results[:limit])}
 
 
 def recent_changes(settings: Settings, path: str = ".", limit: int = 100) -> dict[str, Any]:
@@ -288,14 +376,12 @@ def recent_changes(settings: Settings, path: str = ".", limit: int = 100) -> dic
     items = []
 
     if target.is_file():
-        candidates = [target]
+        candidates = _iter_files(root, target, settings, allow_hidden=settings.allow_hidden_default)
     else:
-        candidates = [p for p in target.rglob("*") if p.is_file()]
+        candidates = _iter_files(root, target, settings, allow_hidden=settings.allow_hidden_default)
 
     for file_path in candidates:
-        rel = rel_posix(root, file_path)
-        if any(part.startswith(".") for part in Path(rel).parts) and not settings.allow_hidden_default:
-            continue
+        rel = rel_posix_lexical(root, file_path)
         stat = file_path.stat()
         items.append({"path": rel, "mtime": stat.st_mtime, "size": stat.st_size})
 
@@ -378,15 +464,18 @@ def dependency_map(settings: Settings, path: str = ".") -> dict[str, Any]:
 
     manifests = []
     if target.is_file():
-        manifests = [target]
+        manifests = _iter_files(root, target, settings, allow_hidden=settings.allow_hidden_default)
     else:
         names = ["pyproject.toml", "requirements.txt", "package.json", "go.mod", "Cargo.toml"]
-        for name in names:
-            manifests.extend(target.rglob(name))
+        for file_path in _iter_files(root, target, settings, allow_hidden=settings.allow_hidden_default):
+            if file_path.name in names:
+                manifests.append(file_path)
 
     parsed: dict[str, Any] = {}
     for manifest in manifests:
-        rel = rel_posix(root, manifest)
+        rel = rel_posix_lexical(root, manifest)
+        if is_blocked_relative(rel, settings):
+            continue
         try:
             if manifest.name == "pyproject.toml":
                 parsed[rel] = _parse_pyproject(manifest)

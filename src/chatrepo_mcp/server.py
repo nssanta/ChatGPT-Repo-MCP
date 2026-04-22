@@ -57,6 +57,10 @@ READ_ONLY = {
 )
 def repo_info_tool() -> dict:
     """Return the MCP server configuration relevant to the inspected repository."""
+    return _repo_info_with_git()
+
+
+def _repo_info_with_git() -> dict:
     result = repo_info(settings)
     try:
         result["git"] = repo_git_info(settings)
@@ -275,3 +279,134 @@ def git_grep_tool(
         pathspec=pathspec,
         case_sensitive=case_sensitive,
     )
+
+
+TOOL_NAMES = [
+    "dependency_map",
+    "file_metadata",
+    "find_files",
+    "git_blame",
+    "git_branches",
+    "git_diff",
+    "git_grep",
+    "git_log",
+    "git_show",
+    "git_status",
+    "list_dir",
+    "read_multiple_files",
+    "read_text_file",
+    "recent_changes",
+    "repo_info",
+    "search_text",
+    "symbol_search",
+    "todo_scan",
+    "tree",
+    "doctor",
+    "context_bootstrap",
+    "batch_call",
+]
+
+
+def _batch_dispatch(tool: str, args: dict | None = None) -> dict:
+    args = args or {}
+    handlers = {
+        "repo_info": lambda: _repo_info_with_git(),
+        "list_dir": lambda: list_dir(settings=settings, **args),
+        "tree": lambda: tree(settings=settings, **args),
+        "read_text_file": lambda: read_text_file(settings=settings, **args),
+        "read_multiple_files": lambda: read_multiple_files(settings=settings, **args),
+        "file_metadata": lambda: file_metadata(settings=settings, **args),
+        "find_files": lambda: find_files(settings=settings, **args),
+        "search_text": lambda: search_text(settings=settings, **args),
+        "symbol_search": lambda: symbol_search(settings=settings, **args),
+        "recent_changes": lambda: recent_changes(settings=settings, **args),
+        "todo_scan": lambda: todo_scan(settings=settings, **args),
+        "dependency_map": lambda: dependency_map(settings=settings, **args),
+        "git_status": lambda: git_status(settings=settings, **args),
+        "git_diff": lambda: git_diff(settings=settings, **args),
+        "git_log": lambda: git_log(settings=settings, **args),
+        "git_show": lambda: git_show(settings=settings, **args),
+        "git_branches": lambda: git_branches(settings=settings, **args),
+        "git_blame": lambda: git_blame(settings=settings, **args),
+        "git_grep": lambda: git_grep(settings=settings, **args),
+    }
+    if tool not in handlers:
+        raise ValueError(f"tool is not allowed for batch_call: {tool}")
+    return handlers[tool]()
+
+
+@mcp.tool(
+    name="doctor",
+    annotations={**READ_ONLY, "title": "Doctor"},
+)
+def doctor_tool() -> dict:
+    """Run a compact health check for repository, git, policy, search, and symbol tools."""
+    checks = {}
+    try:
+        checks["repo_info"] = {"ok": True, "result": _repo_info_with_git()}
+    except Exception as exc:  # noqa: BLE001
+        checks["repo_info"] = {"ok": False, "error": str(exc)}
+    for name, args in [
+        ("git_status", {"short": True}),
+        ("read_text_file", {"path": ".claude/MEMORY.md", "start_line": 1, "end_line": 1}),
+        ("read_text_file", {"path": ".env", "start_line": 1, "end_line": 1}),
+        ("search_text", {"query": "tts_synthesizing", "path": ".", "limit": 1}),
+        ("symbol_search", {"symbol": "tts_synthesizing", "path": ".", "limit": 1}),
+    ]:
+        key = "blocked_policy" if name == "read_text_file" and args["path"] == ".env" else name
+        try:
+            result = _batch_dispatch(name, args)
+            checks[key] = {"ok": key != "blocked_policy", "result": result}
+        except Exception as exc:  # noqa: BLE001
+            checks[key] = {"ok": key == "blocked_policy", "error": str(exc)}
+    return {
+        "project_root": str(settings.project_root),
+        "tools": TOOL_NAMES,
+        "tool_count": len(TOOL_NAMES),
+        "checks": checks,
+    }
+
+
+@mcp.tool(
+    name="context_bootstrap",
+    annotations={**READ_ONLY, "title": "Context Bootstrap"},
+)
+def context_bootstrap_tool() -> dict:
+    """Read the repository's standard context files in one call."""
+    paths = [".claude/MEMORY.md", "missions/CURRENT.md", "AGENTS.md", "missions/BACKLOG.md"]
+    files = []
+    for path in paths:
+        try:
+            files.append(read_text_file(path=path, settings=settings))
+        except FileNotFoundError:
+            files.append({"path": path, "missing": True})
+        except ValueError as exc:
+            if "not a file" in str(exc):
+                files.append({"path": path, "missing": True})
+            else:
+                files.append({"path": path, "error": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            files.append({"path": path, "error": str(exc)})
+    return {"files": files, "count": len(files)}
+
+
+@mcp.tool(
+    name="batch_call",
+    annotations={**READ_ONLY, "title": "Batch Call"},
+)
+def batch_call_tool(calls: list[dict]) -> dict:
+    """Run up to 10 read-only tool calls in one request."""
+    if len(calls) > 10:
+        raise ValueError("too many calls; max is 10")
+    results = []
+    for call in calls:
+        tool = call.get("tool")
+        args = call.get("args") or {}
+        if not isinstance(tool, str) or not isinstance(args, dict):
+            results.append({"tool": tool, "ok": False, "error": "call must contain string tool and object args"})
+            continue
+        try:
+            results.append({"tool": tool, "ok": True, "result": _batch_dispatch(tool, args)})
+        except Exception as exc:  # noqa: BLE001
+            results.append({"tool": tool, "ok": False, "error": str(exc)})
+    return {"results": results, "count": len(results)}
