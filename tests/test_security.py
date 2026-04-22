@@ -35,6 +35,9 @@ def make_settings(tmp_path: Path, allow_hidden_default: bool = False) -> Setting
         max_write_file_bytes=1000,
         dangerously_allow_all_writes=False,
         require_expected_hash_for_writes=True,
+        max_batch_operations=50,
+        max_combined_diff_chars=300000,
+        allow_move_delete_operations=True,
     )
 
 

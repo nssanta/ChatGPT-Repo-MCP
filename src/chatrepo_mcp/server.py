@@ -5,9 +5,14 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import Settings
 from .edit_tools import (
+    batch_edit_files,
+    create_text_file,
     current_text_sha256,
     delete_text_in_file,
+    delete_path,
+    ensure_directory,
     insert_text_in_file,
+    move_path,
     replace_text_in_file,
     write_text_file,
 )
@@ -322,6 +327,11 @@ TOOL_NAMES = [
     "replace_text_in_file",
     "insert_text_in_file",
     "delete_text_in_file",
+    "create_text_file",
+    "move_path",
+    "delete_path",
+    "ensure_directory",
+    "batch_edit_files",
 ]
 
 
@@ -359,6 +369,9 @@ def _batch_dispatch(tool: str, args: dict | None = None) -> dict:
         "replace_text_in_file": lambda: replace_text_in_file(settings=settings, **args)
         if args.get("dry_run") is True
         else (_ for _ in ()).throw(ValueError("batch_call only allows write tools when dry_run=true")),
+        "batch_edit_files": lambda: batch_edit_files(settings=settings, **args)
+        if args.get("dry_run") is True
+        else (_ for _ in ()).throw(ValueError("batch_call only allows batch_edit_files when dry_run=true")),
     }
     if tool not in handlers:
         raise ValueError(f"tool is not allowed for batch_call: {tool}")
@@ -370,8 +383,11 @@ def _write_config_info() -> dict:
         "write_tools_enabled": True,
         "writable_globs": list(settings.writable_globs),
         "max_write_file_bytes": settings.max_write_file_bytes,
+        "max_batch_operations": settings.max_batch_operations,
+        "max_combined_diff_chars": settings.max_combined_diff_chars,
         "dangerously_allow_all_writes": settings.dangerously_allow_all_writes,
         "require_expected_hash_for_writes": settings.require_expected_hash_for_writes,
+        "allow_move_delete_operations": settings.allow_move_delete_operations,
     }
 
 
@@ -427,6 +443,7 @@ def smoke_all_tool() -> dict:
         ("git_show", {"revision": "HEAD"}),
         ("read_text_file", {"path": ".env", "start_line": 1, "end_line": 1}),
         ("replace_text_in_file", {"path": ".claude/MEMORY.md", "find": "\n", "replace": "\n", "dry_run": True}),
+        ("batch_edit_files", {"operations": [{"op": "ensure_directory", "path": "reports/mcp-smoke"}], "dry_run": True}),
     ]:
         key = "blocked_policy" if name == "read_text_file" and args["path"] == ".env" else name
         if name == "replace_text_in_file":
@@ -435,6 +452,8 @@ def smoke_all_tool() -> dict:
                 args["expected_sha256"] = current_text_sha256(".claude/MEMORY.md", settings)
             except Exception:
                 pass
+        if name == "batch_edit_files":
+            key = "batch_write_dry_run"
         try:
             result = _batch_dispatch(name, args)
             ok = key != "blocked_policy"
@@ -600,3 +619,74 @@ def delete_text_in_file_tool(
         expected_sha256=expected_sha256,
         dry_run=dry_run,
     )
+
+
+@mcp.tool(
+    name="create_text_file",
+    annotations={**WRITE_ACTION, "title": "Create Text File"},
+)
+def create_text_file_tool(
+    path: str,
+    content: str,
+    overwrite: bool = False,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to create a new UTF-8 text file in the repository."""
+    return create_text_file(path=path, content=content, settings=settings, overwrite=overwrite, dry_run=dry_run)
+
+
+@mcp.tool(
+    name="move_path",
+    annotations={**WRITE_ACTION, "title": "Move Path"},
+)
+def move_path_tool(
+    source_path: str,
+    destination_path: str,
+    overwrite: bool = False,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to rename or move an allowed UTF-8 repo file."""
+    return move_path(
+        source_path=source_path,
+        destination_path=destination_path,
+        settings=settings,
+        overwrite=overwrite,
+        expected_sha256=expected_sha256,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool(
+    name="delete_path",
+    annotations={**WRITE_ACTION, "title": "Delete Path"},
+)
+def delete_path_tool(
+    path: str,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to delete an allowed UTF-8 repo file."""
+    return delete_path(path=path, settings=settings, expected_sha256=expected_sha256, dry_run=dry_run)
+
+
+@mcp.tool(
+    name="ensure_directory",
+    annotations={**WRITE_ACTION, "title": "Ensure Directory"},
+)
+def ensure_directory_tool(path: str, dry_run: bool = True) -> dict:
+    """Use this when you need to create a directory for docs, reports, packets, or source files."""
+    return ensure_directory(path=path, settings=settings, dry_run=dry_run)
+
+
+@mcp.tool(
+    name="batch_edit_files",
+    annotations={**WRITE_ACTION, "title": "Batch Edit Files"},
+)
+def batch_edit_files_tool(
+    operations: list[dict],
+    atomic: bool = True,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when several related repo edits must be previewed or applied together."""
+    return batch_edit_files(operations=operations, settings=settings, atomic=atomic, dry_run=dry_run)

@@ -4,8 +4,13 @@ from chatrepo_mcp.config import Settings
 from chatrepo_mcp.edit_tools import (
     StaleWriteError,
     WritePolicyError,
+    batch_edit_files,
+    create_text_file,
     delete_text_in_file,
+    delete_path,
+    ensure_directory,
     insert_text_in_file,
+    move_path,
     replace_text_in_file,
     sha256_text,
     write_text_file,
@@ -28,7 +33,17 @@ def make_settings(tmp_path: Path, *, writable_globs: tuple[str, ...] | None = No
         max_diff_bytes=1000,
         max_log_commits=10,
         subprocess_timeout=5,
-        blocked_globs=(".env", ".env.*", "*.pem", "*.key", "**/.git/**", "**/.venv/**", "**/node_modules/**"),
+        blocked_globs=(
+            ".env",
+            ".env.*",
+            "*.pem",
+            "*.key",
+            "**/.git/**",
+            "**/.venv/**",
+            "**/node_modules/**",
+            "**/*.png",
+            "**/*.db",
+        ),
         allow_hidden_default=True,
         allowed_hosts=("127.0.0.1", "localhost"),
         enable_dns_rebinding_protection=True,
@@ -44,6 +59,9 @@ def make_settings(tmp_path: Path, *, writable_globs: tuple[str, ...] | None = No
         max_write_file_bytes=1000,
         dangerously_allow_all_writes=dangerous,
         require_expected_hash_for_writes=True,
+        max_batch_operations=50,
+        max_combined_diff_chars=300000,
+        allow_move_delete_operations=True,
     )
 
 
@@ -180,3 +198,134 @@ def test_star_requires_dangerous_flag(tmp_path: Path) -> None:
     result = write_text_file("src/main.py", "new\n", dangerous, expected_sha256=old_hash, dry_run=False)
     assert result["changed"] is True
     assert path.read_text(encoding="utf-8") == "new\n"
+
+
+def test_create_move_delete_and_ensure_directory(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, writable_globs=("**/*",), dangerous=True)
+
+    dir_result = ensure_directory("src/features", settings, dry_run=False)
+    create_result = create_text_file("src/features/a.ts", "export const a = 1\n", settings, dry_run=False)
+    move_result = move_path(
+        "src/features/a.ts",
+        "src/features/b.ts",
+        settings,
+        expected_sha256=create_result["new_sha256"],
+        dry_run=False,
+    )
+    delete_result = delete_path(
+        "src/features/b.ts",
+        settings,
+        expected_sha256=move_result["new_sha256"],
+        dry_run=False,
+    )
+
+    assert dir_result["changed"] is True
+    assert create_result["changed"] is True
+    assert move_result["destination_path"] == "src/features/b.ts"
+    assert delete_result["changed"] is True
+    assert not (tmp_path / "src" / "features" / "b.ts").exists()
+
+
+def test_binary_blocked_even_with_full_repo_write(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, writable_globs=("**/*",), dangerous=True)
+    (tmp_path / "image.png").write_bytes(b"\x89PNG\n")
+
+    try:
+        write_text_file("image.png", "nope", settings, expected_sha256=sha256_text(""))
+        assert False, "expected blocked binary path"
+    except WritePolicyError:
+        assert True
+
+
+def test_batch_atomic_rollback_on_failure(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, writable_globs=("**/*",), dangerous=True)
+    first, first_hash = write_allowed_file(tmp_path, "src/first.py", "one\n")
+    second, second_hash = write_allowed_file(tmp_path, "src/second.py", "two\n")
+
+    result = batch_edit_files(
+        [
+            {
+                "op": "replace",
+                "path": "src/first.py",
+                "find": "one",
+                "replace": "ONE",
+                "expected_sha256": first_hash,
+            },
+            {
+                "op": "replace",
+                "path": "src/second.py",
+                "find": "missing",
+                "replace": "TWO",
+                "expected_sha256": second_hash,
+            },
+        ],
+        settings,
+        atomic=True,
+        dry_run=False,
+    )
+
+    assert result["failed_operation_index"] == 1
+    assert result["rollback_performed"] is True
+    assert first.read_text(encoding="utf-8") == "one\n"
+    assert second.read_text(encoding="utf-8") == "two\n"
+
+
+def test_batch_non_atomic_partial_apply_and_combined_diff(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, writable_globs=("**/*",), dangerous=True)
+    first, first_hash = write_allowed_file(tmp_path, "src/first.py", "one\n")
+    second, second_hash = write_allowed_file(tmp_path, "src/second.py", "two\n")
+
+    result = batch_edit_files(
+        [
+            {
+                "op": "replace",
+                "path": "src/first.py",
+                "find": "one",
+                "replace": "ONE",
+                "expected_sha256": first_hash,
+            },
+            {
+                "op": "replace",
+                "path": "src/second.py",
+                "find": "missing",
+                "replace": "TWO",
+                "expected_sha256": second_hash,
+            },
+        ],
+        settings,
+        atomic=False,
+        dry_run=False,
+    )
+
+    assert result["failed_operation_index"] == 1
+    assert result["rollback_performed"] is False
+    assert "src/first.py" in result["combined_diff"]
+    assert first.read_text(encoding="utf-8") == "ONE\n"
+    assert second.read_text(encoding="utf-8") == "two\n"
+
+
+def test_batch_create_move_edit_dry_run_no_mutation(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, writable_globs=("**/*",), dangerous=True)
+    existing, existing_hash = write_allowed_file(tmp_path, "docs/existing.md", "old\n")
+
+    result = batch_edit_files(
+        [
+            {"op": "ensure_directory", "path": "docs/new"},
+            {"op": "create_file", "path": "docs/new/a.md", "content": "hello\n"},
+            {"op": "write", "path": "docs/new/b.md", "content": "world\n", "create_if_missing": True},
+            {
+                "op": "move",
+                "source_path": "docs/existing.md",
+                "destination_path": "docs/existing-renamed.md",
+                "expected_sha256": existing_hash,
+            },
+        ],
+        settings,
+        atomic=True,
+        dry_run=True,
+    )
+
+    assert result["failed_operation_index"] is None
+    assert "docs/new/a.md" in result["combined_diff"]
+    assert not (tmp_path / "docs" / "new").exists()
+    assert existing.exists()

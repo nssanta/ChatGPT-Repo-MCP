@@ -5,7 +5,7 @@
 [![Safe Writes](https://img.shields.io/badge/Mode-Safe%20Writes-orange)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-MCP server for ChatGPT that gives the model deep access to **one Git repository** on your VPS, with optional allowlisted text-edit tools.
+MCP server for ChatGPT that gives the model deep access to **one Git repository** on your VPS, with safe text-edit tools.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -24,9 +24,11 @@ It is built for codebase work in chat:
 - inspect recent file changes
 - analyze Git history, diffs, branches, blame, and grep results
 
-The default surface is read-heavy, with a guarded write layer for selected text files:
-- allowlisted file writes only
+The default surface is read-heavy, with a guarded write layer for UTF-8 text files:
+- whole-repo text writes by default
 - exact replace / insert / delete helpers
+- create / move / delete file helpers
+- atomic multi-file batch edits
 - unified diff previews
 - expected SHA-256 checks for stale-write protection
 - no shell execution tool
@@ -67,6 +69,11 @@ The default surface is read-heavy, with a guarded write layer for selected text 
 - `replace_text_in_file`
 - `insert_text_in_file`
 - `delete_text_in_file`
+- `create_text_file`
+- `move_path`
+- `delete_path`
+- `ensure_directory`
+- `batch_edit_files`
 
 * * *
 
@@ -122,10 +129,13 @@ MAX_FILE_BYTES=200000
 MAX_READ_LINES=1200
 MAX_SEARCH_RESULTS=100
 BLOCKED_PATTERNS=.env,.env.*,*.pem,*.key,*.p12,*.pfx,**/.git/**,**/.venv/**,**/node_modules/**
-WRITABLE_GLOBS=.claude/**,missions/**,docs/**,reports/**
+WRITABLE_GLOBS=**/*
 MAX_WRITE_FILE_BYTES=1000000
+MAX_BATCH_OPERATIONS=50
+MAX_COMBINED_DIFF_CHARS=300000
 REQUIRE_EXPECTED_HASH_FOR_WRITES=true
-DANGEROUSLY_ALLOW_ALL_WRITES=false
+DANGEROUSLY_ALLOW_ALL_WRITES=true
+ALLOW_MOVE_DELETE_OPERATIONS=true
 ```
 
 Recommended deployment shape:
@@ -182,6 +192,8 @@ Default protections:
 - `BLOCKED_GLOBS` always wins over write allowlists
 - `WRITABLE_GLOBS=*` is ignored unless `DANGEROUSLY_ALLOW_ALL_WRITES=true`
 - write tools default to `dry_run=true` and return unified diffs plus old/new SHA-256 hashes
+- binary/non-UTF-8 files are rejected
+- batch edits can run atomically and roll back on failure
 
 Example dry-run replace:
 
@@ -196,6 +208,29 @@ Example dry-run replace:
 ```
 
 Apply the same edit by sending `dry_run=false` after reviewing the returned diff.
+
+Example batch preview:
+
+```json
+{
+  "operations": [
+    {
+      "op": "replace",
+      "path": "missions/CURRENT.md",
+      "find": "Status: TODO",
+      "replace": "Status: IN_PROGRESS",
+      "expected_sha256": "<current file sha256>"
+    },
+    {
+      "op": "create_file",
+      "path": "reports/session-note.md",
+      "content": "# Session Note\n"
+    }
+  ],
+  "atomic": true,
+  "dry_run": true
+}
+```
 
 * * *
 

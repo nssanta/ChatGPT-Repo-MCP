@@ -11,8 +11,17 @@ This VPS uses:
 
 ```bash
 systemctl restart chatrepo-mcp
-systemctl restart chatrepo-mcp-tunnel
 ```
+
+Do not restart `chatrepo-mcp-tunnel` during normal MCP code deploys. Quick tunnel URLs change when the tunnel process restarts.
+
+Before deploy, confirm the tunnel is decoupled from backend restarts:
+
+```bash
+systemctl show chatrepo-mcp-tunnel.service -p Requires -p MainPID
+```
+
+`Requires` must not contain `chatrepo-mcp.service`.
 
 ## Status
 
@@ -44,6 +53,45 @@ cd /opt/evaai/ChatGPT-Repo-MCP
 
 Expected: 19 tools including `repo_info`, `read_text_file`, `find_files`, `git_blame`, and `git_grep`.
 
+For the V2 editing layer, expected tools: 32. The list should include:
+
+- `write_text_file`
+- `replace_text_in_file`
+- `insert_text_in_file`
+- `delete_text_in_file`
+- `create_text_file`
+- `move_path`
+- `delete_path`
+- `ensure_directory`
+- `batch_edit_files`
+
+## V2 Smoke
+
+```bash
+cd /opt/evaai/ChatGPT-Repo-MCP
+URL="$(journalctl -u chatrepo-mcp-tunnel -n 80 --no-pager | grep -o 'https://[^ ]*trycloudflare.com' | tail -1)/mcp"
+.venv/bin/python scripts/check_tools.py "$URL"
+```
+
+Then call `doctor` and `smoke_all` from ChatGPT. `smoke_all.ok` should be `true`.
+
+## Safe Backend Deploy Without URL Change
+
+```bash
+OLD_PID="$(systemctl show -p MainPID --value chatrepo-mcp-tunnel.service)"
+OLD_URL="$(journalctl -u chatrepo-mcp-tunnel -n 80 --no-pager | grep -o 'https://[^ ]*trycloudflare.com' | tail -1)"
+
+cd /opt/evaai/ChatGPT-Repo-MCP
+git pull --ff-only
+systemctl restart chatrepo-mcp
+
+NEW_PID="$(systemctl show -p MainPID --value chatrepo-mcp-tunnel.service)"
+NEW_URL="$(journalctl -u chatrepo-mcp-tunnel -n 80 --no-pager | grep -o 'https://[^ ]*trycloudflare.com' | tail -1)"
+printf 'old_pid=%s\nnew_pid=%s\nold_url=%s\nnew_url=%s\n' "$OLD_PID" "$NEW_PID" "$OLD_URL" "$NEW_URL"
+```
+
+If PID and URL are unchanged, ChatGPT does not need a new MCP URL.
+
 ## Logs
 
 ```bash
@@ -53,4 +101,4 @@ journalctl -u chatrepo-mcp-tunnel -f
 
 ## Notes
 
-Quick tunnels are free and fast, but the URL changes when `chatrepo-mcp-tunnel` restarts. For a stable URL, replace quick tunnel with a named Cloudflare Tunnel or put a domain/reverse proxy in front.
+Quick tunnels are free and fast, but the URL changes when `chatrepo-mcp-tunnel` restarts. For a stable URL across reboots, replace quick tunnel with a named Cloudflare Tunnel or put a domain/reverse proxy in front.

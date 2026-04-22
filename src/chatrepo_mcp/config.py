@@ -48,6 +48,9 @@ class Settings:
     max_write_file_bytes: int
     dangerously_allow_all_writes: bool
     require_expected_hash_for_writes: bool
+    max_batch_operations: int
+    max_combined_diff_chars: int
+    allow_move_delete_operations: bool
 
     @staticmethod
     def from_env() -> "Settings":
@@ -70,7 +73,9 @@ class Settings:
             subprocess_timeout=_env_int("SUBPROCESS_TIMEOUT", 15),
             blocked_globs=_env_csv(
                 "BLOCKED_GLOBS",
-                ".env,.env.*,*.pem,*.key,*.p12,*.pfx,**/.git/**,**/.venv/**,**/node_modules/**",
+                ".env,.env.*,*.pem,*.key,*.p12,*.pfx,**/.git/**,**/.venv/**,**/node_modules/**,"
+                "**/*.db,**/*.sqlite,**/*.sqlite3,**/*.bin,**/*.png,**/*.jpg,**/*.jpeg,"
+                "**/*.webp,**/*.pdf,**/*.zip,**/*.tar,**/*.gz",
             ),
             allow_hidden_default=_env_bool("ALLOW_HIDDEN_DEFAULT", True),
             allowed_hosts=_env_csv("ALLOWED_HOSTS", "127.0.0.1,localhost"),
@@ -79,9 +84,12 @@ class Settings:
             ephemeral_handles_supported=_env_bool("EPHEMERAL_HANDLES_SUPPORTED", False),
             writable_globs=_env_csv(
                 "WRITABLE_GLOBS",
-                ".claude/**,missions/**,docs/**,reports/**",
+                "**/*",
             ),
             max_write_file_bytes=_env_int("MAX_WRITE_FILE_BYTES", 1_000_000),
-            dangerously_allow_all_writes=_env_bool("DANGEROUSLY_ALLOW_ALL_WRITES", False),
+            dangerously_allow_all_writes=_env_bool("DANGEROUSLY_ALLOW_ALL_WRITES", True),
             require_expected_hash_for_writes=_env_bool("REQUIRE_EXPECTED_HASH_FOR_WRITES", True),
+            max_batch_operations=_env_int("MAX_BATCH_OPERATIONS", 50),
+            max_combined_diff_chars=_env_int("MAX_COMBINED_DIFF_CHARS", 300_000),
+            allow_move_delete_operations=_env_bool("ALLOW_MOVE_DELETE_OPERATIONS", True),
         )
