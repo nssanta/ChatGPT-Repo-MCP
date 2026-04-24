@@ -3,17 +3,27 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+from .command_tools import CommandPolicyError, run_command
 from .config import Settings
 from .edit_tools import (
+    append_to_file,
+    apply_patch_diff,
     batch_edit_files,
     create_text_file,
     current_text_sha256,
     delete_text_in_file,
     delete_path,
     ensure_directory,
+    insert_after_heading,
+    insert_after_line,
+    insert_before_heading,
+    insert_before_line,
     insert_text_in_file,
     move_path,
     replace_text_in_file,
+    replace_lines,
+    structured_error,
+    update_current_mission,
     write_text_file,
 )
 from .fs_tools import (
@@ -332,15 +342,26 @@ TOOL_NAMES = [
     "delete_path",
     "ensure_directory",
     "batch_edit_files",
+    "replace_lines",
+    "insert_before_line",
+    "insert_after_line",
+    "insert_before_heading",
+    "insert_after_heading",
+    "append_to_file",
+    "apply_patch",
+    "update_current_mission",
+    "run_command",
 ]
 
 
 def _namespace_info() -> dict:
     return {
-        "canonical_namespace": settings.canonical_namespace,
-        "canonical_tool_prefix": f"{settings.canonical_namespace}/",
+        "tool_invocation_model": "chatgpt_connector_tools",
+        "canonical_namespace_configured": settings.canonical_namespace,
+        "canonical_tool_prefix_configured": f"{settings.canonical_namespace}/",
         "ephemeral_handles_supported": settings.ephemeral_handles_supported,
-        "ephemeral_handles_note": "Use the canonical namespace for stable calls; link_* handles are session-scoped and should not be treated as durable.",
+        "chatgpt_visible_namespace_note": "Use the tool names or handles shown by ChatGPT. Session link handles can be ephemeral.",
+        "backend_restart_preserves_tunnel_url": True,
     }
 
 
@@ -369,6 +390,12 @@ def _batch_dispatch(tool: str, args: dict | None = None) -> dict:
         "replace_text_in_file": lambda: replace_text_in_file(settings=settings, **args)
         if args.get("dry_run") is True
         else (_ for _ in ()).throw(ValueError("batch_call only allows write tools when dry_run=true")),
+        "replace_lines": lambda: replace_lines(settings=settings, **args)
+        if args.get("dry_run") is True
+        else (_ for _ in ()).throw(ValueError("batch_call only allows write tools when dry_run=true")),
+        "insert_before_heading": lambda: insert_before_heading(settings=settings, **args)
+        if args.get("dry_run") is True
+        else (_ for _ in ()).throw(ValueError("batch_call only allows write tools when dry_run=true")),
         "batch_edit_files": lambda: batch_edit_files(settings=settings, **args)
         if args.get("dry_run") is True
         else (_ for _ in ()).throw(ValueError("batch_call only allows batch_edit_files when dry_run=true")),
@@ -388,7 +415,26 @@ def _write_config_info() -> dict:
         "dangerously_allow_all_writes": settings.dangerously_allow_all_writes,
         "require_expected_hash_for_writes": settings.require_expected_hash_for_writes,
         "allow_move_delete_operations": settings.allow_move_delete_operations,
+        "max_patch_bytes": settings.max_patch_bytes,
+        "max_command_output_chars": settings.max_command_output_chars,
+        "command_timeout_ms": settings.command_timeout_ms,
     }
+
+
+def _write_result(func, *args, **kwargs) -> dict:
+    try:
+        return func(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001
+        return structured_error(exc)
+
+
+def _command_result(command: str, timeout_ms: int | None = None) -> dict:
+    try:
+        return run_command(command=command, settings=settings, timeout_ms=timeout_ms)
+    except CommandPolicyError as exc:
+        return {"ok": False, "error_kind": "command_not_allowed", "error": str(exc), "command": command}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "command_failed", "error": str(exc), "command": command}
 
 
 @mcp.tool(
@@ -443,7 +489,9 @@ def smoke_all_tool() -> dict:
         ("git_show", {"revision": "HEAD"}),
         ("read_text_file", {"path": ".env", "start_line": 1, "end_line": 1}),
         ("replace_text_in_file", {"path": ".claude/MEMORY.md", "find": "\n", "replace": "\n", "dry_run": True}),
+        ("insert_before_heading", {"path": "missions/CURRENT.md", "heading": "## Goal", "content": "\n", "dry_run": True}),
         ("batch_edit_files", {"operations": [{"op": "ensure_directory", "path": "reports/mcp-smoke"}], "dry_run": True}),
+        ("run_command", {"command": "git diff --check"}),
     ]:
         key = "blocked_policy" if name == "read_text_file" and args["path"] == ".env" else name
         if name == "replace_text_in_file":
@@ -454,8 +502,16 @@ def smoke_all_tool() -> dict:
                 pass
         if name == "batch_edit_files":
             key = "batch_write_dry_run"
+        if name == "insert_before_heading":
+            key = "heading_write_dry_run"
+            try:
+                args["expected_sha256"] = current_text_sha256("missions/CURRENT.md", settings)
+            except Exception:
+                pass
+        if name == "run_command":
+            key = "run_command_git_diff_check"
         try:
-            result = _batch_dispatch(name, args)
+            result = _command_result(**args) if name == "run_command" else _batch_dispatch(name, args)
             ok = key != "blocked_policy"
             item = {"name": key, "tool": name, "ok": ok}
             if name == "list_dir":
@@ -539,7 +595,8 @@ def write_text_file_tool(
     dry_run: bool = True,
 ) -> dict:
     """Use this when you need to replace the entire contents of an allowed UTF-8 repo text file."""
-    return write_text_file(
+    return _write_result(
+        write_text_file,
         path=path,
         content=content,
         settings=settings,
@@ -562,7 +619,8 @@ def replace_text_in_file_tool(
     dry_run: bool = True,
 ) -> dict:
     """Use this when you need to replace an exact text fragment in an allowed UTF-8 repo file."""
-    return replace_text_in_file(
+    return _write_result(
+        replace_text_in_file,
         path=path,
         find=find,
         replace=replace,
@@ -586,7 +644,8 @@ def insert_text_in_file_tool(
     dry_run: bool = True,
 ) -> dict:
     """Use this when you need to insert text before or after an exact anchor in an allowed repo file."""
-    return insert_text_in_file(
+    return _write_result(
+        insert_text_in_file,
         path=path,
         anchor=anchor,
         position=position,
@@ -610,7 +669,8 @@ def delete_text_in_file_tool(
     dry_run: bool = True,
 ) -> dict:
     """Use this when you need to delete exact text or a line range from an allowed repo file."""
-    return delete_text_in_file(
+    return _write_result(
+        delete_text_in_file,
         path=path,
         settings=settings,
         find=find,
@@ -632,7 +692,7 @@ def create_text_file_tool(
     dry_run: bool = True,
 ) -> dict:
     """Use this when you need to create a new UTF-8 text file in the repository."""
-    return create_text_file(path=path, content=content, settings=settings, overwrite=overwrite, dry_run=dry_run)
+    return _write_result(create_text_file, path=path, content=content, settings=settings, overwrite=overwrite, dry_run=dry_run)
 
 
 @mcp.tool(
@@ -647,7 +707,8 @@ def move_path_tool(
     dry_run: bool = True,
 ) -> dict:
     """Use this when you need to rename or move an allowed UTF-8 repo file."""
-    return move_path(
+    return _write_result(
+        move_path,
         source_path=source_path,
         destination_path=destination_path,
         settings=settings,
@@ -667,7 +728,7 @@ def delete_path_tool(
     dry_run: bool = True,
 ) -> dict:
     """Use this when you need to delete an allowed UTF-8 repo file."""
-    return delete_path(path=path, settings=settings, expected_sha256=expected_sha256, dry_run=dry_run)
+    return _write_result(delete_path, path=path, settings=settings, expected_sha256=expected_sha256, dry_run=dry_run)
 
 
 @mcp.tool(
@@ -676,7 +737,7 @@ def delete_path_tool(
 )
 def ensure_directory_tool(path: str, dry_run: bool = True) -> dict:
     """Use this when you need to create a directory for docs, reports, packets, or source files."""
-    return ensure_directory(path=path, settings=settings, dry_run=dry_run)
+    return _write_result(ensure_directory, path=path, settings=settings, dry_run=dry_run)
 
 
 @mcp.tool(
@@ -689,4 +750,185 @@ def batch_edit_files_tool(
     dry_run: bool = True,
 ) -> dict:
     """Use this when several related repo edits must be previewed or applied together."""
-    return batch_edit_files(operations=operations, settings=settings, atomic=atomic, dry_run=dry_run)
+    return _write_result(batch_edit_files, operations=operations, settings=settings, atomic=atomic, dry_run=dry_run)
+
+
+@mcp.tool(
+    name="replace_lines",
+    annotations={**WRITE_ACTION, "title": "Replace Lines"},
+)
+def replace_lines_tool(
+    path: str,
+    start_line: int,
+    end_line: int,
+    replacement: str,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to replace a small line range in an allowed UTF-8 repo file."""
+    return _write_result(
+        replace_lines,
+        path=path,
+        start_line=start_line,
+        end_line=end_line,
+        replacement=replacement,
+        settings=settings,
+        expected_sha256=expected_sha256,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool(
+    name="insert_before_line",
+    annotations={**WRITE_ACTION, "title": "Insert Before Line"},
+)
+def insert_before_line_tool(
+    path: str,
+    line: int,
+    content: str,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to insert compact text before a specific line number."""
+    return _write_result(
+        insert_before_line,
+        path=path,
+        line=line,
+        content=content,
+        settings=settings,
+        expected_sha256=expected_sha256,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool(
+    name="insert_after_line",
+    annotations={**WRITE_ACTION, "title": "Insert After Line"},
+)
+def insert_after_line_tool(
+    path: str,
+    line: int,
+    content: str,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to insert compact text after a specific line number."""
+    return _write_result(
+        insert_after_line,
+        path=path,
+        line=line,
+        content=content,
+        settings=settings,
+        expected_sha256=expected_sha256,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool(
+    name="insert_before_heading",
+    annotations={**WRITE_ACTION, "title": "Insert Before Heading"},
+)
+def insert_before_heading_tool(
+    path: str,
+    heading: str,
+    content: str,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to insert markdown before a heading with a small payload."""
+    return _write_result(
+        insert_before_heading,
+        path=path,
+        heading=heading,
+        content=content,
+        settings=settings,
+        expected_sha256=expected_sha256,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool(
+    name="insert_after_heading",
+    annotations={**WRITE_ACTION, "title": "Insert After Heading"},
+)
+def insert_after_heading_tool(
+    path: str,
+    heading: str,
+    content: str,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to insert markdown after a heading with a small payload."""
+    return _write_result(
+        insert_after_heading,
+        path=path,
+        heading=heading,
+        content=content,
+        settings=settings,
+        expected_sha256=expected_sha256,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool(
+    name="append_to_file",
+    annotations={**WRITE_ACTION, "title": "Append To File"},
+)
+def append_to_file_tool(
+    path: str,
+    content: str,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to append a small text block to an allowed UTF-8 repo file."""
+    return _write_result(
+        append_to_file,
+        path=path,
+        content=content,
+        settings=settings,
+        expected_sha256=expected_sha256,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool(
+    name="apply_patch",
+    annotations={**WRITE_ACTION, "title": "Apply Patch"},
+)
+def apply_patch_tool(
+    patch: str,
+    dry_run: bool = True,
+    expected_base_sha: str | None = None,
+) -> dict:
+    """Use this when you need to apply a unified diff patch across one or more allowed repo files."""
+    return _write_result(apply_patch_diff, patch=patch, settings=settings, dry_run=dry_run, expected_base_sha=expected_base_sha)
+
+
+@mcp.tool(
+    name="update_current_mission",
+    annotations={**WRITE_ACTION, "title": "Update Current Mission"},
+)
+def update_current_mission_tool(
+    section_title: str,
+    content: str,
+    position: str = "before_goal",
+    dry_run: bool = True,
+) -> dict:
+    """Use this when you need to add a mission section to missions/CURRENT.md before ## Goal."""
+    return _write_result(
+        update_current_mission,
+        section_title=section_title,
+        content=content,
+        settings=settings,
+        position=position,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool(
+    name="run_command",
+    annotations={**WRITE_ACTION, "title": "Run Command"},
+)
+def run_command_tool(command: str, timeout_ms: int | None = None) -> dict:
+    """Use this when you need to run an allowlisted validation command and report exit code."""
+    return _command_result(command=command, timeout_ms=timeout_ms)

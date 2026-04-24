@@ -53,7 +53,7 @@ cd /opt/evaai/ChatGPT-Repo-MCP
 
 Expected: 19 tools including `repo_info`, `read_text_file`, `find_files`, `git_blame`, and `git_grep`.
 
-For the V2 editing layer, expected tools: 32. The list should include:
+For the V3 developer workflow layer, expected tools: 41. The list should include:
 
 - `write_text_file`
 - `replace_text_in_file`
@@ -64,6 +64,15 @@ For the V2 editing layer, expected tools: 32. The list should include:
 - `delete_path`
 - `ensure_directory`
 - `batch_edit_files`
+- `replace_lines`
+- `insert_before_line`
+- `insert_after_line`
+- `insert_before_heading`
+- `insert_after_heading`
+- `append_to_file`
+- `apply_patch`
+- `update_current_mission`
+- `run_command`
 
 ## V2 Smoke
 
@@ -74,6 +83,8 @@ URL="$(journalctl -u chatrepo-mcp-tunnel -n 80 --no-pager | grep -o 'https://[^ 
 ```
 
 Then call `doctor` and `smoke_all` from ChatGPT. `smoke_all.ok` should be `true`.
+
+`run_command` is not a general bash shell. It only runs allowlisted validation commands such as `git diff --check`, selected `npm run test ...`, `npx vitest run ...`, and selected `npx tsx tests/telegram/scenarios/*.test.ts` commands.
 
 ## Safe Backend Deploy Without URL Change
 

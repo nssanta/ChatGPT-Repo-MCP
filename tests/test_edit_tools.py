@@ -4,15 +4,23 @@ from chatrepo_mcp.config import Settings
 from chatrepo_mcp.edit_tools import (
     StaleWriteError,
     WritePolicyError,
+    append_to_file,
+    apply_patch_diff,
     batch_edit_files,
     create_text_file,
     delete_text_in_file,
     delete_path,
     ensure_directory,
+    insert_after_heading,
+    insert_after_line,
+    insert_before_heading,
+    insert_before_line,
     insert_text_in_file,
     move_path,
     replace_text_in_file,
+    replace_lines,
     sha256_text,
+    update_current_mission,
     write_text_file,
 )
 from chatrepo_mcp.security import SecurityError
@@ -62,6 +70,9 @@ def make_settings(tmp_path: Path, *, writable_globs: tuple[str, ...] | None = No
         max_batch_operations=50,
         max_combined_diff_chars=300000,
         allow_move_delete_operations=True,
+        max_patch_bytes=500000,
+        max_command_output_chars=200000,
+        command_timeout_ms=120000,
     )
 
 
@@ -329,3 +340,153 @@ def test_batch_create_move_edit_dry_run_no_mutation(tmp_path: Path) -> None:
     assert "docs/new/a.md" in result["combined_diff"]
     assert not (tmp_path / "docs" / "new").exists()
     assert existing.exists()
+
+
+def test_line_and_heading_tools(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    path, old_hash = write_allowed_file(tmp_path, "missions/CURRENT.md", "# Mission\n\n## Goal\nold\n")
+
+    result = insert_before_heading(
+        "missions/CURRENT.md",
+        "## Goal",
+        "## P0\nnotes\n",
+        settings,
+        expected_sha256=old_hash,
+        dry_run=False,
+    )
+    result = replace_lines(
+        "missions/CURRENT.md",
+        5,
+        5,
+        "new",
+        settings,
+        expected_sha256=result["new_sha256"],
+        dry_run=False,
+    )
+    result = insert_after_line(
+        "missions/CURRENT.md",
+        5,
+        "after",
+        settings,
+        expected_sha256=result["new_sha256"],
+        dry_run=False,
+    )
+    result = insert_before_line(
+        "missions/CURRENT.md",
+        1,
+        "top",
+        settings,
+        expected_sha256=result["new_sha256"],
+        dry_run=False,
+    )
+    result = insert_after_heading(
+        "missions/CURRENT.md",
+        "## P0",
+        "after-heading",
+        settings,
+        expected_sha256=result["new_sha256"],
+        dry_run=False,
+    )
+    result = append_to_file(
+        "missions/CURRENT.md",
+        "tail",
+        settings,
+        expected_sha256=result["new_sha256"],
+        dry_run=False,
+    )
+
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("top\n# Mission")
+    assert "## P0\nafter-heading\nnotes\n" in text
+    assert "new\nafter\n" in text
+    assert text.endswith("tail\n")
+
+
+def test_heading_not_found_returns_known_error_kind(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    _, old_hash = write_allowed_file(tmp_path, "missions/CURRENT.md", "# Mission\n")
+
+    try:
+        insert_before_heading("missions/CURRENT.md", "## Goal", "x", settings, expected_sha256=old_hash)
+        assert False, "expected heading miss"
+    except ValueError as exc:
+        assert "heading not found" in str(exc)
+
+
+def test_update_current_mission_before_goal(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    path, _ = write_allowed_file(tmp_path, "missions/CURRENT.md", "# Mission\n\n## Goal\nShip\n")
+
+    result = update_current_mission("P0 Addendum", "Do this.", settings, dry_run=False)
+
+    assert result["changed"] is True
+    assert "## P0 Addendum\n\nDo this.\n\n## Goal" in path.read_text(encoding="utf-8")
+
+
+def test_apply_patch_dry_run_apply_and_rejects_blocked_path(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, writable_globs=("**/*",), dangerous=True)
+    path, _ = write_allowed_file(tmp_path, "src/main.py", "old\n")
+    (tmp_path / ".env").write_text("SECRET=value\n", encoding="utf-8")
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=a@example.com", "-c", "user.name=A", "commit", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    patch = """diff --git a/src/main.py b/src/main.py
+--- a/src/main.py
++++ b/src/main.py
+@@ -1 +1 @@
+-old
++new
+"""
+
+    preview = apply_patch_diff(patch, settings, dry_run=True)
+    assert preview["changed_files"] == ["src/main.py"]
+    assert path.read_text(encoding="utf-8") == "old\n"
+
+    applied = apply_patch_diff(patch, settings, dry_run=False)
+    assert applied["applied"] is True
+    assert path.read_text(encoding="utf-8") == "new\n"
+
+    blocked_patch = """diff --git a/.env b/.env
+--- a/.env
++++ b/.env
+@@ -1 +1 @@
+-SECRET=value
++SECRET=nope
+"""
+    try:
+        apply_patch_diff(blocked_patch, settings, dry_run=True)
+        assert False, "expected blocked path"
+    except WritePolicyError:
+        assert True
+
+
+def test_batch_supports_type_alias_for_operations(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, writable_globs=("**/*",), dangerous=True)
+    path, old_hash = write_allowed_file(tmp_path, "src/first.py", "one\n")
+
+    result = batch_edit_files(
+        [
+            {
+                "type": "replace_lines",
+                "path": "src/first.py",
+                "start_line": 1,
+                "end_line": 1,
+                "replacement": "ONE",
+                "expected_sha256": old_hash,
+            },
+        ],
+        settings,
+        atomic=True,
+        dry_run=False,
+    )
+
+    assert result["failed_operation_index"] is None
+    assert path.read_text(encoding="utf-8") == "ONE\n"

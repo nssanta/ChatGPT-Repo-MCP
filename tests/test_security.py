@@ -38,6 +38,9 @@ def make_settings(tmp_path: Path, allow_hidden_default: bool = False) -> Setting
         max_batch_operations=50,
         max_combined_diff_chars=300000,
         allow_move_delete_operations=True,
+        max_patch_bytes=500000,
+        max_command_output_chars=200000,
+        command_timeout_ms=120000,
     )
 
 

@@ -51,6 +51,9 @@ class Settings:
     max_batch_operations: int
     max_combined_diff_chars: int
     allow_move_delete_operations: bool
+    max_patch_bytes: int
+    max_command_output_chars: int
+    command_timeout_ms: int
 
     @staticmethod
     def from_env() -> "Settings":
@@ -92,4 +95,7 @@ class Settings:
             max_batch_operations=_env_int("MAX_BATCH_OPERATIONS", 50),
             max_combined_diff_chars=_env_int("MAX_COMBINED_DIFF_CHARS", 300_000),
             allow_move_delete_operations=_env_bool("ALLOW_MOVE_DELETE_OPERATIONS", True),
+            max_patch_bytes=_env_int("MAX_PATCH_BYTES", 500_000),
+            max_command_output_chars=_env_int("MAX_COMMAND_OUTPUT_CHARS", 200_000),
+            command_timeout_ms=_env_int("COMMAND_TIMEOUT_MS", 120_000),
         )

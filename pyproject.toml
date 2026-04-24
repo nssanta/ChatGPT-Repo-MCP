@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "chatrepo-mcp"
 version = "0.1.0"
-description = "Read-only MCP server for ChatGPT to inspect one repository with filesystem and Git tools"
+description = "MCP server for ChatGPT to inspect and safely edit one repository with filesystem, Git, and validation tools"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [

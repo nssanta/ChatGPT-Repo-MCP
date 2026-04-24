@@ -85,6 +85,18 @@ MCP сервер для ChatGPT, который даёт модели глубо
 - `delete_path`
 - `ensure_directory`
 - `batch_edit_files`
+- `replace_lines`
+- `insert_before_line`
+- `insert_after_line`
+- `insert_before_heading`
+- `insert_after_heading`
+- `append_to_file`
+- `apply_patch`
+- `update_current_mission`
+
+### Безопасные команды
+
+- `run_command`
 
 * * *
 
@@ -204,6 +216,32 @@ chatrepo-mcp/
 - бинарные и non-UTF-8 файлы не редактируются
 - write tools по умолчанию делают `dry_run=true`
 - batch edits могут выполняться атомарно с rollback
+- line/heading edit tools уменьшают payload для markdown/code правок
+- `apply_patch` принимает unified diff и проверяет его через `git apply --check`
+- `run_command` запускает только allowlisted проверки и не использует shell/bash
+
+Важно: если ChatGPT заблокировал tool call до отправки на MCP, сервер не может вернуть structured error. Повторите меньшим line/heading edit или через `apply_patch`.
+
+Пример вставки перед заголовком:
+
+```json
+{
+  "path": "missions/CURRENT.md",
+  "heading": "## Goal",
+  "content": "## P0 Addendum\n\nDo this next.\n\n",
+  "expected_sha256": "<current file sha256>",
+  "dry_run": true
+}
+```
+
+Пример allowlisted команды:
+
+```json
+{
+  "command": "git diff --check",
+  "timeout_ms": 120000
+}
+```
 
 * * *
 

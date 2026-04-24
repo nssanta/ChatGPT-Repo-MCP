@@ -86,6 +86,18 @@ The default surface is read-heavy, with a guarded write layer for UTF-8 text fil
 - `delete_path`
 - `ensure_directory`
 - `batch_edit_files`
+- `replace_lines`
+- `insert_before_line`
+- `insert_after_line`
+- `insert_before_heading`
+- `insert_after_heading`
+- `append_to_file`
+- `apply_patch`
+- `update_current_mission`
+
+### Safe Commands
+
+- `run_command`
 
 * * *
 
@@ -206,6 +218,11 @@ Default protections:
 - write tools default to `dry_run=true` and return unified diffs plus old/new SHA-256 hashes
 - binary/non-UTF-8 files are rejected
 - batch edits can run atomically and roll back on failure
+- small line/heading edit tools avoid large JSON payloads for markdown/code changes
+- `apply_patch` accepts unified diffs and validates them with `git apply --check`
+- `run_command` only runs allowlisted validation commands and never uses a shell
+
+Platform note: if ChatGPT blocks a tool call before it reaches the MCP server, the server cannot return a structured error. Retry with a smaller line/heading edit or `apply_patch`.
 
 Example dry-run replace:
 
@@ -241,6 +258,27 @@ Example batch preview:
   ],
   "atomic": true,
   "dry_run": true
+}
+```
+
+Example heading insert:
+
+```json
+{
+  "path": "missions/CURRENT.md",
+  "heading": "## Goal",
+  "content": "## P0 Addendum\n\nDo this next.\n\n",
+  "expected_sha256": "<current file sha256>",
+  "dry_run": true
+}
+```
+
+Example allowlisted command:
+
+```json
+{
+  "command": "git diff --check",
+  "timeout_ms": 120000
 }
 ```
 

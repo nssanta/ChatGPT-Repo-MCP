@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,10 @@ class WritePolicyError(ValueError):
 
 class StaleWriteError(ValueError):
     """Raised when expected_sha256 does not match the current file contents."""
+
+
+class PatchApplyError(ValueError):
+    """Raised when a unified diff cannot be validated or applied."""
 
 
 def sha256_text(text: str) -> str:
@@ -158,11 +164,37 @@ def _check_expected_hash(old_sha: str | None, expected_sha256: str | None, setti
         raise StaleWriteError(f"stale write rejected for {path}: expected {expected_sha256}, current {old_sha}")
 
 
+def structured_error(exc: Exception) -> dict[str, Any]:
+    message = str(exc)
+    if isinstance(exc, StaleWriteError):
+        return {"ok": False, "error_kind": "stale_expected_hash", "error": message}
+    if isinstance(exc, SecurityError):
+        return {"ok": False, "error_kind": "path_traversal_or_blocked", "error": message}
+    if isinstance(exc, WritePolicyError):
+        if "binary" in message or "UTF-8" in message:
+            kind = "binary_or_non_utf8"
+        elif "exceeds" in message:
+            kind = "payload_too_large"
+        elif "not writable" in message:
+            kind = "path_not_writable"
+        else:
+            kind = "write_policy_error"
+        return {"ok": False, "error_kind": kind, "error": message}
+    if isinstance(exc, PatchApplyError):
+        return {"ok": False, "error_kind": "patch_rejected", "error": message}
+    if isinstance(exc, FileNotFoundError):
+        return {"ok": False, "error_kind": "file_not_found", "error": message}
+    if "anchor not found" in message or "heading not found" in message or "fragment not found" in message:
+        return {"ok": False, "error_kind": "anchor_not_found", "error": message}
+    return {"ok": False, "error_kind": "validation_error", "error": message}
+
+
 def _build_result(path: str, old_text: str, new_text: str, *, dry_run: bool) -> dict[str, Any]:
     old_sha = sha256_text(old_text)
     new_sha = sha256_text(new_text)
     added, removed = _line_delta(old_text, new_text)
     return {
+        "ok": True,
         "path": path,
         "changed": old_text != new_text,
         "dry_run": dry_run,
@@ -186,6 +218,7 @@ def _path_result(
     lines_removed: int = 0,
 ) -> dict[str, Any]:
     return {
+        "ok": True,
         "path": path,
         "changed": changed,
         "dry_run": dry_run,
@@ -331,6 +364,160 @@ def delete_text_in_file(
     return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
 
 
+def _replace_lines_text(old_text: str, start_line: int, end_line: int, replacement: str) -> str:
+    lines = old_text.splitlines(keepends=True)
+    if start_line < 1 or end_line < start_line or end_line > len(lines):
+        raise ValueError("invalid line range")
+    replacement_text = replacement
+    if replacement_text and not replacement_text.endswith("\n"):
+        replacement_text += "\n"
+    return "".join(lines[: start_line - 1]) + replacement_text + "".join(lines[end_line:])
+
+
+def replace_lines(
+    path: str,
+    start_line: int,
+    end_line: int,
+    replacement: str,
+    settings: Settings,
+    *,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    target, rel = resolve_write_path(path, settings)
+    old_text = _read_existing_text(target, settings)
+    _check_expected_hash(sha256_text(old_text), expected_sha256, settings, rel)
+    new_text = _replace_lines_text(old_text, start_line, end_line, replacement)
+    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+
+
+def _insert_at_line_text(old_text: str, line: int, content: str, *, after: bool) -> str:
+    lines = old_text.splitlines(keepends=True)
+    if line < 1 or line > len(lines):
+        raise ValueError("invalid line number")
+    content_text = content
+    if content_text and not content_text.endswith("\n"):
+        content_text += "\n"
+    index = line if after else line - 1
+    return "".join(lines[:index]) + content_text + "".join(lines[index:])
+
+
+def insert_before_line(
+    path: str,
+    line: int,
+    content: str,
+    settings: Settings,
+    *,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    target, rel = resolve_write_path(path, settings)
+    old_text = _read_existing_text(target, settings)
+    _check_expected_hash(sha256_text(old_text), expected_sha256, settings, rel)
+    new_text = _insert_at_line_text(old_text, line, content, after=False)
+    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+
+
+def insert_after_line(
+    path: str,
+    line: int,
+    content: str,
+    settings: Settings,
+    *,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    target, rel = resolve_write_path(path, settings)
+    old_text = _read_existing_text(target, settings)
+    _check_expected_hash(sha256_text(old_text), expected_sha256, settings, rel)
+    new_text = _insert_at_line_text(old_text, line, content, after=True)
+    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+
+
+def _heading_line(old_text: str, heading: str) -> int:
+    wanted = heading.strip()
+    for index, line in enumerate(old_text.splitlines(), start=1):
+        if line.strip() == wanted:
+            return index
+    raise ValueError(f"heading not found: {heading}")
+
+
+def insert_before_heading(
+    path: str,
+    heading: str,
+    content: str,
+    settings: Settings,
+    *,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    target, rel = resolve_write_path(path, settings)
+    old_text = _read_existing_text(target, settings)
+    _check_expected_hash(sha256_text(old_text), expected_sha256, settings, rel)
+    line = _heading_line(old_text, heading)
+    new_text = _insert_at_line_text(old_text, line, content, after=False)
+    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+
+
+def insert_after_heading(
+    path: str,
+    heading: str,
+    content: str,
+    settings: Settings,
+    *,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    target, rel = resolve_write_path(path, settings)
+    old_text = _read_existing_text(target, settings)
+    _check_expected_hash(sha256_text(old_text), expected_sha256, settings, rel)
+    line = _heading_line(old_text, heading)
+    new_text = _insert_at_line_text(old_text, line, content, after=True)
+    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+
+
+def append_to_file(
+    path: str,
+    content: str,
+    settings: Settings,
+    *,
+    expected_sha256: str | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    target, rel = resolve_write_path(path, settings)
+    old_text = _read_existing_text(target, settings)
+    _check_expected_hash(sha256_text(old_text), expected_sha256, settings, rel)
+    separator = "" if not old_text or old_text.endswith("\n") else "\n"
+    new_text = old_text + separator + content
+    if new_text and not new_text.endswith("\n"):
+        new_text += "\n"
+    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+
+
+def update_current_mission(
+    section_title: str,
+    content: str,
+    settings: Settings,
+    *,
+    position: str = "before_goal",
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    path = "missions/CURRENT.md"
+    target, _ = resolve_write_path(path, settings)
+    old_text = _read_existing_text(target, settings)
+    block = f"## {section_title.strip()}\n\n{content.strip()}\n\n"
+    if position != "before_goal":
+        raise ValueError("position must be 'before_goal'")
+    return insert_before_heading(
+        path,
+        "## Goal",
+        block,
+        settings,
+        expected_sha256=sha256_text(old_text),
+        dry_run=dry_run,
+    )
+
+
 def ensure_directory(path: str, settings: Settings, *, dry_run: bool = True) -> dict[str, Any]:
     target, rel = resolve_write_dir_path(path, settings)
     changed = not target.exists()
@@ -393,7 +580,7 @@ def move_path(
 
 
 def _run_operation(operation: dict[str, Any], settings: Settings, *, dry_run: bool) -> dict[str, Any]:
-    op = operation.get("op")
+    op = operation.get("type") or operation.get("op")
     if op == "write":
         return write_text_file(
             operation["path"],
@@ -459,6 +646,60 @@ def _run_operation(operation: dict[str, Any], settings: Settings, *, dry_run: bo
         )
     if op == "ensure_directory":
         return ensure_directory(operation["path"], settings, dry_run=dry_run)
+    if op == "replace_lines":
+        return replace_lines(
+            operation["path"],
+            operation["start_line"],
+            operation["end_line"],
+            operation["replacement"],
+            settings,
+            expected_sha256=operation.get("expected_sha256"),
+            dry_run=dry_run,
+        )
+    if op == "insert_before_line":
+        return insert_before_line(
+            operation["path"],
+            operation["line"],
+            operation["content"],
+            settings,
+            expected_sha256=operation.get("expected_sha256"),
+            dry_run=dry_run,
+        )
+    if op == "insert_after_line":
+        return insert_after_line(
+            operation["path"],
+            operation["line"],
+            operation["content"],
+            settings,
+            expected_sha256=operation.get("expected_sha256"),
+            dry_run=dry_run,
+        )
+    if op == "insert_before_heading":
+        return insert_before_heading(
+            operation["path"],
+            operation["heading"],
+            operation["content"],
+            settings,
+            expected_sha256=operation.get("expected_sha256"),
+            dry_run=dry_run,
+        )
+    if op == "insert_after_heading":
+        return insert_after_heading(
+            operation["path"],
+            operation["heading"],
+            operation["content"],
+            settings,
+            expected_sha256=operation.get("expected_sha256"),
+            dry_run=dry_run,
+        )
+    if op == "append_to_file":
+        return append_to_file(
+            operation["path"],
+            operation["content"],
+            settings,
+            expected_sha256=operation.get("expected_sha256"),
+            dry_run=dry_run,
+        )
     raise ValueError(f"unsupported batch operation: {op}")
 
 
@@ -518,12 +759,14 @@ def batch_edit_files(
         try:
             result = _run_operation(operation, settings, dry_run=dry_run)
             result["operation_index"] = index
-            result["op"] = operation.get("op")
+            result["op"] = operation.get("type") or operation.get("op")
             result["ok"] = True
             results.append(result)
         except Exception as exc:  # noqa: BLE001
             failed_index = index
-            results.append({"operation_index": index, "op": operation.get("op"), "ok": False, "error": str(exc)})
+            error = structured_error(exc)
+            error.update({"operation_index": index, "op": operation.get("type") or operation.get("op")})
+            results.append(error)
             if atomic and not dry_run:
                 _restore_snapshot(snapshot, settings)
                 rollback_performed = True
@@ -539,4 +782,80 @@ def batch_edit_files(
         "combined_diff": _combined_diff(results, settings),
         "failed_operation_index": failed_index,
         "rollback_performed": rollback_performed,
+    }
+
+
+def _extract_patch_paths(patch: str) -> list[str]:
+    paths: list[str] = []
+    for line in patch.splitlines():
+        match = re.match(r"^(?:---|\+\+\+) [ab]/(.+)$", line)
+        if not match:
+            continue
+        rel = normalize_rel_path(match.group(1))
+        if rel != "/dev/null" and rel not in paths:
+            paths.append(rel)
+    return paths
+
+
+def _run_git_apply(settings: Settings, patch: str, *, check: bool) -> subprocess.CompletedProcess[str]:
+    args = ["git", "apply"]
+    if check:
+        args.append("--check")
+    return subprocess.run(
+        args,
+        cwd=str(settings.project_root),
+        input=patch,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=settings.subprocess_timeout,
+    )
+
+
+def _git_head(settings: Settings) -> str:
+    proc = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(settings.project_root),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=settings.subprocess_timeout,
+    )
+    if proc.returncode != 0:
+        raise PatchApplyError(proc.stderr.strip() or "git rev-parse HEAD failed")
+    return proc.stdout.strip()
+
+
+def apply_patch_diff(
+    patch: str,
+    settings: Settings,
+    *,
+    dry_run: bool = True,
+    expected_base_sha: str | None = None,
+) -> dict[str, Any]:
+    if len(patch.encode("utf-8")) > settings.max_patch_bytes:
+        raise WritePolicyError("patch exceeds MAX_PATCH_BYTES")
+    base_sha = _git_head(settings)
+    if expected_base_sha and expected_base_sha != base_sha:
+        raise StaleWriteError(f"stale base sha: expected {expected_base_sha}, current {base_sha}")
+    changed_files = _extract_patch_paths(patch)
+    if not changed_files:
+        raise PatchApplyError("patch does not contain git-style file paths")
+    for path in changed_files:
+        resolve_write_path(path, settings, create_if_missing=True)
+    check = _run_git_apply(settings, patch, check=True)
+    if check.returncode != 0:
+        raise PatchApplyError(check.stderr.strip() or check.stdout.strip() or "git apply --check failed")
+    if not dry_run:
+        apply = _run_git_apply(settings, patch, check=False)
+        if apply.returncode != 0:
+            raise PatchApplyError(apply.stderr.strip() or apply.stdout.strip() or "git apply failed")
+    return {
+        "ok": True,
+        "changed": bool(changed_files),
+        "dry_run": dry_run,
+        "applied": not dry_run,
+        "base_sha": base_sha,
+        "changed_files": changed_files,
+        "diff_unified": patch,
     }
