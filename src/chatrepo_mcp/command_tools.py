@@ -136,7 +136,7 @@ def _resolved_binaries(cwd: Path, env: dict[str, str]) -> dict[str, str | None]:
     result: dict[str, str | None] = {}
     for binary in ("node", "npm", "npx"):
         proc = subprocess.run(
-            ["/bin/bash", "-lc", f"command -v {binary}"],
+            ["/bin/bash", "-lc", _bash_command(f"command -v {binary}")],
             cwd=str(cwd),
             env=env,
             text=True,
@@ -146,6 +146,20 @@ def _resolved_binaries(cwd: Path, env: dict[str, str]) -> dict[str, str | None]:
         )
         result[binary] = proc.stdout.strip() or None
     return result
+
+
+def _bash_command(command: str) -> str:
+    return "\n".join(
+        [
+            "export NVM_DIR=${NVM_DIR:-/root/.nvm}",
+            "[ -s /etc/profile ] && . /etc/profile",
+            "[ -s /root/.profile ] && . /root/.profile",
+            "[ -s /root/.bashrc ] && . /root/.bashrc",
+            "[ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\"",
+            "command -v npm >/dev/null 2>&1 || export PATH=/root/.nvm/versions/node/v22.22.0/bin:$PATH",
+            command,
+        ]
+    )
 
 
 def _command_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -189,7 +203,7 @@ def run_command(
     resolved = _resolved_binaries(run_cwd, run_env)
     try:
         proc = subprocess.run(
-            ["/bin/bash", "-lc", normalized],
+            ["/bin/bash", "-lc", _bash_command(normalized)],
             cwd=str(run_cwd),
             env=run_env,
             text=True,
