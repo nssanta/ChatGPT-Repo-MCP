@@ -94,6 +94,8 @@ TEST_PRESETS = {
     "full_gateway_tests": "npm run test -w packages/gateway -- --run",
 }
 
+JOB_PROCS: dict[str, subprocess.Popen[str]] = {}
+
 
 def _split_command(command: str, *, allow_shell_operators: bool = False) -> list[str]:
     if not allow_shell_operators and any(token in command for token in SHELL_TOKENS):
@@ -385,6 +387,7 @@ def start_command_job(
     )
     out_handle.close()
     err_handle.close()
+    JOB_PROCS[job_id] = proc
     meta = {
         "job_id": job_id,
         "command": normalized,
@@ -402,7 +405,16 @@ def start_command_job(
 def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None = 200) -> dict[str, Any]:
     meta = _read_job_meta(settings, job_id)
     pid = int(meta["pid"])
-    running = Path(f"/proc/{pid}").exists()
+    proc = JOB_PROCS.get(job_id)
+    return_code = proc.poll() if proc is not None else None
+    if proc is not None and return_code is not None:
+        JOB_PROCS.pop(job_id, None)
+    running = return_code is None and Path(f"/proc/{pid}").exists()
+    stat_path = Path(f"/proc/{pid}/stat")
+    if running and stat_path.exists():
+        parts = stat_path.read_text(encoding="utf-8", errors="replace").split()
+        if len(parts) > 2 and parts[2] == "Z":
+            running = False
     _, out_path, err_path = _job_paths(settings, job_id)
     stdout = _redact(out_path.read_text(encoding="utf-8", errors="replace") if out_path.exists() else "")
     stderr = _redact(err_path.read_text(encoding="utf-8", errors="replace") if err_path.exists() else "")
@@ -423,6 +435,7 @@ def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None =
         "job_id": job_id,
         "status": meta["status"],
         "running": running,
+        "exit_code": return_code,
         "timed_out": timed_out,
         "duration_ms": duration_ms,
         "command": meta["command"],
