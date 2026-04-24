@@ -41,6 +41,8 @@ def make_settings(tmp_path: Path, allow_hidden_default: bool = False) -> Setting
         max_patch_bytes=500000,
         max_command_output_chars=200000,
         command_timeout_ms=120000,
+        command_audit_log_path=tmp_path / "audit.log",
+        mcp_auth_mode="none",
     )
 
 
@@ -129,6 +131,21 @@ def test_find_and_search_skip_blocked_paths(tmp_path: Path) -> None:
 
     assert found["matches"] == ["src/main.py"]
     assert [item["path"] for item in searched["results"]] == ["src/main.py"]
+
+
+def test_search_text_supports_multiple_paths(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, allow_hidden_default=True)
+    (tmp_path / "packages" / "agent").mkdir(parents=True)
+    (tmp_path / "packages" / "gateway").mkdir(parents=True)
+    (tmp_path / "packages" / "agent" / "a.ts").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "packages" / "gateway" / "b.ts").write_text("needle\n", encoding="utf-8")
+
+    result = search_text("needle", settings, paths=["packages/agent", "packages/gateway"])
+
+    assert {item["path"] for item in result["results"]} == {
+        "packages/agent/a.ts",
+        "packages/gateway/b.ts",
+    }
 
 
 def test_symbol_search_falls_back_without_scanning_blocked_paths(tmp_path: Path) -> None:

@@ -54,6 +54,8 @@ class Settings:
     max_patch_bytes: int
     max_command_output_chars: int
     command_timeout_ms: int
+    command_audit_log_path: Path
+    mcp_auth_mode: str
 
     @staticmethod
     def from_env() -> "Settings":
@@ -98,4 +100,8 @@ class Settings:
             max_patch_bytes=_env_int("MAX_PATCH_BYTES", 500_000),
             max_command_output_chars=_env_int("MAX_COMMAND_OUTPUT_CHARS", 200_000),
             command_timeout_ms=_env_int("COMMAND_TIMEOUT_MS", 120_000),
+            command_audit_log_path=Path(
+                os.getenv("COMMAND_AUDIT_LOG_PATH", "/var/log/chatrepo-mcp/commands.log")
+            ).expanduser(),
+            mcp_auth_mode=os.getenv("MCP_AUTH_MODE", "none"),
         )

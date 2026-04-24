@@ -3,7 +3,14 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from .command_tools import CommandPolicyError, run_command
+from .command_tools import (
+    CommandPolicyError,
+    ConfirmationRequiredError,
+    GitCommitError,
+    git_commit,
+    run_command,
+    run_commands,
+)
 from .config import Settings
 from .edit_tools import (
     append_to_file,
@@ -180,6 +187,7 @@ def find_files_tool(
 def search_text_tool(
     query: str,
     path: str = ".",
+    paths: list[str] | None = None,
     regex: bool = False,
     case_sensitive: bool = False,
     limit: int = 100,
@@ -189,6 +197,7 @@ def search_text_tool(
         query=query,
         settings=settings,
         path=path,
+        paths=paths,
         regex=regex,
         case_sensitive=case_sensitive,
         limit=limit,
@@ -199,27 +208,27 @@ def search_text_tool(
     name="symbol_search",
     annotations={**READ_ONLY, "title": "Symbol Search"},
 )
-def symbol_search_tool(symbol: str, path: str = ".", limit: int = 100) -> dict:
+def symbol_search_tool(symbol: str, path: str = ".", paths: list[str] | None = None, limit: int = 100) -> dict:
     """Heuristically search for declarations or references of a symbol name."""
-    return symbol_search(symbol=symbol, settings=settings, path=path, limit=limit)
+    return symbol_search(symbol=symbol, settings=settings, path=path, paths=paths, limit=limit)
 
 
 @mcp.tool(
     name="recent_changes",
     annotations={**READ_ONLY, "title": "Recent Changes"},
 )
-def recent_changes_tool(path: str = ".", limit: int = 100) -> dict:
+def recent_changes_tool(path: str = ".", paths: list[str] | None = None, limit: int = 100) -> dict:
     """Return files sorted by recent filesystem modification time."""
-    return recent_changes(settings=settings, path=path, limit=limit)
+    return recent_changes(settings=settings, path=path, paths=paths, limit=limit)
 
 
 @mcp.tool(
     name="todo_scan",
     annotations={**READ_ONLY, "title": "Todo Scan"},
 )
-def todo_scan_tool(path: str = ".", limit: int = 100) -> dict:
+def todo_scan_tool(path: str = ".", paths: list[str] | None = None, limit: int = 100) -> dict:
     """Find TODO, FIXME, XXX, and HACK markers across the repository."""
-    return todo_scan(settings=settings, path=path, limit=limit)
+    return todo_scan(settings=settings, path=path, paths=paths, limit=limit)
 
 
 @mcp.tool(
@@ -297,6 +306,7 @@ def git_grep_tool(
     query: str,
     revision: str | None = None,
     pathspec: str | None = None,
+    paths: list[str] | None = None,
     case_sensitive: bool = False,
 ) -> dict:
     """Search tracked content through git grep, optionally at a revision."""
@@ -305,6 +315,7 @@ def git_grep_tool(
         query=query,
         revision=revision,
         pathspec=pathspec,
+        paths=paths,
         case_sensitive=case_sensitive,
     )
 
@@ -351,6 +362,8 @@ TOOL_NAMES = [
     "apply_patch",
     "update_current_mission",
     "run_command",
+    "run_commands",
+    "git_commit",
 ]
 
 
@@ -418,6 +431,8 @@ def _write_config_info() -> dict:
         "max_patch_bytes": settings.max_patch_bytes,
         "max_command_output_chars": settings.max_command_output_chars,
         "command_timeout_ms": settings.command_timeout_ms,
+        "command_audit_log_path": str(settings.command_audit_log_path),
+        "mcp_auth_mode": settings.mcp_auth_mode,
     }
 
 
@@ -428,9 +443,26 @@ def _write_result(func, *args, **kwargs) -> dict:
         return structured_error(exc)
 
 
-def _command_result(command: str, timeout_ms: int | None = None) -> dict:
+def _command_result(
+    command: str,
+    timeout_ms: int | None = None,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    max_output_chars: int | None = None,
+    tail_lines: int | None = 200,
+) -> dict:
     try:
-        return run_command(command=command, settings=settings, timeout_ms=timeout_ms)
+        return run_command(
+            command=command,
+            settings=settings,
+            timeout_ms=timeout_ms,
+            cwd=cwd,
+            env=env,
+            max_output_chars=max_output_chars,
+            tail_lines=tail_lines,
+        )
+    except ConfirmationRequiredError as exc:
+        return {"ok": False, "error_kind": "confirmation_required", "reason": str(exc), "command": command}
     except CommandPolicyError as exc:
         return {"ok": False, "error_kind": "command_not_allowed", "error": str(exc), "command": command}
     except Exception as exc:  # noqa: BLE001
@@ -492,6 +524,7 @@ def smoke_all_tool() -> dict:
         ("insert_before_heading", {"path": "missions/CURRENT.md", "heading": "## Goal", "content": "\n", "dry_run": True}),
         ("batch_edit_files", {"operations": [{"op": "ensure_directory", "path": "reports/mcp-smoke"}], "dry_run": True}),
         ("run_command", {"command": "git diff --check"}),
+        ("run_command", {"command": "npm --version"}),
     ]:
         key = "blocked_policy" if name == "read_text_file" and args["path"] == ".env" else name
         if name == "replace_text_in_file":
@@ -509,7 +542,7 @@ def smoke_all_tool() -> dict:
             except Exception:
                 pass
         if name == "run_command":
-            key = "run_command_git_diff_check"
+            key = "run_command_npm_visibility" if args["command"] == "npm --version" else "run_command_git_diff_check"
         try:
             result = _command_result(**args) if name == "run_command" else _batch_dispatch(name, args)
             ok = key != "blocked_policy"
@@ -909,9 +942,11 @@ def apply_patch_tool(
     annotations={**WRITE_ACTION, "title": "Update Current Mission"},
 )
 def update_current_mission_tool(
-    section_title: str,
-    content: str,
+    section_title: str | None = None,
+    content: str | None = None,
     position: str = "before_goal",
+    preset: str | None = None,
+    chunks: list[str] | None = None,
     dry_run: bool = True,
 ) -> dict:
     """Use this when you need to add a mission section to missions/CURRENT.md before ## Goal."""
@@ -921,6 +956,8 @@ def update_current_mission_tool(
         content=content,
         settings=settings,
         position=position,
+        preset=preset,
+        chunks=chunks,
         dry_run=dry_run,
     )
 
@@ -929,6 +966,54 @@ def update_current_mission_tool(
     name="run_command",
     annotations={**WRITE_ACTION, "title": "Run Command"},
 )
-def run_command_tool(command: str, timeout_ms: int | None = None) -> dict:
+def run_command_tool(
+    command: str,
+    timeout_ms: int | None = None,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    max_output_chars: int | None = None,
+    tail_lines: int | None = 200,
+) -> dict:
     """Use this when you need to run an allowlisted validation command and report exit code."""
-    return _command_result(command=command, timeout_ms=timeout_ms)
+    return _command_result(
+        command=command,
+        timeout_ms=timeout_ms,
+        cwd=cwd,
+        env=env,
+        max_output_chars=max_output_chars,
+        tail_lines=tail_lines,
+    )
+
+
+@mcp.tool(
+    name="run_commands",
+    annotations={**WRITE_ACTION, "title": "Run Commands"},
+)
+def run_commands_tool(
+    commands: list[str],
+    stop_on_failure: bool = False,
+    timeout_ms: int | None = None,
+    tail_lines: int | None = 200,
+) -> dict:
+    """Use this when you need to run several allowlisted validation commands and compare exit codes."""
+    return run_commands(
+        commands=commands,
+        settings=settings,
+        stop_on_failure=stop_on_failure,
+        timeout_ms=timeout_ms,
+        tail_lines=tail_lines,
+    )
+
+
+@mcp.tool(
+    name="git_commit",
+    annotations={**WRITE_ACTION, "title": "Git Commit"},
+)
+def git_commit_tool(message: str, paths: list[str], dry_run: bool = True) -> dict:
+    """Use this when you need to commit exactly listed files without pushing."""
+    try:
+        return git_commit(message=message, paths=paths, settings=settings, dry_run=dry_run)
+    except GitCommitError as exc:
+        return {"ok": False, "error_kind": "git_commit_rejected", "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "git_commit_failed", "error": str(exc)}

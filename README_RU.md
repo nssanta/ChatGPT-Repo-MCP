@@ -93,6 +93,8 @@ MCP сервер для ChatGPT, который даёт модели глубо
 - `append_to_file`
 - `apply_patch`
 - `update_current_mission`
+- `run_commands`
+- `git_commit`
 
 ### Безопасные команды
 
@@ -218,7 +220,9 @@ chatrepo-mcp/
 - batch edits могут выполняться атомарно с rollback
 - line/heading edit tools уменьшают payload для markdown/code правок
 - `apply_patch` принимает unified diff и проверяет его через `git apply --check`
-- `run_command` запускает только allowlisted проверки и не использует shell/bash
+- `run_command` запускает allowlisted проверки через `/bin/bash -lc`, чтобы нормально резолвились Node/NPM toolchains
+- `run_commands` запускает несколько allowlisted проверок и возвращает exit code по каждой команде
+- `git_commit` может сделать commit только явно перечисленных путей, без push
 
 Важно: если ChatGPT заблокировал tool call до отправки на MCP, сервер не может вернуть structured error. Повторите меньшим line/heading edit или через `apply_patch`.
 
@@ -242,6 +246,32 @@ chatrepo-mcp/
   "timeout_ms": 120000
 }
 ```
+
+Пример multi-path search:
+
+```json
+{
+  "query": "traceMsg.messageId",
+  "paths": ["tests/telegram/scenarios", "packages/integration/test"],
+  "limit": 100
+}
+```
+
+Пример mission preset без большого payload:
+
+```json
+{
+  "preset": "mandatory_system_tool_log",
+  "position": "before_goal",
+  "dry_run": true
+}
+```
+
+`run_command` не является произвольным терминалом. Команды делятся так:
+
+- safe validation: выбранные `git`, `npm run build`, `npm run test`, `npx vitest` и scenario `npx tsx`
+- confirmation required: service/live команды вроде `bash scripts/start_local.sh`, `docker compose`, `systemctl`
+- forbidden: destructive команды, чтение секретов, произвольная сеть и повышение прав
 
 * * *
 

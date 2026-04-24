@@ -53,7 +53,7 @@ cd /opt/evaai/ChatGPT-Repo-MCP
 
 Expected: 19 tools including `repo_info`, `read_text_file`, `find_files`, `git_blame`, and `git_grep`.
 
-For the V3 developer workflow layer, expected tools: 41. The list should include:
+For the V4 developer workflow layer, expected tools: 43. The list should include:
 
 - `write_text_file`
 - `replace_text_in_file`
@@ -73,6 +73,8 @@ For the V3 developer workflow layer, expected tools: 41. The list should include
 - `apply_patch`
 - `update_current_mission`
 - `run_command`
+- `run_commands`
+- `git_commit`
 
 ## V2 Smoke
 
@@ -84,7 +86,11 @@ URL="$(journalctl -u chatrepo-mcp-tunnel -n 80 --no-pager | grep -o 'https://[^ 
 
 Then call `doctor` and `smoke_all` from ChatGPT. `smoke_all.ok` should be `true`.
 
-`run_command` is not a general bash shell. It only runs allowlisted validation commands such as `git diff --check`, selected `npm run test ...`, `npx vitest run ...`, and selected `npx tsx tests/telegram/scenarios/*.test.ts` commands.
+`run_command` is not a general bash shell. It validates commands against an allowlist, then runs them with `/bin/bash -lc` from `PROJECT_ROOT` so `node`, `npm`, and `npx` resolve like they do for an operator shell.
+
+Allowed examples include `git diff --check`, `git diff`, `npm run build -w packages/agent`, selected `npm run test ...`, `npx vitest run ...`, and selected scenario `npx tsx ...` commands.
+
+Service/live commands return `confirmation_required` and are not executed by default.
 
 ## Safe Backend Deploy Without URL Change
 

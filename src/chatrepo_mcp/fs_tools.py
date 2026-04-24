@@ -287,18 +287,24 @@ def search_text(
     query: str,
     settings: Settings,
     path: str = ".",
+    paths: list[str] | None = None,
     regex: bool = False,
     case_sensitive: bool = False,
     limit: int = 100,
 ) -> dict[str, Any]:
-    target = resolve_repo_path(path, settings, allow_hidden=settings.allow_hidden_default)
     limit = min(limit, settings.max_search_results)
     results: list[dict[str, Any]] = []
     root = settings.project_root.resolve()
+    search_paths = paths if paths else [path]
+    rel_paths = []
 
-    ok, rel_path = _entry_allowed(root, target, settings, allow_hidden=settings.allow_hidden_default)
-    if not ok or rel_path is None:
-        return {"query": query, "regex": regex, "results": [], "count": 0}
+    for item in search_paths:
+        target = resolve_repo_path(item, settings, allow_hidden=settings.allow_hidden_default)
+        ok, rel_path = _entry_allowed(root, target, settings, allow_hidden=settings.allow_hidden_default)
+        if ok and rel_path is not None:
+            rel_paths.append(rel_path)
+    if not rel_paths:
+        return {"query": query, "regex": regex, "path": path, "paths": search_paths, "results": [], "count": 0}
 
     cmd = [
         "rg",
@@ -316,7 +322,7 @@ def search_text(
     if not case_sensitive:
         cmd.append("--ignore-case")
     cmd.extend(_rg_exclude_globs(settings))
-    cmd.extend(["--", query, rel_path])
+    cmd.extend(["--", query, *rel_paths])
 
     proc = subprocess.run(
         cmd,
@@ -343,10 +349,16 @@ def search_text(
         results.append({"path": file_path, "line": int(line_no), "text": _truncate(text, 400)})
         if len(results) >= limit:
             break
-    return {"query": query, "regex": regex, "results": results, "count": len(results)}
+    return {"query": query, "regex": regex, "path": path, "paths": search_paths, "results": results, "count": len(results)}
 
 
-def symbol_search(symbol: str, settings: Settings, path: str = ".", limit: int = 100) -> dict[str, Any]:
+def symbol_search(
+    symbol: str,
+    settings: Settings,
+    path: str = ".",
+    paths: list[str] | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
     patterns = [
         rf"\bdef\s+{re.escape(symbol)}\b",
         rf"\bclass\s+{re.escape(symbol)}\b",
@@ -360,40 +372,39 @@ def symbol_search(symbol: str, settings: Settings, path: str = ".", limit: int =
     ]
     results: list[dict[str, Any]] = []
     for pattern in patterns:
-        batch = search_text(pattern, settings, path=path, regex=True, case_sensitive=True, limit=limit)
+        batch = search_text(pattern, settings, path=path, paths=paths, regex=True, case_sensitive=True, limit=limit)
         for item in batch["results"]:
             if item not in results:
                 results.append(item)
             if len(results) >= limit:
                 return {"symbol": symbol, "results": results, "count": len(results)}
     if not results:
-        batch = search_text(symbol, settings, path=path, regex=False, case_sensitive=True, limit=limit)
+        batch = search_text(symbol, settings, path=path, paths=paths, regex=False, case_sensitive=True, limit=limit)
         results.extend(batch["results"])
     return {"symbol": symbol, "results": results[:limit], "count": len(results[:limit])}
 
 
-def recent_changes(settings: Settings, path: str = ".", limit: int = 100) -> dict[str, Any]:
-    target = resolve_repo_path(path, settings, allow_hidden=settings.allow_hidden_default)
+def recent_changes(settings: Settings, path: str = ".", paths: list[str] | None = None, limit: int = 100) -> dict[str, Any]:
     root = settings.project_root.resolve()
     items = []
+    search_paths = paths if paths else [path]
 
-    if target.is_file():
-        candidates = _iter_files(root, target, settings, allow_hidden=settings.allow_hidden_default)
-    else:
-        candidates = _iter_files(root, target, settings, allow_hidden=settings.allow_hidden_default)
-
-    for file_path in candidates:
-        rel = rel_posix_lexical(root, file_path)
-        stat = file_path.stat()
-        items.append({"path": rel, "mtime": stat.st_mtime, "size": stat.st_size})
+    for item in search_paths:
+        target = resolve_repo_path(item, settings, allow_hidden=settings.allow_hidden_default)
+        for file_path in _iter_files(root, target, settings, allow_hidden=settings.allow_hidden_default):
+            rel = rel_posix_lexical(root, file_path)
+            stat = file_path.stat()
+            row = {"path": rel, "mtime": stat.st_mtime, "size": stat.st_size}
+            if row not in items:
+                items.append(row)
 
     items.sort(key=lambda x: x["mtime"], reverse=True)
     items = items[:limit]
-    return {"path": rel_posix(root, target), "files": items, "count": len(items)}
+    return {"path": path, "paths": search_paths, "files": items, "count": len(items)}
 
 
-def todo_scan(settings: Settings, path: str = ".", limit: int = 100) -> dict[str, Any]:
-    return search_text(r"\b(TODO|FIXME|XXX|HACK)\b", settings, path=path, regex=True, limit=limit)
+def todo_scan(settings: Settings, path: str = ".", paths: list[str] | None = None, limit: int = 100) -> dict[str, Any]:
+    return search_text(r"\b(TODO|FIXME|XXX|HACK)\b", settings, path=path, paths=paths, regex=True, limit=limit)
 
 
 def _parse_requirements_txt(path: Path) -> list[str]:

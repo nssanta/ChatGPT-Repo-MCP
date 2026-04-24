@@ -94,6 +94,8 @@ The default surface is read-heavy, with a guarded write layer for UTF-8 text fil
 - `append_to_file`
 - `apply_patch`
 - `update_current_mission`
+- `run_commands`
+- `git_commit`
 
 ### Safe Commands
 
@@ -220,7 +222,9 @@ Default protections:
 - batch edits can run atomically and roll back on failure
 - small line/heading edit tools avoid large JSON payloads for markdown/code changes
 - `apply_patch` accepts unified diffs and validates them with `git apply --check`
-- `run_command` only runs allowlisted validation commands and never uses a shell
+- `run_command` runs allowlisted validation commands through `/bin/bash -lc` so Node/NPM toolchains resolve normally
+- `run_commands` runs several allowlisted checks and returns per-command exit codes
+- `git_commit` can commit explicitly listed paths without push
 
 Platform note: if ChatGPT blocks a tool call before it reaches the MCP server, the server cannot return a structured error. Retry with a smaller line/heading edit or `apply_patch`.
 
@@ -281,6 +285,32 @@ Example allowlisted command:
   "timeout_ms": 120000
 }
 ```
+
+Example multi-path search:
+
+```json
+{
+  "query": "traceMsg.messageId",
+  "paths": ["tests/telegram/scenarios", "packages/integration/test"],
+  "limit": 100
+}
+```
+
+Example mission preset:
+
+```json
+{
+  "preset": "mandatory_system_tool_log",
+  "position": "before_goal",
+  "dry_run": true
+}
+```
+
+`run_command` is not arbitrary terminal access. Commands are grouped as:
+
+- safe validation: selected `git`, `npm run build`, `npm run test`, `npx vitest`, and scenario `npx tsx` commands
+- confirmation required: service/live commands such as `bash scripts/start_local.sh`, `docker compose`, and `systemctl`
+- forbidden: destructive commands, secret reads, arbitrary network commands, and privilege changes
 
 * * *
 

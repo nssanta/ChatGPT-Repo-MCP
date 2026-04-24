@@ -57,7 +57,9 @@ Git information is obtained through `git` CLI commands executed with:
 
 ### 4) Safe command runner
 
-`run_command` is not a bash shell. It parses commands with `shlex`, rejects shell operators, runs with `shell=False`, and only allows known validation commands such as `git diff --check`, selected `npm run test ...`, `npx vitest run ...`, and selected `npx tsx tests/telegram/scenarios/*.test.ts` commands.
+`run_command` is not arbitrary terminal access. It validates commands against an allowlist, rejects shell operators and forbidden executables, then runs approved commands with `/bin/bash -lc` from `PROJECT_ROOT`. This gives the agent normal Node/NPM environment resolution without exposing free-form shell execution.
+
+Command output is redacted for common secret patterns and command executions are audit-logged without raw secrets.
 
 ### 5) Text/code search through ripgrep
 
@@ -108,6 +110,8 @@ This server blocks sensitive patterns by default, especially `.env` and private 
 ### Commands
 
 - allowlisted validation commands with exit code, stdout, stderr, duration, and timeout reporting
+- multi-command validation batches
+- controlled `git_commit` for explicitly listed paths, without push
 
 ## Output philosophy
 

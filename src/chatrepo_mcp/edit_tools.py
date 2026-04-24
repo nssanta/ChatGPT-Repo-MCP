@@ -495,19 +495,34 @@ def append_to_file(
 
 
 def update_current_mission(
-    section_title: str,
-    content: str,
+    section_title: str | None,
+    content: str | None,
     settings: Settings,
     *,
     position: str = "before_goal",
+    preset: str | None = None,
+    chunks: list[str] | None = None,
     dry_run: bool = True,
 ) -> dict[str, Any]:
     path = "missions/CURRENT.md"
     target, _ = resolve_write_path(path, settings)
     old_text = _read_existing_text(target, settings)
-    block = f"## {section_title.strip()}\n\n{content.strip()}\n\n"
     if position != "before_goal":
         raise ValueError("position must be 'before_goal'")
+    if preset:
+        if preset != "mandatory_system_tool_log":
+            raise ValueError(f"unsupported mission preset: {preset}")
+        section_title = "P0 Addendum - mandatory separate system tool log"
+        content = (
+            "Agents must emit a separate visible system/tool log for mandatory tool actions. "
+            "Do not hide required tool execution inside prose summaries. Report exact commands, "
+            "diff checks, test names, exit codes, and any skipped checks."
+        )
+    if chunks:
+        content = "\n".join(chunk.strip() for chunk in chunks if chunk.strip())
+    if not section_title or not content:
+        raise ValueError("provide preset, chunks, or section_title/content")
+    block = f"## {section_title.strip()}\n\n{content.strip()}\n\n"
     return insert_before_heading(
         path,
         "## Goal",

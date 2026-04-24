@@ -73,6 +73,8 @@ def make_settings(tmp_path: Path, *, writable_globs: tuple[str, ...] | None = No
         max_patch_bytes=500000,
         max_command_output_chars=200000,
         command_timeout_ms=120000,
+        command_audit_log_path=tmp_path / "audit.log",
+        mcp_auth_mode="none",
     )
 
 
@@ -421,6 +423,25 @@ def test_update_current_mission_before_goal(tmp_path: Path) -> None:
 
     assert result["changed"] is True
     assert "## P0 Addendum\n\nDo this.\n\n## Goal" in path.read_text(encoding="utf-8")
+
+
+def test_update_current_mission_preset_and_chunks(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    path, _ = write_allowed_file(tmp_path, "missions/CURRENT.md", "# Mission\n\n## Goal\nShip\n")
+
+    result = update_current_mission(None, None, settings, preset="mandatory_system_tool_log", dry_run=False)
+    result = update_current_mission(
+        "Chunked",
+        None,
+        settings,
+        chunks=["one", "two"],
+        dry_run=False,
+    )
+
+    text = path.read_text(encoding="utf-8")
+    assert "mandatory separate system tool log" in text
+    assert "## Chunked\n\none\ntwo\n\n" in text
+    assert result["changed"] is True
 
 
 def test_apply_patch_dry_run_apply_and_rejects_blocked_path(tmp_path: Path) -> None:

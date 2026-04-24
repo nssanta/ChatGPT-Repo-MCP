@@ -127,6 +127,7 @@ def git_grep(
     query: str,
     revision: str | None = None,
     pathspec: str | None = None,
+    paths: list[str] | None = None,
     case_sensitive: bool = False,
 ) -> dict[str, Any]:
     args = ["grep", "-nI"]
@@ -135,7 +136,9 @@ def git_grep(
     args.append(query)
     if revision:
         args.append(revision)
-    if pathspec:
+    if paths:
+        args.extend(["--", *paths])
+    elif pathspec:
         args.extend(["--", pathspec])
     output = _run_git(args, settings, max_bytes=settings.max_response_chars)
     results = []
