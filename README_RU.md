@@ -42,8 +42,8 @@ MCP сервер для ChatGPT, который даёт модели глубо
 - создание / перемещение / удаление файлов
 - atomic batch edits
 - diff preview и SHA-256 защита от stale writes
-- без shell execution
-- без commit и push
+- repo-local command runner с защищёнными policy modes
+- controlled local commit helper без push
 
 * * *
 
@@ -117,6 +117,7 @@ ChatGPT гораздо лучше понимает проект, когда ви
 - валидация пути на каждой файловой операции
 - блокировка секретов по шаблонам
 - лимиты на размер чтения и объём вывода
+- подробные MCP tool schemas с enum-аргументами там, где ChatGPT нужен фиксированный выбор
 
 * * *
 
@@ -227,8 +228,11 @@ chatrepo-mcp/
 - `run_command` запускает allowlisted проверки через `/bin/bash -lc`, чтобы нормально резолвились Node/NPM toolchains
 - `run_commands` запускает несколько allowlisted проверок и возвращает exit code по каждой команде
 - `git_commit` может сделать commit только явно перечисленных путей, без push
+- input schemas содержат описания параметров и enum'ы для типовых выборов, чтобы ChatGPT Developer Mode надёжнее выбирал нужный tool
 
 Важно: если ChatGPT заблокировал tool call до отправки на MCP, сервер не может вернуть structured error. Повторите меньшим line/heading edit или через `apply_patch`.
+
+Важно про подтверждения: MCP сервер может помечать command/test/edit tools как non-destructive там, где это честно, но ChatGPT всё равно может спросить подтверждение на raw bash, restart сервисов, delete/move, commit или действия, где всплывают sensitive данные проекта. Это внешний safety layer ChatGPT, а не настройка внутри этого сервера.
 
 Пример вставки перед заголовком:
 

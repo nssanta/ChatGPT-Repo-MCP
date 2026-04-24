@@ -43,8 +43,8 @@ The default surface is read-heavy, with a guarded write layer for UTF-8 text fil
 - atomic multi-file batch edits
 - unified diff previews
 - expected SHA-256 checks for stale-write protection
-- no shell execution tool
-- no commit or push actions
+- repo-local command runner with guarded policy modes
+- controlled local commit helper without push
 
 * * *
 
@@ -118,6 +118,7 @@ This server gives ChatGPT a practical codebase surface similar to what developer
 - path validation on every file operation
 - blocked secret patterns by default
 - capped file and command output
+- descriptive MCP tool schemas with enum arguments where ChatGPT needs a fixed choice
 
 * * *
 
@@ -229,8 +230,11 @@ Default protections:
 - `run_command` runs allowlisted validation commands through `/bin/bash -lc` so Node/NPM toolchains resolve normally
 - `run_commands` runs several allowlisted checks and returns per-command exit codes
 - `git_commit` can commit explicitly listed paths without push
+- tool input schemas include parameter descriptions and enums for common choices, so ChatGPT Developer Mode can select tools more reliably
 
 Platform note: if ChatGPT blocks a tool call before it reaches the MCP server, the server cannot return a structured error. Retry with a smaller line/heading edit or `apply_patch`.
+
+Approval note: the MCP server can mark command/test/edit tools as non-destructive where accurate, but ChatGPT may still ask for confirmation for raw bash, service restarts, delete/move operations, commits, or actions that mention sensitive project data. That prompt is controlled by ChatGPT's external safety layer, not by this server.
 
 Example dry-run replace:
 

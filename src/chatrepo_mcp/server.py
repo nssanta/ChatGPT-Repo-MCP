@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from typing import Annotated, Any, Literal
+
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.provider import TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import Field
 
 from .command_tools import (
     CommandPolicyError,
     ConfirmationRequiredError,
     GitCommitError,
+    TEST_PRESETS,
     cancel_command_job,
     get_command_job,
     git_commit,
@@ -113,6 +117,53 @@ WRITE_ACTION = {
     "destructiveHint": True,
     "openWorldHint": False,
 }
+
+SAFE_EDIT_ACTION = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "openWorldHint": False,
+}
+
+COMMAND_ACTION = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "openWorldHint": True,
+}
+
+
+RepoPath = Annotated[str, Field(description="Repository-relative path. Absolute paths and ../ traversal are rejected.")]
+OptionalRepoPath = Annotated[
+    str | None,
+    Field(description="Optional repository-relative working directory. Defaults to the repository root."),
+]
+ExpectedSha = Annotated[
+    str | None,
+    Field(description="Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes."),
+]
+DryRun = Annotated[bool, Field(description="When true, return the diff/preview without changing files.")]
+SmallText = Annotated[str, Field(description="UTF-8 text payload. Prefer compact chunks for ChatGPT tool reliability.")]
+LineNumber = Annotated[int, Field(description="1-based line number.")]
+TailLines = Annotated[
+    int | None,
+    Field(description="Number of trailing stdout/stderr lines to include in command results. Use null to omit tails."),
+]
+TimeoutMs = Annotated[
+    int | None,
+    Field(description="Optional timeout in milliseconds, capped by server configuration."),
+]
+TestPreset = Literal[
+    "agent_message_processor",
+    "gateway_adapter",
+    "tg_d59",
+    "tg_d62",
+    "tg_d64",
+    "tg_d67",
+    "full_agent_tests",
+    "full_gateway_tests",
+]
+MissionPreset = Literal["mandatory_system_tool_log"]
+MissionPosition = Literal["before_goal"]
+InsertPosition = Literal["before", "after"]
 
 
 @mcp.tool(
@@ -633,8 +684,19 @@ def context_bootstrap_tool() -> dict:
     name="batch_call",
     annotations={**READ_ONLY, "title": "Batch Call"},
 )
-def batch_call_tool(calls: list[dict]) -> dict:
-    """Run up to 10 read-only tool calls in one request."""
+def batch_call_tool(
+    calls: Annotated[
+        list[dict[str, Any]],
+        Field(
+            description=(
+                "Up to 10 calls shaped as {'tool': '<tool_name>', 'args': {...}}. "
+                "Only read-only tools are allowed, except selected write tools with dry_run=true."
+            ),
+            max_length=10,
+        ),
+    ],
+) -> dict:
+    """Use this to run up to 10 read-only repo inspection calls, or write tools only when their dry_run is true."""
     if len(calls) > 10:
         raise ValueError("too many calls; max is 10")
     results = []
@@ -656,11 +718,11 @@ def batch_call_tool(calls: list[dict]) -> dict:
     annotations={**WRITE_ACTION, "title": "Write Text File"},
 )
 def write_text_file_tool(
-    path: str,
-    content: str,
-    create_if_missing: bool = False,
-    expected_sha256: str | None = None,
-    dry_run: bool = True,
+    path: RepoPath,
+    content: SmallText,
+    create_if_missing: Annotated[bool, Field(description="When true, create the file if it does not exist.")] = False,
+    expected_sha256: ExpectedSha = None,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to replace the entire contents of an allowed UTF-8 repo text file."""
     return _write_result(
@@ -676,15 +738,15 @@ def write_text_file_tool(
 
 @mcp.tool(
     name="replace_text_in_file",
-    annotations={**WRITE_ACTION, "title": "Replace Text In File"},
+    annotations={**SAFE_EDIT_ACTION, "title": "Replace Text In File"},
 )
 def replace_text_in_file_tool(
-    path: str,
-    find: str,
-    replace: str,
-    replace_all: bool = False,
-    expected_sha256: str | None = None,
-    dry_run: bool = True,
+    path: RepoPath,
+    find: Annotated[str, Field(description="Exact UTF-8 text fragment to find.")],
+    replace: Annotated[str, Field(description="Replacement UTF-8 text.")],
+    replace_all: Annotated[bool, Field(description="When false, replace exactly one occurrence.")] = False,
+    expected_sha256: ExpectedSha = None,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to replace an exact text fragment in an allowed UTF-8 repo file."""
     return _write_result(
@@ -701,15 +763,15 @@ def replace_text_in_file_tool(
 
 @mcp.tool(
     name="insert_text_in_file",
-    annotations={**WRITE_ACTION, "title": "Insert Text In File"},
+    annotations={**SAFE_EDIT_ACTION, "title": "Insert Text In File"},
 )
 def insert_text_in_file_tool(
-    path: str,
-    anchor: str,
-    position: str,
-    content: str,
-    expected_sha256: str | None = None,
-    dry_run: bool = True,
+    path: RepoPath,
+    anchor: Annotated[str, Field(description="Exact text anchor already present in the target file.")],
+    position: Annotated[InsertPosition, Field(description="Insert content before or after the exact anchor.")],
+    content: SmallText,
+    expected_sha256: ExpectedSha = None,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to insert text before or after an exact anchor in an allowed repo file."""
     return _write_result(
@@ -729,12 +791,12 @@ def insert_text_in_file_tool(
     annotations={**WRITE_ACTION, "title": "Delete Text In File"},
 )
 def delete_text_in_file_tool(
-    path: str,
-    find: str | None = None,
-    start_line: int | None = None,
-    end_line: int | None = None,
-    expected_sha256: str | None = None,
-    dry_run: bool = True,
+    path: RepoPath,
+    find: Annotated[str | None, Field(description="Exact text to delete. Use either this or start_line/end_line.")] = None,
+    start_line: Annotated[int | None, Field(description="1-based first line to delete when deleting by line range.")] = None,
+    end_line: Annotated[int | None, Field(description="1-based last line to delete when deleting by line range.")] = None,
+    expected_sha256: ExpectedSha = None,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to delete exact text or a line range from an allowed repo file."""
     return _write_result(
@@ -751,13 +813,13 @@ def delete_text_in_file_tool(
 
 @mcp.tool(
     name="create_text_file",
-    annotations={**WRITE_ACTION, "title": "Create Text File"},
+    annotations={**SAFE_EDIT_ACTION, "title": "Create Text File"},
 )
 def create_text_file_tool(
-    path: str,
-    content: str,
-    overwrite: bool = False,
-    dry_run: bool = True,
+    path: RepoPath,
+    content: SmallText,
+    overwrite: Annotated[bool, Field(description="When true, replace an existing text file.")] = False,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to create a new UTF-8 text file in the repository."""
     return _write_result(create_text_file, path=path, content=content, settings=settings, overwrite=overwrite, dry_run=dry_run)
@@ -768,11 +830,11 @@ def create_text_file_tool(
     annotations={**WRITE_ACTION, "title": "Move Path"},
 )
 def move_path_tool(
-    source_path: str,
-    destination_path: str,
-    overwrite: bool = False,
-    expected_sha256: str | None = None,
-    dry_run: bool = True,
+    source_path: RepoPath,
+    destination_path: RepoPath,
+    overwrite: Annotated[bool, Field(description="When true, overwrite the destination path if it exists.")] = False,
+    expected_sha256: ExpectedSha = None,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to rename or move an allowed UTF-8 repo file."""
     return _write_result(
@@ -791,9 +853,9 @@ def move_path_tool(
     annotations={**WRITE_ACTION, "title": "Delete Path"},
 )
 def delete_path_tool(
-    path: str,
-    expected_sha256: str | None = None,
-    dry_run: bool = True,
+    path: RepoPath,
+    expected_sha256: ExpectedSha = None,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to delete an allowed UTF-8 repo file."""
     return _write_result(delete_path, path=path, settings=settings, expected_sha256=expected_sha256, dry_run=dry_run)
@@ -801,9 +863,9 @@ def delete_path_tool(
 
 @mcp.tool(
     name="ensure_directory",
-    annotations={**WRITE_ACTION, "title": "Ensure Directory"},
+    annotations={**SAFE_EDIT_ACTION, "title": "Ensure Directory"},
 )
-def ensure_directory_tool(path: str, dry_run: bool = True) -> dict:
+def ensure_directory_tool(path: RepoPath, dry_run: DryRun = True) -> dict:
     """Use this when you need to create a directory for docs, reports, packets, or source files."""
     return _write_result(ensure_directory, path=path, settings=settings, dry_run=dry_run)
 
@@ -813,25 +875,33 @@ def ensure_directory_tool(path: str, dry_run: bool = True) -> dict:
     annotations={**WRITE_ACTION, "title": "Batch Edit Files"},
 )
 def batch_edit_files_tool(
-    operations: list[dict],
-    atomic: bool = True,
-    dry_run: bool = True,
+    operations: Annotated[
+        list[dict[str, Any]],
+        Field(
+            description=(
+                "Ordered edit operations. Each item must include op plus operation-specific fields. "
+                "Supported op values: write, replace, insert, delete_text, create_file, move, delete_file, ensure_directory."
+            )
+        ),
+    ],
+    atomic: Annotated[bool, Field(description="When true, rollback all earlier operations if any operation fails.")] = True,
+    dry_run: DryRun = True,
 ) -> dict:
-    """Use this when several related repo edits must be previewed or applied together."""
+    """Use this when several related repo edits must be previewed or applied together with one combined diff."""
     return _write_result(batch_edit_files, operations=operations, settings=settings, atomic=atomic, dry_run=dry_run)
 
 
 @mcp.tool(
     name="replace_lines",
-    annotations={**WRITE_ACTION, "title": "Replace Lines"},
+    annotations={**SAFE_EDIT_ACTION, "title": "Replace Lines"},
 )
 def replace_lines_tool(
-    path: str,
-    start_line: int,
-    end_line: int,
-    replacement: str,
-    expected_sha256: str | None = None,
-    dry_run: bool = True,
+    path: RepoPath,
+    start_line: LineNumber,
+    end_line: LineNumber,
+    replacement: SmallText,
+    expected_sha256: ExpectedSha = None,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to replace a small line range in an allowed UTF-8 repo file."""
     return _write_result(
@@ -848,14 +918,14 @@ def replace_lines_tool(
 
 @mcp.tool(
     name="insert_before_line",
-    annotations={**WRITE_ACTION, "title": "Insert Before Line"},
+    annotations={**SAFE_EDIT_ACTION, "title": "Insert Before Line"},
 )
 def insert_before_line_tool(
-    path: str,
-    line: int,
-    content: str,
-    expected_sha256: str | None = None,
-    dry_run: bool = True,
+    path: RepoPath,
+    line: LineNumber,
+    content: SmallText,
+    expected_sha256: ExpectedSha = None,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to insert compact text before a specific line number."""
     return _write_result(
@@ -871,14 +941,14 @@ def insert_before_line_tool(
 
 @mcp.tool(
     name="insert_after_line",
-    annotations={**WRITE_ACTION, "title": "Insert After Line"},
+    annotations={**SAFE_EDIT_ACTION, "title": "Insert After Line"},
 )
 def insert_after_line_tool(
-    path: str,
-    line: int,
-    content: str,
-    expected_sha256: str | None = None,
-    dry_run: bool = True,
+    path: RepoPath,
+    line: LineNumber,
+    content: SmallText,
+    expected_sha256: ExpectedSha = None,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to insert compact text after a specific line number."""
     return _write_result(
@@ -894,14 +964,14 @@ def insert_after_line_tool(
 
 @mcp.tool(
     name="insert_before_heading",
-    annotations={**WRITE_ACTION, "title": "Insert Before Heading"},
+    annotations={**SAFE_EDIT_ACTION, "title": "Insert Before Heading"},
 )
 def insert_before_heading_tool(
-    path: str,
-    heading: str,
-    content: str,
-    expected_sha256: str | None = None,
-    dry_run: bool = True,
+    path: RepoPath,
+    heading: Annotated[str, Field(description="Exact Markdown heading text, for example '## Goal'.")],
+    content: SmallText,
+    expected_sha256: ExpectedSha = None,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to insert markdown before a heading with a small payload."""
     return _write_result(
@@ -917,14 +987,14 @@ def insert_before_heading_tool(
 
 @mcp.tool(
     name="insert_after_heading",
-    annotations={**WRITE_ACTION, "title": "Insert After Heading"},
+    annotations={**SAFE_EDIT_ACTION, "title": "Insert After Heading"},
 )
 def insert_after_heading_tool(
-    path: str,
-    heading: str,
-    content: str,
-    expected_sha256: str | None = None,
-    dry_run: bool = True,
+    path: RepoPath,
+    heading: Annotated[str, Field(description="Exact Markdown heading text, for example '## Goal'.")],
+    content: SmallText,
+    expected_sha256: ExpectedSha = None,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to insert markdown after a heading with a small payload."""
     return _write_result(
@@ -940,13 +1010,13 @@ def insert_after_heading_tool(
 
 @mcp.tool(
     name="append_to_file",
-    annotations={**WRITE_ACTION, "title": "Append To File"},
+    annotations={**SAFE_EDIT_ACTION, "title": "Append To File"},
 )
 def append_to_file_tool(
-    path: str,
-    content: str,
-    expected_sha256: str | None = None,
-    dry_run: bool = True,
+    path: RepoPath,
+    content: SmallText,
+    expected_sha256: ExpectedSha = None,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to append a small text block to an allowed UTF-8 repo file."""
     return _write_result(
@@ -964,9 +1034,12 @@ def append_to_file_tool(
     annotations={**WRITE_ACTION, "title": "Apply Patch"},
 )
 def apply_patch_tool(
-    patch: str,
-    dry_run: bool = True,
-    expected_base_sha: str | None = None,
+    patch: Annotated[str, Field(description="Unified diff patch text using diff --git file headers.")],
+    dry_run: DryRun = True,
+    expected_base_sha: Annotated[
+        str | None,
+        Field(description="Optional expected git HEAD/base SHA before applying the patch."),
+    ] = None,
 ) -> dict:
     """Use this when you need to apply a unified diff patch across one or more allowed repo files."""
     return _write_result(apply_patch_diff, patch=patch, settings=settings, dry_run=dry_run, expected_base_sha=expected_base_sha)
@@ -974,15 +1047,27 @@ def apply_patch_tool(
 
 @mcp.tool(
     name="update_current_mission",
-    annotations={**WRITE_ACTION, "title": "Update Current Mission"},
+    annotations={**SAFE_EDIT_ACTION, "title": "Update Current Mission"},
 )
 def update_current_mission_tool(
-    section_title: str | None = None,
-    content: str | None = None,
-    position: str = "before_goal",
-    preset: str | None = None,
-    chunks: list[str] | None = None,
-    dry_run: bool = True,
+    section_title: Annotated[
+        str | None,
+        Field(description="Markdown section heading/title to insert when not using a preset."),
+    ] = None,
+    content: Annotated[
+        str | None,
+        Field(description="Markdown content for the new section. Prefer chunks for long content."),
+    ] = None,
+    position: Annotated[MissionPosition, Field(description="Where to insert the mission section.")] = "before_goal",
+    preset: Annotated[
+        MissionPreset | None,
+        Field(description="Optional server-side mission template. Use this to avoid large ChatGPT payloads."),
+    ] = None,
+    chunks: Annotated[
+        list[str] | None,
+        Field(description="Optional ordered content chunks joined server-side for safer long mission updates."),
+    ] = None,
+    dry_run: DryRun = True,
 ) -> dict:
     """Use this when you need to add a mission section to missions/CURRENT.md before ## Goal."""
     return _write_result(
@@ -999,16 +1084,33 @@ def update_current_mission_tool(
 
 @mcp.tool(
     name="run_command",
-    annotations={**WRITE_ACTION, "title": "Run Command"},
+    annotations={**COMMAND_ACTION, "title": "Run Command"},
 )
 def run_command_tool(
-    command: str,
-    timeout_ms: int | None = None,
-    cwd: str | None = None,
-    env: dict[str, str] | None = None,
-    max_output_chars: int | None = None,
-    tail_lines: int | None = 200,
-    confirmed: bool = False,
+    command: Annotated[
+        str,
+        Field(
+            description=(
+                "Repo-local command to run through /bin/bash -lc. Prefer run_test_preset for known tests. "
+                "Server policy blocks secrets paths and forbidden executables."
+            )
+        ),
+    ],
+    timeout_ms: TimeoutMs = None,
+    cwd: OptionalRepoPath = None,
+    env: Annotated[
+        dict[str, str] | None,
+        Field(description="Optional environment overrides. Keys must be shell-safe names; secret values are redacted from output."),
+    ] = None,
+    max_output_chars: Annotated[
+        int | None,
+        Field(description="Optional stdout/stderr character cap, capped by server configuration."),
+    ] = None,
+    tail_lines: TailLines = 200,
+    confirmed: Annotated[
+        bool,
+        Field(description="Set true only after the owner explicitly confirms a command that server policy marks risky."),
+    ] = False,
 ) -> dict:
     """Use this when you need to run an allowlisted validation command and report exit code."""
     return _command_result(
@@ -1024,14 +1126,20 @@ def run_command_tool(
 
 @mcp.tool(
     name="run_commands",
-    annotations={**WRITE_ACTION, "title": "Run Commands"},
+    annotations={**COMMAND_ACTION, "title": "Run Commands"},
 )
 def run_commands_tool(
-    commands: list[str],
-    stop_on_failure: bool = False,
-    timeout_ms: int | None = None,
-    tail_lines: int | None = 200,
-    confirmed: bool = False,
+    commands: Annotated[
+        list[str],
+        Field(description="Ordered repo-local commands to run. Use this instead of shell operators like &&.", min_length=1),
+    ],
+    stop_on_failure: Annotated[bool, Field(description="When true, stop after the first non-zero exit code.")] = False,
+    timeout_ms: TimeoutMs = None,
+    tail_lines: TailLines = 200,
+    confirmed: Annotated[
+        bool,
+        Field(description="Set true only after the owner explicitly confirms commands that server policy marks risky."),
+    ] = False,
 ) -> dict:
     """Use this when you need to run several allowlisted validation commands and compare exit codes."""
     return run_commands(
@@ -1046,13 +1154,16 @@ def run_commands_tool(
 
 @mcp.tool(
     name="run_test_preset",
-    annotations={**WRITE_ACTION, "title": "Run Test Preset"},
+    annotations={**COMMAND_ACTION, "title": "Run Test Preset"},
 )
 def run_test_preset_tool(
-    preset: str,
-    timeout_ms: int | None = None,
-    tail_lines: int | None = 200,
-    background: bool = False,
+    preset: Annotated[
+        TestPreset,
+        Field(description=f"Named test preset. Available presets: {', '.join(TEST_PRESETS)}."),
+    ],
+    timeout_ms: TimeoutMs = None,
+    tail_lines: TailLines = 200,
+    background: Annotated[bool, Field(description="When true, start the preset as a background job and poll it later.")] = False,
 ) -> dict:
     """Use this when you need to run a named test preset without sending a long command string."""
     try:
@@ -1071,15 +1182,24 @@ def run_test_preset_tool(
 
 @mcp.tool(
     name="start_command_job",
-    annotations={**WRITE_ACTION, "title": "Start Command Job"},
+    annotations={**COMMAND_ACTION, "title": "Start Command Job"},
 )
 def start_command_job_tool(
-    command: str,
-    timeout_ms: int | None = None,
-    cwd: str | None = None,
-    env: dict[str, str] | None = None,
-    tail_lines: int | None = 200,
-    confirmed: bool = False,
+    command: Annotated[
+        str,
+        Field(description="Long-running repo-local command to start in the background. Poll with get_command_job."),
+    ],
+    timeout_ms: TimeoutMs = None,
+    cwd: OptionalRepoPath = None,
+    env: Annotated[
+        dict[str, str] | None,
+        Field(description="Optional environment overrides. Secret-like output is redacted."),
+    ] = None,
+    tail_lines: TailLines = 200,
+    confirmed: Annotated[
+        bool,
+        Field(description="Set true only after owner confirmation for policy-gated commands."),
+    ] = False,
 ) -> dict:
     """Use this for long-running allowlisted repo commands that should be polled later."""
     try:
