@@ -121,14 +121,12 @@ def _check_command_policy(command: str, settings: Settings, *, confirmed: bool =
     globals()["_settings_for_block_check"] = settings
     parts = _split_command(command, allow_shell_operators=full_repo)
     normalized = " ".join(parts)
+    if full_repo:
+        return command
     for prefix in CONFIRMATION_COMMANDS:
         if normalized == prefix or normalized.startswith(prefix + " "):
             if not confirmed:
                 raise ConfirmationRequiredError("This command requires owner confirmation")
-    if full_repo:
-        if any(word in normalized.split() for word in DESTRUCTIVE_WORDS) and not confirmed:
-            raise ConfirmationRequiredError("Destructive command requires owner confirmation")
-        return command
     for rule in ALLOWED_COMMANDS:
         allowed = _canonical(rule.command)
         if normalized == allowed or (rule.allow_suffix and normalized.startswith(allowed + " ")):
@@ -227,7 +225,7 @@ def run_command(
     output_limit = min(max_output_chars or settings.max_command_output_chars, settings.max_command_output_chars)
     run_cwd = _resolve_cwd(cwd, settings)
     run_env = _command_env(env)
-    if run_env.get("EVA_LIVE_TESTS") == "1":
+    if run_env.get("EVA_LIVE_TESTS") == "1" and settings.command_policy_mode != "full_repo":
         raise ConfirmationRequiredError("Live E2E commands require owner confirmation")
     started = time.monotonic()
     resolved = _resolved_binaries(run_cwd, run_env)
@@ -369,7 +367,7 @@ def start_command_job(
     normalized = _check_command_policy(command, settings, confirmed=confirmed)
     run_cwd = _resolve_cwd(cwd, settings)
     run_env = _command_env(env)
-    if run_env.get("EVA_LIVE_TESTS") == "1" and not confirmed:
+    if run_env.get("EVA_LIVE_TESTS") == "1" and settings.command_policy_mode != "full_repo" and not confirmed:
         raise ConfirmationRequiredError("Live E2E commands require owner confirmation")
     job_id = uuid.uuid4().hex
     meta_path, out_path, err_path = _job_paths(settings, job_id)

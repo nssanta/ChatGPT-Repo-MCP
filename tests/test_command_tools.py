@@ -100,6 +100,18 @@ def test_run_command_confirmation_required(tmp_path: Path) -> None:
             assert True
 
 
+def test_full_repo_mode_does_not_require_confirmation(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo"})
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "start_local.sh").write_text("#!/usr/bin/env bash\necho started\n", encoding="utf-8")
+
+    result = run_command("bash scripts/start_local.sh", settings)
+
+    assert result["ok"] is True
+    assert result["stdout_tail"] == "started"
+
+
 def test_run_commands_collects_exit_codes(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     import subprocess
