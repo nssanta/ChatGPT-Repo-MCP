@@ -95,6 +95,10 @@ The default surface is read-heavy, with a guarded write layer for UTF-8 text fil
 - `apply_patch`
 - `update_current_mission`
 - `run_commands`
+- `run_test_preset`
+- `start_command_job`
+- `get_command_job`
+- `cancel_command_job`
 - `git_commit`
 
 ### Safe Commands
@@ -306,7 +310,20 @@ Example mission preset:
 }
 ```
 
-`run_command` is not arbitrary terminal access. Commands are grouped as:
+In `COMMAND_POLICY_MODE=full_repo`, `run_command` can execute repo-local bash through `/bin/bash -lc`. It is still constrained to `PROJECT_ROOT`, redacts output, and gates destructive/service commands.
+
+Long-running E2E should use background jobs:
+
+```json
+{
+  "command": "npm run test -w packages/agent -- --run",
+  "timeout_ms": 300000
+}
+```
+
+Start with `start_command_job`, then poll with `get_command_job`.
+
+Commands are grouped as:
 
 - safe validation: selected `git`, `npm run build`, `npm run test`, `npx vitest`, and scenario `npx tsx` commands
 - confirmation required: service/live commands such as `bash scripts/start_local.sh`, `docker compose`, and `systemctl`

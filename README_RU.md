@@ -94,6 +94,10 @@ MCP сервер для ChatGPT, который даёт модели глубо
 - `apply_patch`
 - `update_current_mission`
 - `run_commands`
+- `run_test_preset`
+- `start_command_job`
+- `get_command_job`
+- `cancel_command_job`
 - `git_commit`
 
 ### Безопасные команды
@@ -267,7 +271,20 @@ chatrepo-mcp/
 }
 ```
 
-`run_command` не является произвольным терминалом. Команды делятся так:
+В режиме `COMMAND_POLICY_MODE=full_repo` `run_command` может выполнять repo-local bash через `/bin/bash -lc`. Он всё равно ограничен `PROJECT_ROOT`, редактирует секреты в выводе и требует подтверждение для destructive/service команд.
+
+Долгие E2E лучше запускать background job:
+
+```json
+{
+  "command": "npm run test -w packages/agent -- --run",
+  "timeout_ms": 300000
+}
+```
+
+Старт через `start_command_job`, потом polling через `get_command_job`.
+
+Команды делятся так:
 
 - safe validation: выбранные `git`, `npm run build`, `npm run test`, `npx vitest` и scenario `npx tsx`
 - confirmation required: service/live команды вроде `bash scripts/start_local.sh`, `docker compose`, `systemctl`

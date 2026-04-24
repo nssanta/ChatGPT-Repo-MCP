@@ -56,6 +56,9 @@ class Settings:
     command_timeout_ms: int
     command_audit_log_path: Path
     mcp_auth_mode: str
+    mcp_bearer_token: str | None
+    command_policy_mode: str
+    command_jobs_dir: Path
 
     @staticmethod
     def from_env() -> "Settings":
@@ -99,9 +102,12 @@ class Settings:
             allow_move_delete_operations=_env_bool("ALLOW_MOVE_DELETE_OPERATIONS", True),
             max_patch_bytes=_env_int("MAX_PATCH_BYTES", 500_000),
             max_command_output_chars=_env_int("MAX_COMMAND_OUTPUT_CHARS", 200_000),
-            command_timeout_ms=_env_int("COMMAND_TIMEOUT_MS", 120_000),
+            command_timeout_ms=_env_int("COMMAND_TIMEOUT_MS", 300_000),
             command_audit_log_path=Path(
                 os.getenv("COMMAND_AUDIT_LOG_PATH", "/var/log/chatrepo-mcp/commands.log")
             ).expanduser(),
             mcp_auth_mode=os.getenv("MCP_AUTH_MODE", "none"),
+            mcp_bearer_token=os.getenv("MCP_BEARER_TOKEN"),
+            command_policy_mode=os.getenv("COMMAND_POLICY_MODE", "allowlist"),
+            command_jobs_dir=Path(os.getenv("COMMAND_JOBS_DIR", "/tmp/chatrepo-mcp-jobs")).expanduser(),
         )

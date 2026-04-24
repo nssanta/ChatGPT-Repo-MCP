@@ -1,6 +1,14 @@
 from pathlib import Path
 
-from chatrepo_mcp.command_tools import CommandPolicyError, ConfirmationRequiredError, git_commit, run_command, run_commands
+from chatrepo_mcp.command_tools import (
+    CommandPolicyError,
+    ConfirmationRequiredError,
+    get_command_job,
+    git_commit,
+    run_command,
+    run_commands,
+    start_command_job,
+)
 from chatrepo_mcp.config import Settings
 
 
@@ -37,6 +45,9 @@ def make_settings(tmp_path: Path) -> Settings:
         command_timeout_ms=120000,
         command_audit_log_path=tmp_path / "audit.log",
         mcp_auth_mode="none",
+        mcp_bearer_token=None,
+        command_policy_mode="allowlist",
+        command_jobs_dir=tmp_path / "jobs",
     )
 
 
@@ -129,3 +140,35 @@ def test_git_commit_dry_run_does_not_stage(tmp_path: Path) -> None:
     assert result["ok"] is True
     assert "new" in result["staged_diff"]
     assert staged.stdout == ""
+
+
+def test_full_repo_mode_allows_shell_operators_inside_repo(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo"})
+
+    result = run_command("node --version && npm --version", settings)
+
+    assert result["ok"] is True
+    assert result["exit_code"] == 0
+
+
+def test_command_timeout_is_structured(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo", "command_timeout_ms": 50})
+
+    result = run_command("sleep 1", settings)
+
+    assert result["ok"] is False
+    assert result["timed_out"] is True
+    assert result["exit_code"] is None
+
+
+def test_background_command_job_can_be_polled(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo"})
+
+    started = start_command_job("printf done", settings)
+    result = get_command_job(started["job_id"], settings)
+
+    assert started["ok"] is True
+    assert result["job_id"] == started["job_id"]

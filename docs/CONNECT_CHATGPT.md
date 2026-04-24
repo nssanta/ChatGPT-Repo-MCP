@@ -10,22 +10,23 @@ You need:
 
 Official docs say developer mode is enabled via **Settings → Apps → Advanced settings → Developer mode** and that app creation supports **SSE** / **streaming HTTP** with **OAuth**, **No Authentication**, or **Mixed Authentication**.
 
-## Recommended v1 settings
+## Recommended full-agent settings
 
 Use:
 
 - **Name:** Repo Reader
 - **Description:** Read-only repository and git analysis for one project
 - **URL:** `https://YOUR_DOMAIN/mcp`
-- **Authentication:** `Без авторизации`
+- **Authentication:** `Bearer token`
 
-Why `Без авторизации` for v1:
+For full-agent tools, use Bearer auth. The server reads:
 
-- it is the fastest path to a working integration
-- your tools are read-only
-- this server blocks secrets and stays inside one repo
+```text
+MCP_AUTH_MODE=bearer
+MCP_BEARER_TOKEN=<secret>
+```
 
-OAuth can be added later if you decide to expose user-specific data or write actions. MCP authorization docs recommend OAuth 2.1 for sensitive or user-specific operations.
+No-auth is only acceptable for temporary read-only experiments. OAuth/HMAC can be added later, but Bearer is the pragmatic default for a private single-owner VPS connector.
 
 ## Steps
 

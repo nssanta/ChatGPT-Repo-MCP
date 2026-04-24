@@ -42,7 +42,7 @@ Use the printed URL with `/mcp` appended, for example:
 https://example.trycloudflare.com/mcp
 ```
 
-ChatGPT auth mode: `No authentication`.
+ChatGPT auth mode: `Bearer token` when `MCP_AUTH_MODE=bearer`.
 
 ## Verify Tools
 
@@ -53,7 +53,7 @@ cd /opt/evaai/ChatGPT-Repo-MCP
 
 Expected: 19 tools including `repo_info`, `read_text_file`, `find_files`, `git_blame`, and `git_grep`.
 
-For the V4 developer workflow layer, expected tools: 43. The list should include:
+For the V5 full agent workflow layer, expected tools: 47. The list should include:
 
 - `write_text_file`
 - `replace_text_in_file`
@@ -74,6 +74,10 @@ For the V4 developer workflow layer, expected tools: 43. The list should include
 - `update_current_mission`
 - `run_command`
 - `run_commands`
+- `run_test_preset`
+- `start_command_job`
+- `get_command_job`
+- `cancel_command_job`
 - `git_commit`
 
 ## V2 Smoke
@@ -86,11 +90,26 @@ URL="$(journalctl -u chatrepo-mcp-tunnel -n 80 --no-pager | grep -o 'https://[^ 
 
 Then call `doctor` and `smoke_all` from ChatGPT. `smoke_all.ok` should be `true`.
 
-`run_command` is not a general bash shell. It validates commands against an allowlist, then runs them with `/bin/bash -lc` from `PROJECT_ROOT` so `node`, `npm`, and `npx` resolve like they do for an operator shell.
+`run_command` can run full repo bash when `COMMAND_POLICY_MODE=full_repo`. It still keeps `cwd` inside `PROJECT_ROOT`, redacts output, and gates service/destructive commands behind confirmation.
 
 Allowed examples include `git diff --check`, `git diff`, `npm run build -w packages/agent`, selected `npm run test ...`, `npx vitest run ...`, and selected scenario `npx tsx ...` commands.
 
 Service/live commands return `confirmation_required` and are not executed by default.
+
+For long E2E runs, prefer `start_command_job` and poll with `get_command_job` instead of holding one MCP call open.
+
+## Auth Env
+
+Use a root-only env file such as `/etc/chatrepo-mcp.env`:
+
+```text
+MCP_AUTH_MODE=bearer
+MCP_BEARER_TOKEN=<secret>
+COMMAND_POLICY_MODE=full_repo
+COMMAND_TIMEOUT_MS=300000
+```
+
+Do not commit this file.
 
 ## Safe Backend Deploy Without URL Change
 

@@ -43,6 +43,9 @@ def make_settings(tmp_path: Path, allow_hidden_default: bool = False) -> Setting
         command_timeout_ms=120000,
         command_audit_log_path=tmp_path / "audit.log",
         mcp_auth_mode="none",
+        mcp_bearer_token=None,
+        command_policy_mode="allowlist",
+        command_jobs_dir=tmp_path / "jobs",
     )
 
 

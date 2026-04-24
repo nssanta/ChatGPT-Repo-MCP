@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from mcp.server.auth.provider import AccessToken
+from mcp.server.auth.provider import TokenVerifier
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -7,9 +10,13 @@ from .command_tools import (
     CommandPolicyError,
     ConfirmationRequiredError,
     GitCommitError,
+    cancel_command_job,
+    get_command_job,
     git_commit,
     run_command,
     run_commands,
+    run_test_preset,
+    start_command_job,
 )
 from .config import Settings
 from .edit_tools import (
@@ -60,12 +67,34 @@ from .git_tools import (
 
 settings = Settings.from_env()
 
+
+class StaticBearerVerifier(TokenVerifier):
+    async def verify_token(self, token: str) -> AccessToken | None:
+        if settings.mcp_auth_mode != "bearer":
+            return AccessToken(token=token, client_id="no-auth", scopes=["repo"], expires_at=None)
+        if settings.mcp_bearer_token and token == settings.mcp_bearer_token:
+            return AccessToken(token=token, client_id="chatgpt", scopes=["repo"], expires_at=None)
+        return None
+
+
+auth_settings = (
+    AuthSettings(
+        issuer_url="https://localhost",
+        resource_server_url="https://localhost",
+        required_scopes=["repo"],
+    )
+    if settings.mcp_auth_mode == "bearer"
+    else None
+)
+
 mcp = FastMCP(
     settings.app_name,
     host=settings.host,
     port=settings.port,
     streamable_http_path="/mcp",
     json_response=True,
+    token_verifier=StaticBearerVerifier() if settings.mcp_auth_mode == "bearer" else None,
+    auth=auth_settings,
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=settings.enable_dns_rebinding_protection,
         allowed_hosts=list(settings.allowed_hosts),
@@ -363,6 +392,10 @@ TOOL_NAMES = [
     "update_current_mission",
     "run_command",
     "run_commands",
+    "run_test_preset",
+    "start_command_job",
+    "get_command_job",
+    "cancel_command_job",
     "git_commit",
 ]
 
@@ -450,6 +483,7 @@ def _command_result(
     env: dict[str, str] | None = None,
     max_output_chars: int | None = None,
     tail_lines: int | None = 200,
+    confirmed: bool = False,
 ) -> dict:
     try:
         return run_command(
@@ -460,6 +494,7 @@ def _command_result(
             env=env,
             max_output_chars=max_output_chars,
             tail_lines=tail_lines,
+            confirmed=confirmed,
         )
     except ConfirmationRequiredError as exc:
         return {"ok": False, "error_kind": "confirmation_required", "reason": str(exc), "command": command}
@@ -973,6 +1008,7 @@ def run_command_tool(
     env: dict[str, str] | None = None,
     max_output_chars: int | None = None,
     tail_lines: int | None = 200,
+    confirmed: bool = False,
 ) -> dict:
     """Use this when you need to run an allowlisted validation command and report exit code."""
     return _command_result(
@@ -982,6 +1018,7 @@ def run_command_tool(
         env=env,
         max_output_chars=max_output_chars,
         tail_lines=tail_lines,
+        confirmed=confirmed,
     )
 
 
@@ -994,6 +1031,7 @@ def run_commands_tool(
     stop_on_failure: bool = False,
     timeout_ms: int | None = None,
     tail_lines: int | None = 200,
+    confirmed: bool = False,
 ) -> dict:
     """Use this when you need to run several allowlisted validation commands and compare exit codes."""
     return run_commands(
@@ -1002,7 +1040,88 @@ def run_commands_tool(
         stop_on_failure=stop_on_failure,
         timeout_ms=timeout_ms,
         tail_lines=tail_lines,
+        confirmed=confirmed,
     )
+
+
+@mcp.tool(
+    name="run_test_preset",
+    annotations={**WRITE_ACTION, "title": "Run Test Preset"},
+)
+def run_test_preset_tool(
+    preset: str,
+    timeout_ms: int | None = None,
+    tail_lines: int | None = 200,
+    background: bool = False,
+) -> dict:
+    """Use this when you need to run a named test preset without sending a long command string."""
+    try:
+        return run_test_preset(
+            preset=preset,
+            settings=settings,
+            timeout_ms=timeout_ms,
+            tail_lines=tail_lines,
+            background=background,
+        )
+    except CommandPolicyError as exc:
+        return {"ok": False, "error_kind": "command_not_allowed", "error": str(exc), "preset": preset}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "command_failed", "error": str(exc), "preset": preset}
+
+
+@mcp.tool(
+    name="start_command_job",
+    annotations={**WRITE_ACTION, "title": "Start Command Job"},
+)
+def start_command_job_tool(
+    command: str,
+    timeout_ms: int | None = None,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    tail_lines: int | None = 200,
+    confirmed: bool = False,
+) -> dict:
+    """Use this for long-running allowlisted repo commands that should be polled later."""
+    try:
+        return start_command_job(
+            command=command,
+            settings=settings,
+            timeout_ms=timeout_ms,
+            cwd=cwd,
+            env=env,
+            tail_lines=tail_lines,
+            confirmed=confirmed,
+        )
+    except ConfirmationRequiredError as exc:
+        return {"ok": False, "error_kind": "confirmation_required", "reason": str(exc), "command": command}
+    except CommandPolicyError as exc:
+        return {"ok": False, "error_kind": "command_not_allowed", "error": str(exc), "command": command}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "command_failed", "error": str(exc), "command": command}
+
+
+@mcp.tool(
+    name="get_command_job",
+    annotations={**READ_ONLY, "title": "Get Command Job"},
+)
+def get_command_job_tool(job_id: str, tail_lines: int | None = 200) -> dict:
+    """Use this to poll a background command job and read output tails."""
+    try:
+        return get_command_job(job_id=job_id, settings=settings, tail_lines=tail_lines)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "job_error", "error": str(exc), "job_id": job_id}
+
+
+@mcp.tool(
+    name="cancel_command_job",
+    annotations={**WRITE_ACTION, "title": "Cancel Command Job"},
+)
+def cancel_command_job_tool(job_id: str) -> dict:
+    """Use this to cancel a background command job."""
+    try:
+        return cancel_command_job(job_id=job_id, settings=settings)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "job_error", "error": str(exc), "job_id": job_id}
 
 
 @mcp.tool(

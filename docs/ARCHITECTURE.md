@@ -57,7 +57,7 @@ Git information is obtained through `git` CLI commands executed with:
 
 ### 4) Safe command runner
 
-`run_command` is not arbitrary terminal access. It validates commands against an allowlist, rejects shell operators and forbidden executables, then runs approved commands with `/bin/bash -lc` from `PROJECT_ROOT`. This gives the agent normal Node/NPM environment resolution without exposing free-form shell execution.
+`run_command` supports two policies. `allowlist` runs only known validation commands. `full_repo` allows repo-local bash through `/bin/bash -lc`, but keeps `cwd` inside `PROJECT_ROOT`, blocks secret paths, redacts output, and gates destructive/service commands.
 
 Command output is redacted for common secret patterns and command executions are audit-logged without raw secrets.
 
@@ -111,6 +111,7 @@ This server blocks sensitive patterns by default, especially `.env` and private 
 
 - allowlisted validation commands with exit code, stdout, stderr, duration, and timeout reporting
 - multi-command validation batches
+- background jobs for long E2E commands with polling and cancellation
 - controlled `git_commit` for explicitly listed paths, without push
 
 ## Output philosophy

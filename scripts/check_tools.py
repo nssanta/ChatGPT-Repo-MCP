@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import os
 
 import anyio
 from mcp import ClientSession
@@ -8,7 +9,10 @@ from mcp.client.streamable_http import streamablehttp_client
 
 
 async def main(url: str) -> None:
-    async with streamablehttp_client(url) as (read, write, _):
+    headers = {}
+    if token := os.getenv("MCP_BEARER_TOKEN"):
+        headers["Authorization"] = f"Bearer {token}"
+    async with streamablehttp_client(url, headers=headers) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = await session.list_tools()
