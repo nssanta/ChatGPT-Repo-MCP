@@ -173,6 +173,7 @@ def test_command_timeout_is_structured(tmp_path: Path) -> None:
     assert result["ok"] is False
     assert result["timed_out"] is True
     assert result["exit_code"] is None
+    assert result["error_kind"] == "command_timeout"
 
 
 def test_background_command_job_can_be_polled(tmp_path: Path) -> None:

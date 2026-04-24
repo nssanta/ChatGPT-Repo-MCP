@@ -146,7 +146,16 @@ def _resolve_cwd(cwd: str | None, settings: Settings) -> Path:
     return target
 
 
-def _redact(text: str) -> str:
+def _as_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _redact(text: str | bytes | None) -> str:
+    text = _as_text(text)
     redacted = text
     for pattern in SECRET_PATTERNS:
         redacted = pattern.sub(lambda m: f"{m.group(1)}=<redacted>" if m.lastindex else "<redacted>", redacted)
@@ -257,8 +266,8 @@ def run_command(
             "resolved_binaries": resolved,
         }
     except subprocess.TimeoutExpired as exc:
-        stdout = _redact(exc.stdout or "")
-        stderr = _redact(exc.stderr or "")
+        stdout = _redact(exc.stdout)
+        stderr = _redact(exc.stderr)
         duration_ms = int((time.monotonic() - started) * 1000)
         result = {
             "ok": False,
