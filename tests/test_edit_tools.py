@@ -2,8 +2,10 @@ from pathlib import Path
 
 from chatrepo_mcp.config import Settings
 from chatrepo_mcp.edit_tools import (
+    PatchApplyError,
     StaleWriteError,
     WritePolicyError,
+    apply_change_set,
     append_to_file,
     apply_patch_diff,
     batch_edit_files,
@@ -20,6 +22,7 @@ from chatrepo_mcp.edit_tools import (
     replace_text_in_file,
     replace_lines,
     sha256_text,
+    structured_error,
     update_current_mission,
     write_text_file,
 )
@@ -514,3 +517,70 @@ def test_batch_supports_type_alias_for_operations(tmp_path: Path) -> None:
 
     assert result["failed_operation_index"] is None
     assert path.read_text(encoding="utf-8") == "ONE\n"
+
+
+def test_apply_change_set_multi_file_dry_run_and_stale_error(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, writable_globs=("**/*",), dangerous=True)
+    first, first_hash = write_allowed_file(tmp_path, "src/first.py", "one\n")
+    second, second_hash = write_allowed_file(tmp_path, "src/second.py", "two\n")
+
+    preview = apply_change_set(
+        [
+            {"op": "replace", "path": "src/first.py", "find": "one", "replace": "ONE", "expected_sha256": first_hash},
+            {"op": "replace", "path": "src/second.py", "find": "two", "replace": "TWO", "expected_sha256": second_hash},
+        ],
+        settings,
+        name="two-file-preview",
+        dry_run=True,
+    )
+    stale = apply_change_set(
+        [{"op": "replace", "path": "src/first.py", "find": "one", "replace": "ONE", "expected_sha256": "bad"}],
+        settings,
+        dry_run=False,
+    )
+
+    assert preview["ok"] is True
+    assert preview["name"] == "two-file-preview"
+    assert preview["changed_files"] == ["src/first.py", "src/second.py"]
+    assert "src/first.py" in preview["combined_diff"]
+    assert first.read_text(encoding="utf-8") == "one\n"
+    assert second.read_text(encoding="utf-8") == "two\n"
+    assert stale["ok"] is False
+    assert stale["results"][0]["error_kind"] == "stale_expected_hash"
+
+
+def test_apply_change_set_invalid_format_returns_example(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, writable_globs=("**/*",), dangerous=True)
+
+    result = apply_change_set([], settings)
+    unsupported = apply_change_set([{"op": "unknown"}], settings)
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "invalid_change_set_format"
+    assert "operations" in result["valid_example"]
+    assert unsupported["results"][0]["error_kind"] == "invalid_change_set_format"
+    assert "valid_example" in unsupported
+
+
+def test_invalid_patch_format_returns_valid_example(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, writable_globs=("**/*",), dangerous=True)
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=a@example.com", "-c", "user.name=A", "commit", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    try:
+        apply_patch_diff("not a patch", settings, dry_run=True)
+        assert False, "expected invalid patch"
+    except PatchApplyError as exc:
+        error = structured_error(exc)
+
+    assert error["error_kind"] == "invalid_patch_format"
+    assert "diff --git" in error["valid_example"]

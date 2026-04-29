@@ -4,8 +4,10 @@ from chatrepo_mcp.command_tools import (
     CommandPolicyError,
     ConfirmationRequiredError,
     command_policy_check,
+    cancel_command_job,
     get_command_log,
     get_command_job,
+    get_job_status,
     git_commit,
     run_command,
     run_commands,
@@ -152,11 +154,28 @@ def test_get_command_log_supports_grep(tmp_path: Path) -> None:
     assert "alpha" not in log["content"]
 
 
+def test_run_command_redacts_remote_urls_in_output_and_logs(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo"})
+
+    result = run_command("printf 'git@github.com:nssanta/private.git\\n'", settings)
+    log = get_command_log(result["log_id"], settings)
+
+    assert "git@github.com" not in result["stdout"]
+    assert "git@github.com" not in log["content"]
+    assert "<redacted>" in result["stdout"]
+
+
 def test_command_policy_check_explains_shell_split(tmp_path: Path) -> None:
     result = command_policy_check("git status --short && git diff --check", make_settings(tmp_path))
+    full_repo = make_settings(tmp_path)
+    full_repo = full_repo.__class__(**{**full_repo.__dict__, "command_policy_mode": "full_repo"})
+    allowed = command_policy_check("git status --short && git diff --check", full_repo)
 
     assert result["allowed"] is False
     assert result["safe_split"] == ["git status --short", "git diff --check"]
+    assert allowed["allowed"] is True
+    assert allowed["safe_split"] == ["git status --short", "git diff --check"]
 
 
 def test_git_commit_dry_run_does_not_stage(tmp_path: Path) -> None:
@@ -221,3 +240,40 @@ def test_background_command_job_can_be_polled(tmp_path: Path) -> None:
 
     assert started["ok"] is True
     assert result["job_id"] == started["job_id"]
+
+
+def test_background_job_lock_fail_attach_and_cancel(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo"})
+
+    first = start_command_job("sleep 30", settings, concurrency_key="telegram-live-e2e", on_conflict="fail")
+    conflict = start_command_job("sleep 30", settings, concurrency_key="telegram-live-e2e", on_conflict="fail")
+    attached = start_command_job("sleep 30", settings, concurrency_key="telegram-live-e2e", on_conflict="attach")
+    cancelled = cancel_command_job(first["job_id"], settings)
+    second = start_command_job("printf done", settings, concurrency_key="telegram-live-e2e", on_conflict="fail")
+    second_status = get_job_status(second["job_id"], settings)
+
+    assert first["lock_status"] == "acquired"
+    assert conflict["error_kind"] == "job_lock_conflict"
+    assert conflict["job_id"] == first["job_id"]
+    assert attached["attached_to_job_id"] == first["job_id"]
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["process_alive"] is False
+    assert second["ok"] is True
+    assert second_status["status"] in {"completed", "running"}
+
+
+def test_get_job_status_and_timeout_kill_process_group(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo"})
+
+    started = start_command_job("bash -lc 'sleep 10 & wait'", settings, timeout_ms=50)
+    import time
+
+    time.sleep(0.15)
+    status = get_job_status(started["job_id"], settings)
+
+    assert status["status"] == "timed_out"
+    assert status["timed_out"] is True
+    assert status["process_alive"] is False
+    assert status["kill_status"] in {"terminated", "killed", "not_running"}

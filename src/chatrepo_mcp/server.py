@@ -18,6 +18,7 @@ from .command_tools import (
     command_policy_check,
     get_command_log,
     get_command_job,
+    get_job_status,
     git_commit,
     run_command,
     run_commands,
@@ -28,6 +29,7 @@ from .command_tools import (
 from .config import Settings
 from .edit_tools import (
     append_to_file,
+    apply_change_set,
     apply_patch_diff,
     batch_edit_files,
     create_text_file,
@@ -451,6 +453,7 @@ TOOL_NAMES = [
     "insert_after_heading",
     "append_to_file",
     "apply_patch",
+    "apply_change_set",
     "update_current_mission",
     "run_command",
     "run_commands",
@@ -465,6 +468,7 @@ TOOL_NAMES = [
     "git_worktree_guard",
     "start_command_job",
     "get_command_job",
+    "get_job_status",
     "cancel_command_job",
     "git_commit",
 ]
@@ -926,6 +930,23 @@ def batch_edit_files_tool(
 
 
 @mcp.tool(
+    name="apply_change_set",
+    annotations={**WRITE_ACTION, "title": "Apply Change Set"},
+)
+def apply_change_set_tool(
+    operations: Annotated[
+        list[dict[str, Any]],
+        Field(description="Non-empty list of exact edit operations. Each file operation may include expected_sha256."),
+    ],
+    atomic: Annotated[bool, Field(description="When true, rollback earlier applied operations if any operation fails.")] = True,
+    dry_run: DryRun = True,
+    name: Annotated[str | None, Field(description="Optional human-readable change-set name.")] = None,
+) -> dict:
+    """Use this for multi-file exact repo edits with dry-run diff preview, rollback, and structured errors."""
+    return _write_result(apply_change_set, operations=operations, settings=settings, atomic=atomic, dry_run=dry_run, name=name)
+
+
+@mcp.tool(
     name="replace_lines",
     annotations={**SAFE_EDIT_ACTION, "title": "Replace Lines"},
 )
@@ -1368,6 +1389,14 @@ def start_command_job_tool(
         bool,
         Field(description="Set true only after owner confirmation for policy-gated commands."),
     ] = False,
+    concurrency_key: Annotated[
+        str | None,
+        Field(description="Optional lock key. Jobs with the same key cannot start in parallel silently."),
+    ] = None,
+    on_conflict: Annotated[
+        Literal["fail", "attach", "wait"],
+        Field(description="How to behave if concurrency_key is already locked by a running job."),
+    ] = "fail",
 ) -> dict:
     """Use this for long-running allowlisted repo commands that should be polled later."""
     try:
@@ -1379,6 +1408,8 @@ def start_command_job_tool(
             env=env,
             tail_lines=tail_lines,
             confirmed=confirmed,
+            concurrency_key=concurrency_key,
+            on_conflict=on_conflict,
         )
     except ConfirmationRequiredError as exc:
         return {"ok": False, "error_kind": "confirmation_required", "reason": str(exc), "command": command}
@@ -1396,6 +1427,18 @@ def get_command_job_tool(job_id: str, tail_lines: int | None = 200) -> dict:
     """Use this to poll a background command job and read output tails."""
     try:
         return get_command_job(job_id=job_id, settings=settings, tail_lines=tail_lines)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "job_error", "error": str(exc), "job_id": job_id}
+
+
+@mcp.tool(
+    name="get_job_status",
+    annotations={**READ_ONLY, "title": "Get Job Status"},
+)
+def get_job_status_tool(job_id: Annotated[str, Field(description="Background command job id.")]) -> dict:
+    """Use this to read concise lifecycle status for a background command job."""
+    try:
+        return get_job_status(job_id=job_id, settings=settings)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error_kind": "job_error", "error": str(exc), "job_id": job_id}
 

@@ -86,6 +86,7 @@ The default surface is read-heavy, with a guarded write layer for UTF-8 text fil
 - `delete_path`
 - `ensure_directory`
 - `batch_edit_files`
+- `apply_change_set`
 - `replace_lines`
 - `insert_before_line`
 - `insert_after_line`
@@ -103,6 +104,7 @@ The default surface is read-heavy, with a guarded write layer for UTF-8 text fil
 - `command_policy_check`
 - `start_command_job`
 - `get_command_job`
+- `get_job_status`
 - `get_command_log`
 - `summarize_command_log`
 - `cancel_command_job`
@@ -233,12 +235,14 @@ Default protections:
 - write tools default to `dry_run=true` and return unified diffs plus old/new SHA-256 hashes
 - binary/non-UTF-8 files are rejected
 - batch edits can run atomically and roll back on failure
+- `apply_change_set` provides an agent-friendly multi-file edit wrapper with structured examples for invalid requests
 - small line/heading edit tools avoid large JSON payloads for markdown/code changes
 - `apply_patch` accepts unified diffs and validates them with `git apply --check`
 - `run_command` runs allowlisted validation commands through `/bin/bash -lc` so Node/NPM toolchains resolve normally
 - `run_commands` runs several allowlisted checks and returns per-command exit codes, summaries, parsers, and log ids
 - `run_quality_gate` runs preset/command/policy checks as a structured agent gate
 - `quality_gate_and_commit` commits only explicitly listed paths after required gates pass, without push
+- background jobs support `concurrency_key` locks, conflict attach/fail/wait behavior, status polling, cancellation, and timeout process-group cleanup
 - `scan_new_policy_violations` scans only newly added diff lines for rules such as new `as any`, `: any`, `@ts-ignore`, `eslint-disable`, `console.log`, and secret-like literals
 - repo-local `.chatrepo/mcp.yml` can define project presets, quality rules, and mission paths without hardcoding a specific project into the MCP server
 - `git_commit` can commit explicitly listed paths without push
@@ -278,6 +282,32 @@ Example batch preview:
       "op": "create_file",
       "path": "reports/session-note.md",
       "content": "# Session Note\n"
+    }
+  ],
+  "atomic": true,
+  "dry_run": true
+}
+```
+
+Example change-set preview:
+
+```json
+{
+  "name": "two-file-doc-edit",
+  "operations": [
+    {
+      "op": "replace",
+      "path": "docs/a.md",
+      "find": "old",
+      "replace": "new",
+      "expected_sha256": "<sha256>"
+    },
+    {
+      "op": "insert_before_heading",
+      "path": "docs/b.md",
+      "heading": "## Notes",
+      "content": "New note\n",
+      "expected_sha256": "<sha256>"
     }
   ],
   "atomic": true,
@@ -366,7 +396,18 @@ Long-running E2E should use background jobs:
 }
 ```
 
-Start with `start_command_job`, then poll with `get_command_job`.
+Start with `start_command_job`, then poll with `get_command_job` or `get_job_status`.
+
+For live suites, use a lock:
+
+```json
+{
+  "command": "npm run test:live -w packages/integration",
+  "concurrency_key": "telegram-live-e2e",
+  "on_conflict": "attach",
+  "timeout_ms": 300000
+}
+```
 
 Commands are grouped as:
 

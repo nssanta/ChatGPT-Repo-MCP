@@ -77,6 +77,8 @@ SECRET_PATTERNS = (
     re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
     re.compile(r"npm_[A-Za-z0-9_]{20,}"),
     re.compile(r"Bearer\s+[A-Za-z0-9._\-]+", re.IGNORECASE),
+    re.compile(r"https?://[^\s/@]+:[^\s/@]+@[^\s]+"),
+    re.compile(r"git@[^:\s]+:[^\s]+"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
 )
 
@@ -164,6 +166,10 @@ def _redact(text: str | bytes | None) -> str:
     return redacted
 
 
+def _safe_key(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)[:120]
+
+
 def _tail(text: str, tail_lines: int | None) -> str:
     if not tail_lines:
         return ""
@@ -225,6 +231,10 @@ def _command_log_paths(settings: Settings, log_id: str) -> tuple[Path, Path, Pat
     return root / f"{log_id}.json", root / f"{log_id}.out", root / f"{log_id}.err"
 
 
+def _lock_path(settings: Settings, concurrency_key: str) -> Path:
+    return settings.command_jobs_dir / "locks" / f"{_safe_key(concurrency_key)}.json"
+
+
 def _write_command_log(
     settings: Settings,
     *,
@@ -244,7 +254,7 @@ def _write_command_log(
             json.dumps(
                 {
                     "log_id": log_id,
-                    "command": command,
+                    "command": _redact(command),
                     "cwd": cwd,
                     "exit_code": result.get("exit_code"),
                     "duration_ms": result.get("duration_ms"),
@@ -321,7 +331,7 @@ def run_command(
         duration_ms = int((time.monotonic() - started) * 1000)
         result = {
             "ok": proc.returncode == 0,
-            "command": normalized,
+            "command": _redact(normalized),
             "exit_code": proc.returncode,
             "stdout": stdout[:output_limit],
             "stderr": stderr[:output_limit],
@@ -349,7 +359,7 @@ def run_command(
         result = {
             "ok": False,
             "error_kind": "command_timeout",
-            "command": normalized,
+            "command": _redact(normalized),
             "exit_code": None,
             "stdout": stdout[:output_limit],
             "stderr": stderr[:output_limit],
@@ -374,7 +384,7 @@ def run_command(
         settings,
         {
             "timestamp": int(time.time()),
-            "command": normalized,
+            "command": _redact(normalized),
             "cwd": str(run_cwd),
             "exit_code": result["exit_code"],
             "duration_ms": result["duration_ms"],
@@ -475,7 +485,27 @@ def start_command_job(
     env: dict[str, str] | None = None,
     tail_lines: int | None = 200,
     confirmed: bool = False,
+    concurrency_key: str | None = None,
+    on_conflict: str = "fail",
 ) -> dict[str, Any]:
+    if on_conflict not in {"fail", "attach", "wait"}:
+        raise CommandPolicyError("on_conflict must be one of: fail, attach, wait")
+    if concurrency_key:
+        existing = _active_lock_job(settings, concurrency_key)
+        if existing:
+            if on_conflict == "attach":
+                return {"ok": True, "status": "attached", "lock_status": "attached", **existing}
+            if on_conflict == "wait":
+                deadline = time.time() + min((timeout_ms or settings.command_timeout_ms) / 1000, 30)
+                while time.time() < deadline:
+                    time.sleep(0.2)
+                    existing = _active_lock_job(settings, concurrency_key)
+                    if not existing:
+                        break
+                if existing:
+                    return {"ok": False, "error_kind": "job_lock_conflict", "lock_status": "busy", **existing}
+            else:
+                return {"ok": False, "error_kind": "job_lock_conflict", "lock_status": "busy", **existing}
     normalized = _check_command_policy(command, settings, confirmed=confirmed)
     run_cwd = _resolve_cwd(cwd, settings)
     run_env = _command_env(env)
@@ -500,16 +530,101 @@ def start_command_job(
     JOB_PROCS[job_id] = proc
     meta = {
         "job_id": job_id,
-        "command": normalized,
+        "command": _redact(normalized),
         "cwd": str(run_cwd),
         "pid": proc.pid,
         "started_at": time.time(),
         "timeout_ms": timeout_ms or settings.command_timeout_ms,
         "tail_lines": tail_lines,
         "status": "running",
+        "concurrency_key": concurrency_key,
     }
     _write_job_meta(settings, job_id, meta)
-    return {"ok": True, "job_id": job_id, "status": "running", "pid": proc.pid, "command": normalized}
+    if concurrency_key:
+        _write_lock(settings, concurrency_key, job_id)
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "status": "running",
+        "lock_status": "acquired" if concurrency_key else "none",
+        "pid": proc.pid,
+        "command": _redact(normalized),
+        "concurrency_key": concurrency_key,
+    }
+
+
+def _is_pid_running(pid: int) -> bool:
+    if not Path(f"/proc/{pid}").exists():
+        return False
+    stat_path = Path(f"/proc/{pid}/stat")
+    if stat_path.exists():
+        parts = stat_path.read_text(encoding="utf-8", errors="replace").split()
+        if len(parts) > 2 and parts[2] == "Z":
+            return False
+    return True
+
+
+def _terminate_process_group(pid: int, *, grace_seconds: float = 1.0) -> str:
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return "not_running"
+    deadline = time.time() + grace_seconds
+    while time.time() < deadline:
+        if not _is_pid_running(pid):
+            return "terminated"
+        time.sleep(0.05)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return "terminated"
+    return "killed"
+
+
+def _write_lock(settings: Settings, concurrency_key: str, job_id: str) -> None:
+    path = _lock_path(settings, concurrency_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"concurrency_key": concurrency_key, "job_id": job_id}, sort_keys=True), encoding="utf-8")
+
+
+def _clear_lock(settings: Settings, concurrency_key: str | None, job_id: str) -> None:
+    if not concurrency_key:
+        return
+    path = _lock_path(settings, concurrency_key)
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        path.unlink(missing_ok=True)
+        return
+    if data.get("job_id") == job_id:
+        path.unlink(missing_ok=True)
+
+
+def _active_lock_job(settings: Settings, concurrency_key: str) -> dict[str, Any] | None:
+    path = _lock_path(settings, concurrency_key)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        job_id = str(data["job_id"])
+        meta = _read_job_meta(settings, job_id)
+        pid = int(meta["pid"])
+    except Exception:
+        path.unlink(missing_ok=True)
+        return None
+    if _is_pid_running(pid):
+        return {
+            "job_id": job_id,
+            "attached_to_job_id": job_id,
+            "pid": pid,
+            "concurrency_key": concurrency_key,
+            "command": _redact(str(meta.get("command", ""))),
+            "status": meta.get("status", "running"),
+        }
+    _clear_lock(settings, concurrency_key, job_id)
+    return None
 
 
 def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None = 200) -> dict[str, Any]:
@@ -519,26 +634,27 @@ def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None =
     return_code = proc.poll() if proc is not None else None
     if proc is not None and return_code is not None:
         JOB_PROCS.pop(job_id, None)
-    running = return_code is None and Path(f"/proc/{pid}").exists()
-    stat_path = Path(f"/proc/{pid}/stat")
-    if running and stat_path.exists():
-        parts = stat_path.read_text(encoding="utf-8", errors="replace").split()
-        if len(parts) > 2 and parts[2] == "Z":
-            running = False
+    running = return_code is None and _is_pid_running(pid)
     _, out_path, err_path = _job_paths(settings, job_id)
-    stdout = _redact(out_path.read_text(encoding="utf-8", errors="replace") if out_path.exists() else "")
-    stderr = _redact(err_path.read_text(encoding="utf-8", errors="replace") if err_path.exists() else "")
+    raw_stdout = out_path.read_text(encoding="utf-8", errors="replace") if out_path.exists() else ""
+    raw_stderr = err_path.read_text(encoding="utf-8", errors="replace") if err_path.exists() else ""
+    stdout = _redact(raw_stdout)
+    stderr = _redact(raw_stderr)
+    if stdout != raw_stdout and out_path.exists():
+        out_path.write_text(stdout, encoding="utf-8")
+    if stderr != raw_stderr and err_path.exists():
+        err_path.write_text(stderr, encoding="utf-8")
     duration_ms = int((time.time() - float(meta["started_at"])) * 1000)
     timed_out = running and duration_ms > int(meta.get("timeout_ms", settings.command_timeout_ms))
     if timed_out:
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        kill_status = _terminate_process_group(pid)
         running = False
         meta["status"] = "timed_out"
+        meta["kill_status"] = kill_status
     else:
         meta["status"] = "running" if running else "completed"
+    if not running:
+        _clear_lock(settings, meta.get("concurrency_key"), job_id)
     _write_job_meta(settings, job_id, meta)
     return {
         "ok": not timed_out and not running,
@@ -548,10 +664,18 @@ def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None =
         "exit_code": return_code,
         "timed_out": timed_out,
         "duration_ms": duration_ms,
-        "command": meta["command"],
+        "command": _redact(meta["command"]),
+        "pid": pid,
+        "kill_status": meta.get("kill_status"),
+        "concurrency_key": meta.get("concurrency_key"),
+        "process_alive": _is_pid_running(pid),
         "stdout_tail": _tail(stdout, tail_lines),
         "stderr_tail": _tail(stderr, tail_lines),
     }
+
+
+def get_job_status(job_id: str, settings: Settings) -> dict[str, Any]:
+    return get_command_job(job_id, settings, tail_lines=0)
 
 
 def get_command_log(
@@ -599,16 +723,27 @@ def summarize_command_log(log_id: str, settings: Settings, *, parser: str = "aut
     return {
         "ok": True,
         "log_id": log_id,
-        "command": meta.get("command"),
+        "command": _redact(str(meta.get("command"))),
         "parsed": parsed,
         "summary": parsed.get("summary") if parsed else "no parser summary",
     }
 
 
 def command_policy_check(command: str, settings: Settings, *, confirmed: bool = False) -> dict[str, Any]:
+    alternatives = []
+    if "&&" in command:
+        alternatives = [part.strip() for part in command.split("&&") if part.strip()]
+    elif ";" in command:
+        alternatives = [part.strip() for part in command.split(";") if part.strip()]
+    elif "|" in command:
+        alternatives = [part.strip() for part in command.split("|") if part.strip()]
     try:
         normalized = _check_command_policy(command, settings, confirmed=confirmed)
-        return {"ok": True, "allowed": True, "command": normalized}
+        result = {"ok": True, "allowed": True, "command": _redact(normalized)}
+        if alternatives:
+            result["safe_split"] = alternatives
+            result["safe_alternative"] = "Prefer run_commands with these split commands when possible."
+        return result
     except ConfirmationRequiredError as exc:
         return {
             "ok": False,
@@ -618,9 +753,6 @@ def command_policy_check(command: str, settings: Settings, *, confirmed: bool = 
             "safe_alternative": "Use confirmed=true only after owner confirmation, or use a safer preset.",
         }
     except CommandPolicyError as exc:
-        alternatives = []
-        if "&&" in command:
-            alternatives = [part.strip() for part in command.split("&&") if part.strip()]
         return {
             "ok": False,
             "allowed": False,
@@ -633,14 +765,13 @@ def command_policy_check(command: str, settings: Settings, *, confirmed: bool = 
 def cancel_command_job(job_id: str, settings: Settings) -> dict[str, Any]:
     meta = _read_job_meta(settings, job_id)
     pid = int(meta["pid"])
-    try:
-        os.killpg(pid, signal.SIGTERM)
-        status = "cancelled"
-    except ProcessLookupError:
-        status = "completed"
+    kill_status = _terminate_process_group(pid)
+    status = "cancelled" if kill_status in {"terminated", "killed"} else "completed"
     meta["status"] = status
+    meta["kill_status"] = kill_status
+    _clear_lock(settings, meta.get("concurrency_key"), job_id)
     _write_job_meta(settings, job_id, meta)
-    return {"ok": True, "job_id": job_id, "status": status}
+    return {"ok": True, "job_id": job_id, "status": status, "kill_status": kill_status, "process_alive": _is_pid_running(pid)}
 
 
 def git_commit(

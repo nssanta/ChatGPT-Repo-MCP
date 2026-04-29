@@ -85,6 +85,7 @@ MCP сервер для ChatGPT, который даёт модели глубо
 - `delete_path`
 - `ensure_directory`
 - `batch_edit_files`
+- `apply_change_set`
 - `replace_lines`
 - `insert_before_line`
 - `insert_after_line`
@@ -102,6 +103,7 @@ MCP сервер для ChatGPT, который даёт модели глубо
 - `command_policy_check`
 - `start_command_job`
 - `get_command_job`
+- `get_job_status`
 - `get_command_log`
 - `summarize_command_log`
 - `cancel_command_job`
@@ -231,12 +233,14 @@ chatrepo-mcp/
 - бинарные и non-UTF-8 файлы не редактируются
 - write tools по умолчанию делают `dry_run=true`
 - batch edits могут выполняться атомарно с rollback
+- `apply_change_set` даёт agent-friendly multi-file edit wrapper со structured examples для invalid requests
 - line/heading edit tools уменьшают payload для markdown/code правок
 - `apply_patch` принимает unified diff и проверяет его через `git apply --check`
 - `run_command` запускает allowlisted проверки через `/bin/bash -lc`, чтобы нормально резолвились Node/NPM toolchains
 - `run_commands` запускает несколько allowlisted проверок и возвращает exit code, summary, parsed output и log id по каждой команде
 - `run_quality_gate` запускает preset/command/policy checks как структурированный agent gate
 - `quality_gate_and_commit` коммитит только явно перечисленные paths после зелёных required gates, без push
+- background jobs поддерживают `concurrency_key` locks, conflict attach/fail/wait, status polling, cancel и timeout cleanup process group
 - `scan_new_policy_violations` сканирует только новые строки diff на новые `as any`, `: any`, `@ts-ignore`, `eslint-disable`, `console.log` и secret-like literals
 - repo-local `.chatrepo/mcp.yml` задаёт presets, quality rules и mission paths без зашивания конкретного проекта в MCP сервер
 - `git_commit` может сделать commit только явно перечисленных путей, без push
@@ -264,6 +268,32 @@ chatrepo-mcp/
 {
   "command": "git diff --check",
   "timeout_ms": 120000
+}
+```
+
+Пример change-set preview:
+
+```json
+{
+  "name": "two-file-doc-edit",
+  "operations": [
+    {
+      "op": "replace",
+      "path": "docs/a.md",
+      "find": "old",
+      "replace": "new",
+      "expected_sha256": "<sha256>"
+    },
+    {
+      "op": "insert_before_heading",
+      "path": "docs/b.md",
+      "heading": "## Notes",
+      "content": "New note\n",
+      "expected_sha256": "<sha256>"
+    }
+  ],
+  "atomic": true,
+  "dry_run": true
 }
 ```
 
@@ -327,7 +357,18 @@ chatrepo-mcp/
 }
 ```
 
-Старт через `start_command_job`, потом polling через `get_command_job`.
+Старт через `start_command_job`, потом polling через `get_command_job` или `get_job_status`.
+
+Для live suites используйте lock:
+
+```json
+{
+  "command": "npm run test:live -w packages/integration",
+  "concurrency_key": "telegram-live-e2e",
+  "on_conflict": "attach",
+  "timeout_ms": 300000
+}
+```
 
 Команды делятся так:
 

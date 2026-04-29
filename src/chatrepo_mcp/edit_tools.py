@@ -24,6 +24,15 @@ class PatchApplyError(ValueError):
     """Raised when a unified diff cannot be validated or applied."""
 
 
+VALID_PATCH_EXAMPLE = """diff --git a/path/to/file.txt b/path/to/file.txt
+--- a/path/to/file.txt
++++ b/path/to/file.txt
+@@ -1 +1 @@
+-old text
++new text
+"""
+
+
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -181,6 +190,13 @@ def structured_error(exc: Exception) -> dict[str, Any]:
             kind = "write_policy_error"
         return {"ok": False, "error_kind": kind, "error": message}
     if isinstance(exc, PatchApplyError):
+        if "format" in message or "git-style file paths" in message or "diff --git" in message:
+            return {
+                "ok": False,
+                "error_kind": "invalid_patch_format",
+                "error": message,
+                "valid_example": VALID_PATCH_EXAMPLE,
+            }
         return {"ok": False, "error_kind": "patch_rejected", "error": message}
     if isinstance(exc, FileNotFoundError):
         return {"ok": False, "error_kind": "file_not_found", "error": message}
@@ -789,6 +805,7 @@ def batch_edit_files(
                 break
 
     return {
+        "ok": failed_index is None,
         "operations_total": len(operations),
         "operations_applied": sum(1 for item in results if item.get("ok") and item.get("changed")),
         "atomic": atomic,
@@ -800,7 +817,70 @@ def batch_edit_files(
     }
 
 
+def apply_change_set(
+    operations: list[dict[str, Any]],
+    settings: Settings,
+    *,
+    atomic: bool = True,
+    dry_run: bool = True,
+    name: str | None = None,
+) -> dict[str, Any]:
+    valid_example = {
+        "operations": [
+            {
+                "op": "replace",
+                "path": "docs/example.md",
+                "find": "old",
+                "replace": "new",
+                "expected_sha256": "<sha256 from read_text_file>",
+            },
+            {
+                "op": "insert_before_heading",
+                "path": "docs/example.md",
+                "heading": "## Notes",
+                "content": "New note\\n",
+                "expected_sha256": "<sha256 from read_text_file>",
+            },
+        ],
+        "atomic": True,
+        "dry_run": True,
+    }
+    if not isinstance(operations, list) or not operations:
+        return {
+            "ok": False,
+            "error_kind": "invalid_change_set_format",
+            "error": "operations must be a non-empty list of edit operation objects",
+            "valid_example": valid_example,
+        }
+    for index, operation in enumerate(operations):
+        if not isinstance(operation, dict) or not (operation.get("op") or operation.get("type")):
+            return {
+                "ok": False,
+                "error_kind": "invalid_change_set_format",
+                "error": f"operation {index} must be an object with op or type",
+                "valid_example": valid_example,
+            }
+    result = batch_edit_files(operations, settings, atomic=atomic, dry_run=dry_run)
+    if result.get("failed_operation_index") is not None:
+        failed = result.get("results", [{}])[result["failed_operation_index"]]
+        if failed.get("error_kind") == "validation_error" and "unsupported batch operation" in failed.get("error", ""):
+            failed["error_kind"] = "invalid_change_set_format"
+            result["valid_example"] = valid_example
+    changed_files = []
+    for item in result.get("results", []):
+        path = item.get("path")
+        if path and path not in changed_files:
+            changed_files.append(path)
+        destination = item.get("destination_path")
+        if destination and destination not in changed_files:
+            changed_files.append(destination)
+    result.update({"name": name, "changed_files": changed_files})
+    return result
+
+
 def _extract_patch_paths(patch: str) -> list[str]:
+    if "diff --git " not in patch or "--- " not in patch or "+++ " not in patch or "@@" not in patch:
+        raise PatchApplyError("invalid unified diff format; expected diff --git, ---/+++ paths, and @@ hunks")
     paths: list[str] = []
     for line in patch.splitlines():
         match = re.match(r"^(?:---|\+\+\+) [ab]/(.+)$", line)

@@ -17,6 +17,7 @@ def test_problem_tools_have_clear_argument_descriptions() -> None:
     for tool_name, arg_names in {
         "batch_call": ("calls",),
         "batch_edit_files": ("operations", "atomic", "dry_run"),
+        "apply_change_set": ("operations", "atomic", "dry_run", "name"),
         "delete_text_in_file": ("path", "find", "start_line", "end_line", "expected_sha256", "dry_run"),
         "insert_text_in_file": ("path", "anchor", "position", "content", "expected_sha256", "dry_run"),
         "run_command": ("command", "timeout_ms", "cwd", "env", "tail_lines"),
@@ -30,7 +31,8 @@ def test_problem_tools_have_clear_argument_descriptions() -> None:
         "get_command_log": ("log_id", "stream", "start_line", "end_line", "grep"),
         "summarize_command_log": ("log_id", "parser"),
         "git_worktree_guard": ("allowed_dirty_paths", "require_branch", "require_not_rebasing"),
-        "start_command_job": ("command", "timeout_ms", "cwd", "env", "tail_lines"),
+        "start_command_job": ("command", "timeout_ms", "cwd", "env", "tail_lines", "concurrency_key", "on_conflict"),
+        "get_job_status": ("job_id",),
         "update_current_mission": ("section_title", "content", "position", "preset", "chunks", "dry_run"),
     }.items():
         properties = tools[tool_name].inputSchema["properties"]
