@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
+from .parsers import parse_command_output
+from .profile import load_repo_profile
 from .security import SecurityError, is_blocked_relative, normalize_rel_path
 
 
@@ -218,6 +220,71 @@ def _audit(settings: Settings, payload: dict[str, Any]) -> None:
         return
 
 
+def _command_log_paths(settings: Settings, log_id: str) -> tuple[Path, Path, Path]:
+    root = settings.command_jobs_dir / "logs"
+    return root / f"{log_id}.json", root / f"{log_id}.out", root / f"{log_id}.err"
+
+
+def _write_command_log(
+    settings: Settings,
+    *,
+    command: str,
+    cwd: str,
+    stdout: str,
+    stderr: str,
+    result: dict[str, Any],
+) -> str | None:
+    log_id = uuid.uuid4().hex
+    meta_path, out_path, err_path = _command_log_paths(settings, log_id)
+    try:
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(stdout, encoding="utf-8")
+        err_path.write_text(stderr, encoding="utf-8")
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "log_id": log_id,
+                    "command": command,
+                    "cwd": cwd,
+                    "exit_code": result.get("exit_code"),
+                    "duration_ms": result.get("duration_ms"),
+                    "timed_out": result.get("timed_out"),
+                    "created_at": time.time(),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        return log_id
+    except OSError:
+        return None
+
+
+def _attach_parse_and_log(
+    result: dict[str, Any],
+    settings: Settings,
+    *,
+    command: str,
+    cwd: str,
+    stdout: str,
+    stderr: str,
+    parse_kind: str | None,
+) -> dict[str, Any]:
+    parsed = parse_command_output(command, stdout, stderr, parse_kind=parse_kind)
+    if parsed:
+        result["parsed"] = parsed
+        result["summary"] = parsed.get("summary")
+    elif result.get("ok"):
+        result["summary"] = "exit 0"
+    else:
+        result["summary"] = f"exit {result.get('exit_code')}" if result.get("exit_code") is not None else "failed"
+    log_id = _write_command_log(settings, command=command, cwd=cwd, stdout=stdout, stderr=stderr, result=result)
+    if log_id:
+        result["log_id"] = log_id
+    return result
+
+
 def run_command(
     command: str,
     settings: Settings,
@@ -228,6 +295,7 @@ def run_command(
     max_output_chars: int | None = None,
     tail_lines: int | None = 200,
     confirmed: bool = False,
+    parse_kind: str | None = "auto",
 ) -> dict[str, Any]:
     normalized = _check_command_policy(command, settings, confirmed=confirmed)
     effective_timeout_ms = min(timeout_ms or settings.command_timeout_ms, settings.command_timeout_ms)
@@ -265,6 +333,15 @@ def run_command(
             "cwd": str(run_cwd),
             "resolved_binaries": resolved,
         }
+        result = _attach_parse_and_log(
+            result,
+            settings,
+            command=normalized,
+            cwd=str(run_cwd),
+            stdout=stdout,
+            stderr=stderr,
+            parse_kind=parse_kind,
+        )
     except subprocess.TimeoutExpired as exc:
         stdout = _redact(exc.stdout)
         stderr = _redact(exc.stderr)
@@ -284,6 +361,15 @@ def run_command(
             "cwd": str(run_cwd),
             "resolved_binaries": resolved,
         }
+        result = _attach_parse_and_log(
+            result,
+            settings,
+            command=normalized,
+            cwd=str(run_cwd),
+            stdout=stdout,
+            stderr=stderr,
+            parse_kind=parse_kind,
+        )
     _audit(
         settings,
         {
@@ -308,11 +394,19 @@ def run_commands(
     timeout_ms: int | None = None,
     tail_lines: int | None = 200,
     confirmed: bool = False,
+    parse_kind: str | None = "auto",
 ) -> dict[str, Any]:
     results = []
     for command in commands:
         try:
-            result = run_command(command, settings, timeout_ms=timeout_ms, tail_lines=tail_lines, confirmed=confirmed)
+            result = run_command(
+                command,
+                settings,
+                timeout_ms=timeout_ms,
+                tail_lines=tail_lines,
+                confirmed=confirmed,
+                parse_kind=parse_kind,
+            )
         except ConfirmationRequiredError as exc:
             result = {"ok": False, "error_kind": "confirmation_required", "command": command, "reason": str(exc)}
         except CommandPolicyError as exc:
@@ -336,13 +430,22 @@ def run_test_preset(
     tail_lines: int | None = 200,
     background: bool = False,
 ) -> dict[str, Any]:
-    if preset not in TEST_PRESETS:
+    profile = load_repo_profile(settings)
+    presets = {**{key: {"command": value, "parser": "auto"} for key, value in TEST_PRESETS.items()}, **profile.presets}
+    if preset not in presets:
         raise CommandPolicyError(f"unknown test preset: {preset}")
-    command = TEST_PRESETS[preset]
+    preset_config = presets[preset]
+    command = str(preset_config["command"])
     effective_timeout = timeout_ms or (300_000 if preset.startswith("full_") else settings.command_timeout_ms)
     if background:
         return start_command_job(command, settings, timeout_ms=effective_timeout, tail_lines=tail_lines)
-    return run_command(command, settings, timeout_ms=effective_timeout, tail_lines=tail_lines)
+    return run_command(
+        command,
+        settings,
+        timeout_ms=effective_timeout,
+        tail_lines=tail_lines,
+        parse_kind=str(preset_config.get("parser", "auto")),
+    )
 
 
 def _job_paths(settings: Settings, job_id: str) -> tuple[Path, Path, Path]:
@@ -449,6 +552,82 @@ def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None =
         "stdout_tail": _tail(stdout, tail_lines),
         "stderr_tail": _tail(stderr, tail_lines),
     }
+
+
+def get_command_log(
+    log_id: str,
+    settings: Settings,
+    *,
+    stream: str = "stdout",
+    start_line: int | None = None,
+    end_line: int | None = None,
+    grep: str | None = None,
+) -> dict[str, Any]:
+    meta_path, out_path, err_path = _command_log_paths(settings, log_id)
+    if not meta_path.exists():
+        raise FileNotFoundError(f"log not found: {log_id}")
+    path = err_path if stream == "stderr" else out_path
+    text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+    lines = text.splitlines()
+    selected = list(enumerate(lines, start=1))
+    if grep:
+        pattern = re.compile(grep)
+        selected = [(line_no, line) for line_no, line in selected if pattern.search(line)]
+    if start_line is not None:
+        selected = [(line_no, line) for line_no, line in selected if line_no >= start_line]
+    if end_line is not None:
+        selected = [(line_no, line) for line_no, line in selected if line_no <= end_line]
+    content = "\n".join(f"{line_no}: {line}" for line_no, line in selected)
+    return {
+        "ok": True,
+        "log_id": log_id,
+        "stream": stream,
+        "line_count": len(lines),
+        "content": content,
+        "meta": json.loads(meta_path.read_text(encoding="utf-8")),
+    }
+
+
+def summarize_command_log(log_id: str, settings: Settings, *, parser: str = "auto") -> dict[str, Any]:
+    meta_path, out_path, err_path = _command_log_paths(settings, log_id)
+    if not meta_path.exists():
+        raise FileNotFoundError(f"log not found: {log_id}")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    stdout = out_path.read_text(encoding="utf-8", errors="replace") if out_path.exists() else ""
+    stderr = err_path.read_text(encoding="utf-8", errors="replace") if err_path.exists() else ""
+    parsed = parse_command_output(str(meta.get("command", "")), stdout, stderr, parse_kind=parser)
+    return {
+        "ok": True,
+        "log_id": log_id,
+        "command": meta.get("command"),
+        "parsed": parsed,
+        "summary": parsed.get("summary") if parsed else "no parser summary",
+    }
+
+
+def command_policy_check(command: str, settings: Settings, *, confirmed: bool = False) -> dict[str, Any]:
+    try:
+        normalized = _check_command_policy(command, settings, confirmed=confirmed)
+        return {"ok": True, "allowed": True, "command": normalized}
+    except ConfirmationRequiredError as exc:
+        return {
+            "ok": False,
+            "allowed": False,
+            "error_kind": "confirmation_required",
+            "reason": str(exc),
+            "safe_alternative": "Use confirmed=true only after owner confirmation, or use a safer preset.",
+        }
+    except CommandPolicyError as exc:
+        alternatives = []
+        if "&&" in command:
+            alternatives = [part.strip() for part in command.split("&&") if part.strip()]
+        return {
+            "ok": False,
+            "allowed": False,
+            "error_kind": "command_not_allowed",
+            "reason": str(exc),
+            "safe_split": alternatives,
+        }
 
 
 def cancel_command_job(job_id: str, settings: Settings) -> dict[str, Any]:

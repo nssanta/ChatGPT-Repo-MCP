@@ -95,9 +95,17 @@ MCP сервер для ChatGPT, который даёт модели глубо
 - `update_current_mission`
 - `run_commands`
 - `run_test_preset`
+- `list_test_presets`
+- `run_quality_gate`
+- `quality_gate_and_commit`
+- `scan_new_policy_violations`
+- `command_policy_check`
 - `start_command_job`
 - `get_command_job`
+- `get_command_log`
+- `summarize_command_log`
 - `cancel_command_job`
+- `git_worktree_guard`
 - `git_commit`
 
 ### Безопасные команды
@@ -226,7 +234,11 @@ chatrepo-mcp/
 - line/heading edit tools уменьшают payload для markdown/code правок
 - `apply_patch` принимает unified diff и проверяет его через `git apply --check`
 - `run_command` запускает allowlisted проверки через `/bin/bash -lc`, чтобы нормально резолвились Node/NPM toolchains
-- `run_commands` запускает несколько allowlisted проверок и возвращает exit code по каждой команде
+- `run_commands` запускает несколько allowlisted проверок и возвращает exit code, summary, parsed output и log id по каждой команде
+- `run_quality_gate` запускает preset/command/policy checks как структурированный agent gate
+- `quality_gate_and_commit` коммитит только явно перечисленные paths после зелёных required gates, без push
+- `scan_new_policy_violations` сканирует только новые строки diff на новые `as any`, `: any`, `@ts-ignore`, `eslint-disable`, `console.log` и secret-like literals
+- repo-local `.chatrepo/mcp.yml` задаёт presets, quality rules и mission paths без зашивания конкретного проекта в MCP сервер
 - `git_commit` может сделать commit только явно перечисленных путей, без push
 - input schemas содержат описания параметров и enum'ы для типовых выборов, чтобы ChatGPT Developer Mode надёжнее выбирал нужный tool
 
@@ -252,6 +264,35 @@ chatrepo-mcp/
 {
   "command": "git diff --check",
   "timeout_ms": 120000
+}
+```
+
+Пример quality gate:
+
+```json
+{
+  "checks": [
+    {"id": "diff", "preset": "git_diff_check", "required": true},
+    {
+      "id": "policy",
+      "preset": "scan_new_policy_violations",
+      "base_ref": "HEAD",
+      "paths": ["packages/integration/test"],
+      "required": true
+    }
+  ]
+}
+```
+
+Пример gate and commit:
+
+```json
+{
+  "checks": [{"preset": "git_diff_check", "required": true}],
+  "commit": {
+    "message": "fix(integration): type scenario helper",
+    "paths": ["packages/integration/test/helpers/scenario-runner.ts"]
+  }
 }
 ```
 

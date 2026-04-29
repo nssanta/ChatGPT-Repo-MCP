@@ -3,10 +3,13 @@ from pathlib import Path
 from chatrepo_mcp.command_tools import (
     CommandPolicyError,
     ConfirmationRequiredError,
+    command_policy_check,
+    get_command_log,
     get_command_job,
     git_commit,
     run_command,
     run_commands,
+    summarize_command_log,
     start_command_job,
 )
 from chatrepo_mcp.config import Settings
@@ -121,6 +124,39 @@ def test_run_commands_collects_exit_codes(tmp_path: Path) -> None:
 
     assert result["ok"] is True
     assert [item["exit_code"] for item in result["results"]] == [0, 0]
+
+
+def test_run_command_returns_summary_parsed_and_log_id(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo"})
+
+    result = run_command("printf 'Tests  1 passed (1)\\n'", settings, parse_kind="vitest")
+    log = get_command_log(result["log_id"], settings, start_line=1, end_line=1)
+    summary = summarize_command_log(result["log_id"], settings, parser="vitest")
+
+    assert result["ok"] is True
+    assert result["parsed"]["kind"] == "vitest"
+    assert result["summary"]
+    assert log["content"] == "1: Tests  1 passed (1)"
+    assert summary["parsed"]["tests"]["passed"] == 1
+
+
+def test_get_command_log_supports_grep(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo"})
+
+    result = run_command("printf 'alpha\\nbeta\\n'", settings)
+    log = get_command_log(result["log_id"], settings, grep="beta")
+
+    assert "beta" in log["content"]
+    assert "alpha" not in log["content"]
+
+
+def test_command_policy_check_explains_shell_split(tmp_path: Path) -> None:
+    result = command_policy_check("git status --short && git diff --check", make_settings(tmp_path))
+
+    assert result["allowed"] is False
+    assert result["safe_split"] == ["git status --short", "git diff --check"]
 
 
 def test_git_commit_dry_run_does_not_stage(tmp_path: Path) -> None:

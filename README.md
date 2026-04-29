@@ -96,9 +96,17 @@ The default surface is read-heavy, with a guarded write layer for UTF-8 text fil
 - `update_current_mission`
 - `run_commands`
 - `run_test_preset`
+- `list_test_presets`
+- `run_quality_gate`
+- `quality_gate_and_commit`
+- `scan_new_policy_violations`
+- `command_policy_check`
 - `start_command_job`
 - `get_command_job`
+- `get_command_log`
+- `summarize_command_log`
 - `cancel_command_job`
+- `git_worktree_guard`
 - `git_commit`
 
 ### Safe Commands
@@ -228,7 +236,11 @@ Default protections:
 - small line/heading edit tools avoid large JSON payloads for markdown/code changes
 - `apply_patch` accepts unified diffs and validates them with `git apply --check`
 - `run_command` runs allowlisted validation commands through `/bin/bash -lc` so Node/NPM toolchains resolve normally
-- `run_commands` runs several allowlisted checks and returns per-command exit codes
+- `run_commands` runs several allowlisted checks and returns per-command exit codes, summaries, parsers, and log ids
+- `run_quality_gate` runs preset/command/policy checks as a structured agent gate
+- `quality_gate_and_commit` commits only explicitly listed paths after required gates pass, without push
+- `scan_new_policy_violations` scans only newly added diff lines for rules such as new `as any`, `: any`, `@ts-ignore`, `eslint-disable`, `console.log`, and secret-like literals
+- repo-local `.chatrepo/mcp.yml` can define project presets, quality rules, and mission paths without hardcoding a specific project into the MCP server
 - `git_commit` can commit explicitly listed paths without push
 - tool input schemas include parameter descriptions and enums for common choices, so ChatGPT Developer Mode can select tools more reliably
 
@@ -291,6 +303,35 @@ Example allowlisted command:
 {
   "command": "git diff --check",
   "timeout_ms": 120000
+}
+```
+
+Example quality gate:
+
+```json
+{
+  "checks": [
+    {"id": "diff", "preset": "git_diff_check", "required": true},
+    {
+      "id": "policy",
+      "preset": "scan_new_policy_violations",
+      "base_ref": "HEAD",
+      "paths": ["packages/integration/test"],
+      "required": true
+    }
+  ]
+}
+```
+
+Example gate and commit:
+
+```json
+{
+  "checks": [{"preset": "git_diff_check", "required": true}],
+  "commit": {
+    "message": "fix(integration): type scenario helper",
+    "paths": ["packages/integration/test/helpers/scenario-runner.ts"]
+  }
 }
 ```
 

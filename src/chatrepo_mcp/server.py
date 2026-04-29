@@ -15,11 +15,14 @@ from .command_tools import (
     GitCommitError,
     TEST_PRESETS,
     cancel_command_job,
+    command_policy_check,
+    get_command_log,
     get_command_job,
     git_commit,
     run_command,
     run_commands,
     run_test_preset,
+    summarize_command_log,
     start_command_job,
 )
 from .config import Settings
@@ -67,6 +70,13 @@ from .git_tools import (
     git_show,
     git_status,
     repo_git_info,
+)
+from .profile import list_test_presets
+from .workflows import (
+    git_worktree_guard,
+    quality_gate_and_commit,
+    run_quality_gate,
+    scan_new_policy_violations,
 )
 
 settings = Settings.from_env()
@@ -161,6 +171,7 @@ TestPreset = Literal[
     "full_agent_tests",
     "full_gateway_tests",
 ]
+ParseKind = Literal["auto", "vitest", "tsc", "git_diff_check", "none"]
 MissionPreset = Literal["mandatory_system_tool_log"]
 MissionPosition = Literal["before_goal"]
 InsertPosition = Literal["before", "after"]
@@ -444,6 +455,14 @@ TOOL_NAMES = [
     "run_command",
     "run_commands",
     "run_test_preset",
+    "list_test_presets",
+    "run_quality_gate",
+    "quality_gate_and_commit",
+    "scan_new_policy_violations",
+    "command_policy_check",
+    "get_command_log",
+    "summarize_command_log",
+    "git_worktree_guard",
     "start_command_job",
     "get_command_job",
     "cancel_command_job",
@@ -535,6 +554,7 @@ def _command_result(
     max_output_chars: int | None = None,
     tail_lines: int | None = 200,
     confirmed: bool = False,
+    parse_kind: str | None = "auto",
 ) -> dict:
     try:
         return run_command(
@@ -546,6 +566,7 @@ def _command_result(
             max_output_chars=max_output_chars,
             tail_lines=tail_lines,
             confirmed=confirmed,
+            parse_kind=parse_kind,
         )
     except ConfirmationRequiredError as exc:
         return {"ok": False, "error_kind": "confirmation_required", "reason": str(exc), "command": command}
@@ -607,10 +628,12 @@ def smoke_all_tool() -> dict:
         ("git_show", {"revision": "HEAD"}),
         ("read_text_file", {"path": ".env", "start_line": 1, "end_line": 1}),
         ("replace_text_in_file", {"path": ".claude/MEMORY.md", "find": "\n", "replace": "\n", "dry_run": True}),
-        ("insert_before_heading", {"path": "missions/CURRENT.md", "heading": "## Goal", "content": "\n", "dry_run": True}),
+        ("insert_before_heading", {"path": "missions/CURRENT.md", "heading": "## Mission goal", "content": "\n", "dry_run": True}),
         ("batch_edit_files", {"operations": [{"op": "ensure_directory", "path": "reports/mcp-smoke"}], "dry_run": True}),
         ("run_command", {"command": "git diff --check"}),
         ("run_command", {"command": "npm --version"}),
+        ("list_test_presets", {}),
+        ("scan_new_policy_violations", {"base_ref": "HEAD", "paths": []}),
     ]:
         key = "blocked_policy" if name == "read_text_file" and args["path"] == ".env" else name
         if name == "replace_text_in_file":
@@ -629,8 +652,19 @@ def smoke_all_tool() -> dict:
                 pass
         if name == "run_command":
             key = "run_command_npm_visibility" if args["command"] == "npm --version" else "run_command_git_diff_check"
+        if name == "list_test_presets":
+            key = "list_test_presets"
+        if name == "scan_new_policy_violations":
+            key = "policy_scan"
         try:
-            result = _command_result(**args) if name == "run_command" else _batch_dispatch(name, args)
+            if name == "run_command":
+                result = _command_result(**args)
+            elif name == "list_test_presets":
+                result = list_test_presets(settings)
+            elif name == "scan_new_policy_violations":
+                result = scan_new_policy_violations(settings, **args)
+            else:
+                result = _batch_dispatch(name, args)
             ok = key != "blocked_policy"
             item = {"name": key, "tool": name, "ok": ok}
             if name == "list_dir":
@@ -1111,6 +1145,10 @@ def run_command_tool(
         bool,
         Field(description="Set true only after the owner explicitly confirms a command that server policy marks risky."),
     ] = False,
+    parse_kind: Annotated[
+        ParseKind,
+        Field(description="Output parser to attach structured summary. Use auto for command-based inference."),
+    ] = "auto",
 ) -> dict:
     """Use this when you need to run an allowlisted validation command and report exit code."""
     return _command_result(
@@ -1121,6 +1159,7 @@ def run_command_tool(
         max_output_chars=max_output_chars,
         tail_lines=tail_lines,
         confirmed=confirmed,
+        parse_kind=parse_kind,
     )
 
 
@@ -1140,6 +1179,10 @@ def run_commands_tool(
         bool,
         Field(description="Set true only after the owner explicitly confirms commands that server policy marks risky."),
     ] = False,
+    parse_kind: Annotated[
+        ParseKind,
+        Field(description="Output parser for every command result. Use auto for command-based inference."),
+    ] = "auto",
 ) -> dict:
     """Use this when you need to run several allowlisted validation commands and compare exit codes."""
     return run_commands(
@@ -1149,6 +1192,7 @@ def run_commands_tool(
         timeout_ms=timeout_ms,
         tail_lines=tail_lines,
         confirmed=confirmed,
+        parse_kind=parse_kind,
     )
 
 
@@ -1157,10 +1201,7 @@ def run_commands_tool(
     annotations={**COMMAND_ACTION, "title": "Run Test Preset"},
 )
 def run_test_preset_tool(
-    preset: Annotated[
-        TestPreset,
-        Field(description=f"Named test preset. Available presets: {', '.join(TEST_PRESETS)}."),
-    ],
+    preset: Annotated[str, Field(description=f"Named test preset from built-ins or .chatrepo/mcp.yml. Built-ins: {', '.join(TEST_PRESETS)}.")],
     timeout_ms: TimeoutMs = None,
     tail_lines: TailLines = 200,
     background: Annotated[bool, Field(description="When true, start the preset as a background job and poll it later.")] = False,
@@ -1178,6 +1219,133 @@ def run_test_preset_tool(
         return {"ok": False, "error_kind": "command_not_allowed", "error": str(exc), "preset": preset}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error_kind": "command_failed", "error": str(exc), "preset": preset}
+
+
+@mcp.tool(
+    name="list_test_presets",
+    annotations={**READ_ONLY, "title": "List Test Presets"},
+)
+def list_test_presets_tool() -> dict:
+    """Use this to list built-in and repo-local command/test presets from .chatrepo/mcp.yml."""
+    return list_test_presets(settings)
+
+
+@mcp.tool(
+    name="run_quality_gate",
+    annotations={**COMMAND_ACTION, "title": "Run Quality Gate"},
+)
+def run_quality_gate_tool(
+    checks: Annotated[list[dict[str, Any]], Field(description="Ordered checks. Each item uses preset or command, plus optional id, required, timeout_ms, parse_kind.")],
+    name: Annotated[str | None, Field(description="Optional human-readable gate name.")] = None,
+    stop_on_failure: Annotated[bool, Field(description="When true, stop after the first failed required check.")] = True,
+) -> dict:
+    """Use this to run a structured quality gate from presets, commands, and policy scans."""
+    try:
+        return run_quality_gate(settings, checks=checks, name=name, stop_on_failure=stop_on_failure)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "quality_gate_failed", "error": str(exc)}
+
+
+@mcp.tool(
+    name="quality_gate_and_commit",
+    annotations={**WRITE_ACTION, "title": "Quality Gate And Commit"},
+)
+def quality_gate_and_commit_tool(
+    checks: Annotated[list[dict[str, Any]], Field(description="Required/optional checks to run before committing.")],
+    commit: Annotated[dict[str, Any], Field(description="Commit config with message, paths, and optional enabled boolean.")],
+    name: Annotated[str | None, Field(description="Optional human-readable gate name.")] = None,
+    require_clean_after_commit: Annotated[bool, Field(description="When true, final status must be clean after commit.")] = True,
+) -> dict:
+    """Use this to run quality gates and commit exactly listed files only if all required gates pass."""
+    try:
+        return quality_gate_and_commit(
+            settings,
+            checks=checks,
+            commit=commit,
+            name=name,
+            require_clean_after_commit=require_clean_after_commit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "quality_gate_commit_failed", "error": str(exc)}
+
+
+@mcp.tool(
+    name="scan_new_policy_violations",
+    annotations={**READ_ONLY, "title": "Scan New Policy Violations"},
+)
+def scan_new_policy_violations_tool(
+    base_ref: Annotated[str, Field(description="Git base revision to diff against, for example HEAD or HEAD~1.")] = "HEAD",
+    paths: Annotated[list[str] | None, Field(description="Optional repo-relative paths to limit the diff scan.")] = None,
+    rules: Annotated[list[str] | None, Field(description="Optional rule ids. Defaults come from .chatrepo/mcp.yml or built-ins.")] = None,
+) -> dict:
+    """Use this to scan only newly added diff lines for policy violations such as new any casts."""
+    try:
+        return scan_new_policy_violations(settings, base_ref=base_ref, paths=paths, rules=rules)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "policy_scan_failed", "error": str(exc)}
+
+
+@mcp.tool(
+    name="command_policy_check",
+    annotations={**READ_ONLY, "title": "Command Policy Check"},
+)
+def command_policy_check_tool(command: Annotated[str, Field(description="Command to validate without executing it.")]) -> dict:
+    """Use this to explain whether a command is allowed and suggest safe alternatives."""
+    return command_policy_check(command, settings)
+
+
+@mcp.tool(
+    name="get_command_log",
+    annotations={**READ_ONLY, "title": "Get Command Log"},
+)
+def get_command_log_tool(
+    log_id: Annotated[str, Field(description="Log id returned by run_command or run_commands.")],
+    stream: Annotated[Literal["stdout", "stderr"], Field(description="Which stream to read.")] = "stdout",
+    start_line: Annotated[int | None, Field(description="Optional first 1-based line to return.")] = None,
+    end_line: Annotated[int | None, Field(description="Optional last 1-based line to return.")] = None,
+    grep: Annotated[str | None, Field(description="Optional regular expression to filter lines.")] = None,
+) -> dict:
+    """Use this to read saved command logs by line range or grep."""
+    try:
+        return get_command_log(log_id, settings, stream=stream, start_line=start_line, end_line=end_line, grep=grep)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "command_log_error", "error": str(exc), "log_id": log_id}
+
+
+@mcp.tool(
+    name="summarize_command_log",
+    annotations={**READ_ONLY, "title": "Summarize Command Log"},
+)
+def summarize_command_log_tool(
+    log_id: Annotated[str, Field(description="Log id returned by run_command or run_commands.")],
+    parser: Annotated[ParseKind, Field(description="Parser to apply to the saved log.")] = "auto",
+) -> dict:
+    """Use this to parse and summarize a saved command log."""
+    try:
+        return summarize_command_log(log_id, settings, parser=parser)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "command_log_error", "error": str(exc), "log_id": log_id}
+
+
+@mcp.tool(
+    name="git_worktree_guard",
+    annotations={**READ_ONLY, "title": "Git Worktree Guard"},
+)
+def git_worktree_guard_tool(
+    allowed_dirty_paths: Annotated[list[str] | None, Field(description="Dirty paths allowed to exist before work starts.")] = None,
+    require_branch: Annotated[str | None, Field(description="Optional required current branch name.")] = None,
+    require_not_rebasing: Annotated[bool, Field(description="When true, fail if git rebase state exists.")] = True,
+) -> dict:
+    """Use this before edits/commits to verify branch, rebase state, and unexpected dirty files."""
+    try:
+        return git_worktree_guard(
+            settings,
+            allowed_dirty_paths=allowed_dirty_paths,
+            require_branch=require_branch,
+            require_not_rebasing=require_not_rebasing,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "worktree_guard_failed", "error": str(exc)}
 
 
 @mcp.tool(
