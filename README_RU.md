@@ -198,7 +198,8 @@ chatrepo-mcp/
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── DEPLOY_VPS.md
-│   └── CONNECT_CHATGPT.md
+│   ├── CONNECT_CHATGPT.md
+│   └── EXPOSE_LOCAL_PC.md
 ├── deploy/
 │   ├── caddy/
 │   ├── nginx/
@@ -395,6 +396,7 @@ https://YOUR_DOMAIN/mcp
 Подробные инструкции:
 - `docs/DEPLOY_VPS.md`
 - `docs/CONNECT_CHATGPT.md`
+- `docs/EXPOSE_LOCAL_PC.md` — запуск на домашнем ПК с одним стабильным адресом (сравнение туннелей)
 
 * * *
 

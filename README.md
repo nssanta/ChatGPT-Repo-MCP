@@ -198,7 +198,8 @@ chatrepo-mcp/
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── DEPLOY_VPS.md
-│   └── CONNECT_CHATGPT.md
+│   ├── CONNECT_CHATGPT.md
+│   └── EXPOSE_LOCAL_PC.md
 ├── deploy/
 │   ├── caddy/
 │   ├── nginx/
@@ -434,6 +435,7 @@ Suggested app settings:
 Detailed setup:
 - `docs/DEPLOY_VPS.md`
 - `docs/CONNECT_CHATGPT.md`
+- `docs/EXPOSE_LOCAL_PC.md` — run on a home PC with one stable address (tunnel comparison)
 
 * * *
 
