@@ -1,13 +1,16 @@
 # ChatRepo MCP
 
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](#)
-[![MCP](https://img.shields.io/badge/MCP-Remote%20Server-black)](#)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](python/)
+[![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go/)
+[![CI](https://github.com/nssanta/ChatGPT-Repo-MCP/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![MCP](https://img.shields.io/badge/MCP-87%20tools-black)](contracts/tool-schemas/tools.json)
+[![Platforms](https://img.shields.io/badge/Go-Linux%20%7C%20macOS%20%7C%20Windows-5c6ac4)](docs/INSTALL.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Run it from a private Linux PC through OpenAI Secure MCP Tunnel, including
 ChatGPT connection and reboot-safe systemd services: [full runbook](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT — read, search, edit, run tests/builds, drive git, open PRs, and get diagnostics, all through one connector you point at your own project.
+MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT. Choose the Python package or the standalone Go binary; both expose the same 87 tools, configuration, and access semantics.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -37,9 +40,10 @@ ChatRepo MCP is a remote [MCP](https://modelcontextprotocol.io) server you run o
 
 Required on the machine that runs the server:
 
-- **Python 3.11+**
+- **Python 3.11+** for the Python implementation, or a downloaded **Go binary**
 - **git**
 - **[ripgrep](https://github.com/BurntSushi/ripgrep)** (the `rg` binary) — used by the search tools
+- **bash** — built in on Linux/macOS; install Git Bash for the native Windows Go binary
 
 Optional, enable extra tool groups (the server degrades gracefully and reports `missing_tools`/`install_hint` if these aren't installed — nothing fails to start without them):
 
@@ -47,7 +51,9 @@ Optional, enable extra tool groups (the server degrades gracefully and reports `
 - **[universal-ctags](https://github.com/universal-ctags/ctags)** (`ctags`) — for precise `symbol_definition` / `document_symbols` / `workspace_symbols`; without it these tools fall back to a regex-based heuristic
 - Per-stack diagnostic tools you already use, e.g. `pyright` or `ruff` (Python), `go vet` (Go, ships with the Go toolchain), `tsc` via `npx` (TypeScript) — used by `code_diagnostics`
 
-### 2. Install
+### 2. Install one implementation
+
+Python package:
 
 ```bash
 git clone <this-repo-url>.git chatrepo-mcp
@@ -56,8 +62,16 @@ cd chatrepo-mcp
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install -e .
+pip install -e ./python
 ```
+
+Go from source (prebuilt release archives use the same `chatrepo-mcp` command):
+
+```bash
+make build
+```
+
+See [Installation](docs/INSTALL.md) for release binaries, checksums, and platform notes.
 
 ### 3. Point it at your folder
 
@@ -73,8 +87,16 @@ PROJECT_ROOT=/home/you/code/my-project
 
 ### 4. Run it
 
+Python:
+
 ```bash
 python -m chatrepo_mcp
+```
+
+Go:
+
+```bash
+./bin/chatrepo-mcp
 ```
 
 The MCP endpoint is now:
@@ -164,7 +186,7 @@ Call `run_test_preset("test")` at the workspace root, or `run_test_preset("test"
 
 ## Tool Groups
 
-The server registers roughly 90 tools; call `doctor` (or `smoke_all`) to get the exact live count for your build plus a capability matrix of which optional binaries (`gh`, `ctags`, `pyright`, `go`, ...) are installed. Groups:
+Both implementations register exactly 87 tools; call `doctor` (or `smoke_all`) for a live capability matrix of which optional binaries (`gh`, `ctags`, `pyright`, `go`, ...) are installed. Groups:
 
 - **Read / search** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`.
 - **Git (read-only)** — `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_blame`, `git_grep` — all accept an optional `repo=` for polyrepo workspaces.
@@ -256,7 +278,19 @@ chatrepo-mcp/
 ├── README.md
 ├── README_RU.md
 ├── .env.example
-├── pyproject.toml
+├── VERSION
+├── Makefile
+├── python/
+│   ├── pyproject.toml
+│   ├── src/chatrepo_mcp/
+│   └── tests/
+├── go/
+│   ├── go.mod
+│   ├── cmd/chatrepo-mcp/
+│   └── internal/
+├── contracts/
+│   ├── tool-schemas/
+│   └── acceptance/
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── DEPLOY_VPS.md
@@ -267,28 +301,7 @@ chatrepo-mcp/
 │   ├── caddy/
 │   ├── nginx/
 │   └── systemd/
-├── scripts/
-│   ├── install_ubuntu.sh
-│   ├── check_tools.py
-│   └── smoke_test.sh
-├── src/chatrepo_mcp/
-│   ├── __main__.py
-│   ├── config.py
-│   ├── server.py
-│   ├── fs_tools.py
-│   ├── edit_tools.py
-│   ├── command_tools.py
-│   ├── git_tools.py
-│   ├── git_workflow_tools.py
-│   ├── github_tools.py
-│   ├── lsp_tools.py
-│   ├── index_tools.py
-│   ├── workspace.py
-│   ├── profile.py
-│   ├── workflows.py
-│   ├── parsers.py
-│   └── security.py
-└── tests/
+└── scripts/
 ```
 
 * * *

@@ -1,0 +1,4539 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "contractVersion": 1,
+  "server": {
+    "name": "chatrepo-mcp",
+    "version": "0.2.0",
+    "toolCount": 87
+  },
+  "tools": [
+    {
+      "name": "append_to_file",
+      "description": "Use this when you need to append a small text block to an allowed UTF-8 repo file.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "content": {
+            "description": "UTF-8 text payload. Prefer compact chunks for ChatGPT tool reliability.",
+            "title": "Content",
+            "type": "string"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes.",
+            "title": "Expected Sha256"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "title": "append_to_file_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Append To File",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "apply_change_set",
+      "description": "Use this for multi-file exact repo edits with dry-run diff preview, rollback, and structured errors.",
+      "inputSchema": {
+        "properties": {
+          "operations": {
+            "description": "Non-empty list of exact edit operations. Each file operation may include expected_sha256.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Operations",
+            "type": "array"
+          },
+          "atomic": {
+            "default": true,
+            "description": "When true, rollback earlier applied operations if any operation fails.",
+            "title": "Atomic",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional human-readable change-set name.",
+            "title": "Name"
+          }
+        },
+        "required": [
+          "operations"
+        ],
+        "title": "apply_change_set_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Apply Change Set",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "apply_patch",
+      "description": "Use this when you need to apply a unified diff patch across one or more allowed repo files.",
+      "inputSchema": {
+        "properties": {
+          "patch": {
+            "description": "Unified diff patch text using diff --git file headers.",
+            "title": "Patch",
+            "type": "string"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          },
+          "expected_base_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional expected git HEAD/base SHA before applying the patch.",
+            "title": "Expected Base Sha"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "patch"
+        ],
+        "title": "apply_patch_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Apply Patch",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "batch_call",
+      "description": "Use this to run up to 10 read-only repo inspection calls, or write tools only when their dry_run is true.",
+      "inputSchema": {
+        "properties": {
+          "calls": {
+            "description": "Up to 10 calls shaped as {'tool': '<tool_name>', 'args': {...}}. Only read-only tools are allowed, except selected write tools with dry_run=true.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 10,
+            "title": "Calls",
+            "type": "array"
+          }
+        },
+        "required": [
+          "calls"
+        ],
+        "title": "batch_call_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Batch Call",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "batch_edit_files",
+      "description": "Use this when several related repo edits must be previewed or applied together with one combined diff.",
+      "inputSchema": {
+        "properties": {
+          "operations": {
+            "description": "Ordered edit operations. Each item must include op plus operation-specific fields. Supported op values: write, replace, insert, delete_text, create_file, move, delete_file, ensure_directory.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Operations",
+            "type": "array"
+          },
+          "atomic": {
+            "default": true,
+            "description": "When true, rollback all earlier operations if any operation fails.",
+            "title": "Atomic",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "operations"
+        ],
+        "title": "batch_edit_files_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Batch Edit Files",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "cancel_command_job",
+      "description": "Use this to cancel a background command job.",
+      "inputSchema": {
+        "properties": {
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "cancel_command_job_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Cancel Command Job",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "code_diagnostics",
+      "description": "Run one-shot diagnostics (go vet / pyright or ruff / tsc --noEmit) for the workspace or a polyrepo sub-repo via `repo`.\n\n    Missing external checker binaries never fail the call; they are reported in `missing_tools`.\n    ",
+      "inputSchema": {
+        "properties": {
+          "paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional paths to limit the check to, passed through to the underlying checker.",
+            "title": "Paths"
+          },
+          "language": {
+            "default": "auto",
+            "description": "Language checker to run. 'auto' detects the stack(s) present and runs every applicable runner.",
+            "enum": [
+              "auto",
+              "go",
+              "python",
+              "ts"
+            ],
+            "title": "Language",
+            "type": "string"
+          },
+          "severity_min": {
+            "default": "warning",
+            "description": "Minimum severity to include.",
+            "enum": [
+              "hint",
+              "info",
+              "warning",
+              "error"
+            ],
+            "title": "Severity Min",
+            "type": "string"
+          },
+          "limit": {
+            "default": 200,
+            "description": "Maximum number of diagnostics to return.",
+            "title": "Limit",
+            "type": "integer"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "code_diagnostics_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Code Diagnostics",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "command_policy_check",
+      "description": "Use this to explain whether a command is allowed and suggest safe alternatives.",
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "description": "Command to validate without executing it.",
+            "title": "Command",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "title": "command_policy_check_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Command Policy Check",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "context_bootstrap",
+      "description": "Read the repository's standard context files and polyrepo workspace info in one call.\n\n    Reads a neutral, stack-agnostic set of optional context files (README,\n    AGENTS/CLAUDE guides, the repo's ``.chatrepo/mcp.yml`` profile, plus any\n    mission files declared in that profile) and reports discovered\n    sub-repositories for polyrepo workspaces. Missing files are reported as\n    ``missing``, never as an error.\n    ",
+      "inputSchema": {
+        "properties": {},
+        "title": "context_bootstrap_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Context Bootstrap",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "create_text_file",
+      "description": "Use this when you need to create a new UTF-8 text file in the repository.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "content": {
+            "description": "UTF-8 text payload. Prefer compact chunks for ChatGPT tool reliability.",
+            "title": "Content",
+            "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "description": "When true, replace an existing text file.",
+            "title": "Overwrite",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "title": "create_text_file_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Create Text File",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "delete_path",
+      "description": "Use this when you need to delete an allowed UTF-8 repo file.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes.",
+            "title": "Expected Sha256"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "delete_path_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Delete Path",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "delete_text_in_file",
+      "description": "Use this when you need to delete exact text or a line range from an allowed repo file.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "find": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Exact text to delete. Use either this or start_line/end_line.",
+            "title": "Find"
+          },
+          "start_line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "1-based first line to delete when deleting by line range.",
+            "title": "Start Line"
+          },
+          "end_line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "1-based last line to delete when deleting by line range.",
+            "title": "End Line"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes.",
+            "title": "Expected Sha256"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "delete_text_in_file_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Delete Text In File",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "dependency_map",
+      "description": "Parse common dependency manifest files such as pyproject.toml, package.json, go.mod, and Cargo.toml.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "default": ".",
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "title": "dependency_map_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Dependency Map",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "doctor",
+      "description": "Run a compact health check for repository, git, policy, search, and symbol tools.",
+      "inputSchema": {
+        "properties": {},
+        "title": "doctor_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Doctor",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "document_symbols",
+      "description": "Return a file's outline (name/kind/line/signature/scope), from ctags when available or a regex heuristic.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "document_symbols_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Document Symbols",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ensure_directory",
+      "description": "Use this when you need to create a directory for docs, reports, packets, or source files.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "ensure_directory_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Ensure Directory",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "file_metadata",
+      "description": "Return basic metadata for a repo-relative file or directory.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "include_stat": {
+            "default": true,
+            "title": "Include Stat",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "file_metadata_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "File Metadata",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "find_files",
+      "description": "Find files by glob pattern below a repo-relative path.",
+      "inputSchema": {
+        "properties": {
+          "pattern": {
+            "title": "Pattern",
+            "type": "string"
+          },
+          "path": {
+            "default": ".",
+            "title": "Path",
+            "type": "string"
+          },
+          "include_hidden": {
+            "default": true,
+            "title": "Include Hidden",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 200,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "title": "find_files_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Find Files",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_command_job",
+      "description": "Use this to poll a background command job and read output tails.",
+      "inputSchema": {
+        "properties": {
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "tail_lines": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 200,
+            "title": "Tail Lines"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "get_command_job_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Get Command Job",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_command_log",
+      "description": "Use this to read saved command logs by line range or grep.",
+      "inputSchema": {
+        "properties": {
+          "log_id": {
+            "description": "Log id returned by run_command or run_commands.",
+            "title": "Log Id",
+            "type": "string"
+          },
+          "stream": {
+            "default": "stdout",
+            "description": "Which stream to read.",
+            "enum": [
+              "stdout",
+              "stderr"
+            ],
+            "title": "Stream",
+            "type": "string"
+          },
+          "start_line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional first 1-based line to return.",
+            "title": "Start Line"
+          },
+          "end_line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional last 1-based line to return.",
+            "title": "End Line"
+          },
+          "grep": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional regular expression to filter lines.",
+            "title": "Grep"
+          }
+        },
+        "required": [
+          "log_id"
+        ],
+        "title": "get_command_log_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Get Command Log",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_job_status",
+      "description": "Use this to read concise lifecycle status for a background command job.",
+      "inputSchema": {
+        "properties": {
+          "job_id": {
+            "description": "Background command job id.",
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "get_job_status_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Get Job Status",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "gh_checks",
+      "description": "List CI check runs for a pull request or a commit ref (or a polyrepo sub-repo via `repo`); one of pr_number/ref is required.",
+      "inputSchema": {
+        "properties": {
+          "pr_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Pull request number to list CI checks for.",
+            "title": "Pr Number"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Commit ref to list CI checks for, instead of a PR number.",
+            "title": "Ref"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "gh_checks_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "GitHub Checks",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "gh_issue_list",
+      "description": "List issues (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "state": {
+            "default": "open",
+            "description": "Issue state filter.",
+            "enum": [
+              "open",
+              "closed",
+              "all"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Maximum number of issues to return.",
+            "title": "Limit",
+            "type": "integer"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "gh_issue_list_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "GitHub Issue List",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "gh_issue_view",
+      "description": "View a single issue's metadata and comments (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "number": {
+            "description": "Issue number.",
+            "title": "Number",
+            "type": "integer"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "number"
+        ],
+        "title": "gh_issue_view_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "GitHub Issue View",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "gh_pr_comment",
+      "description": "Post a real, visible comment on a pull request (or a polyrepo sub-repo via `repo`); always needs confirmed=true.",
+      "inputSchema": {
+        "properties": {
+          "number": {
+            "description": "Pull request number to comment on.",
+            "title": "Number",
+            "type": "integer"
+          },
+          "body": {
+            "description": "Comment body (Markdown).",
+            "title": "Body",
+            "type": "string"
+          },
+          "reply_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional review comment id to reply to instead of posting a top-level PR comment.",
+            "title": "Reply To"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "number",
+          "body"
+        ],
+        "title": "gh_pr_comment_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "GitHub PR Comment",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "gh_pr_create",
+      "description": "Create a GitHub pull request for the current branch (or a polyrepo sub-repo via `repo`).\n\n    Requires the current branch to already be pushed (call git_push first). A real (non-dry-run)\n    PR creation needs confirmed=true.\n    ",
+      "inputSchema": {
+        "properties": {
+          "title": {
+            "description": "Pull request title.",
+            "title": "Title",
+            "type": "string"
+          },
+          "body": {
+            "description": "Pull request body (Markdown).",
+            "title": "Body",
+            "type": "string"
+          },
+          "base": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Base branch to merge into. Defaults to the repo's default branch.",
+            "title": "Base"
+          },
+          "head": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Head branch. Defaults to the current branch.",
+            "title": "Head"
+          },
+          "draft": {
+            "default": false,
+            "description": "When true, create the PR as a draft.",
+            "title": "Draft",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "title",
+          "body"
+        ],
+        "title": "gh_pr_create_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "GitHub PR Create",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "gh_pr_list",
+      "description": "List pull requests (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "state": {
+            "default": "open",
+            "description": "PR state filter.",
+            "enum": [
+              "open",
+              "closed",
+              "merged",
+              "all"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Maximum number of pull requests to return.",
+            "title": "Limit",
+            "type": "integer"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "gh_pr_list_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "GitHub PR List",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "gh_pr_merge",
+      "description": "Merge a pull request on GitHub (or a polyrepo sub-repo via `repo`); always needs confirmed=true.",
+      "inputSchema": {
+        "properties": {
+          "number": {
+            "description": "Pull request number to merge.",
+            "title": "Number",
+            "type": "integer"
+          },
+          "method": {
+            "default": "squash",
+            "description": "Merge strategy.",
+            "enum": [
+              "merge",
+              "squash",
+              "rebase"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "number"
+        ],
+        "title": "gh_pr_merge_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "GitHub PR Merge",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "gh_pr_view",
+      "description": "View pull request metadata, reviews, and optionally its diff (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "number": {
+            "description": "Pull request number.",
+            "title": "Number",
+            "type": "integer"
+          },
+          "include_diff": {
+            "default": false,
+            "description": "When true, also fetch the PR's diff.",
+            "title": "Include Diff",
+            "type": "boolean"
+          },
+          "include_comments": {
+            "default": true,
+            "description": "When true, include PR-level comments.",
+            "title": "Include Comments",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "number"
+        ],
+        "title": "gh_pr_view_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "GitHub PR View",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "gh_run_rerun",
+      "description": "Re-trigger a GitHub Actions workflow run (or a polyrepo sub-repo via `repo`); always needs confirmed=true.",
+      "inputSchema": {
+        "properties": {
+          "run_id": {
+            "description": "Workflow run id to re-trigger.",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "failed_only": {
+            "default": true,
+            "description": "When true, only rerun failed jobs.",
+            "title": "Failed Only",
+            "type": "boolean"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "title": "gh_run_rerun_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "GitHub Run Rerun",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "gh_run_view",
+      "description": "View a GitHub Actions workflow run and optionally its failed-job log tail (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Workflow run id. Defaults to the latest run on the current branch.",
+            "title": "Run Id"
+          },
+          "failed_only": {
+            "default": true,
+            "description": "When true, also fetch the failed-jobs-only log tail.",
+            "title": "Failed Only",
+            "type": "boolean"
+          },
+          "log_tail": {
+            "default": 200,
+            "description": "Number of trailing failed-log lines to include.",
+            "title": "Log Tail",
+            "type": "integer"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "gh_run_view_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "GitHub Run View",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "gh_status",
+      "description": "Report whether the `gh` CLI is installed/authenticated, plus a brief API rate-limit snapshot.",
+      "inputSchema": {
+        "properties": {},
+        "title": "gh_status_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "GitHub Status",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "git_add",
+      "description": "Stage explicit paths (or a polyrepo sub-repo via `repo`); paths blocked by policy are reported, not staged.",
+      "inputSchema": {
+        "properties": {
+          "paths": {
+            "description": "Explicit repo-relative paths to stage. Blanket '.'/'-A'/'--all' is rejected.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Paths",
+            "type": "array"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "title": "git_add_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Add",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_blame",
+      "description": "Blame a file line range to see who changed it and in which commit (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "start_line": {
+            "default": 1,
+            "title": "Start Line",
+            "type": "integer"
+          },
+          "end_line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "End Line"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "git_blame_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Blame",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_branches",
+      "description": "List local or all branches with tracking information (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "all_branches": {
+            "default": true,
+            "title": "All Branches",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "git_branches_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Branches",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_commit",
+      "description": "Use this when you need to commit exactly listed files without pushing.",
+      "inputSchema": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Paths",
+            "type": "array"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "message",
+          "paths"
+        ],
+        "title": "git_commit_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Commit",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_create_branch",
+      "description": "Create a new branch (or a polyrepo sub-repo via `repo`) from start_point.",
+      "inputSchema": {
+        "properties": {
+          "branch": {
+            "description": "New branch name; validated via `git check-ref-format`.",
+            "title": "Branch",
+            "type": "string"
+          },
+          "start_point": {
+            "default": "HEAD",
+            "description": "Revision the new branch starts from.",
+            "title": "Start Point",
+            "type": "string"
+          },
+          "checkout": {
+            "default": true,
+            "description": "When true, check out the new branch immediately.",
+            "title": "Checkout",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "branch"
+        ],
+        "title": "git_create_branch_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Create Branch",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_diff",
+      "description": "Return git diff output for the working tree or staged changes (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "staged": {
+            "default": false,
+            "title": "Staged",
+            "type": "boolean"
+          },
+          "pathspec": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pathspec"
+          },
+          "context_lines": {
+            "default": 3,
+            "title": "Context Lines",
+            "type": "integer"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "git_diff_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Diff",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_fetch",
+      "description": "Fetch a remote (or a polyrepo sub-repo via `repo`), reporting which remote-tracking refs moved.",
+      "inputSchema": {
+        "properties": {
+          "remote": {
+            "default": "origin",
+            "description": "Remote name to fetch from.",
+            "title": "Remote",
+            "type": "string"
+          },
+          "prune": {
+            "default": false,
+            "description": "When true, prune remote-tracking refs deleted upstream.",
+            "title": "Prune",
+            "type": "boolean"
+          },
+          "all_repos": {
+            "default": false,
+            "description": "When true, fetch every git repo discovered in the polyrepo workspace.",
+            "title": "All Repos",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "git_fetch_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Fetch",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "git_grep",
+      "description": "Search tracked content through git grep, optionally at a revision.\n\n    If `repo` is omitted and the workspace root is a polyrepo (not itself a\n    git repository), the search fans out across all discovered sub-repos.\n    ",
+      "inputSchema": {
+        "properties": {
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Revision"
+          },
+          "pathspec": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pathspec"
+          },
+          "paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Paths"
+          },
+          "case_sensitive": {
+            "default": false,
+            "title": "Case Sensitive",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "git_grep_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Grep",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_log",
+      "description": "Return recent commit history, optionally filtered by path or since-date (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "default": 20,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "pathspec": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pathspec"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Since"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "git_log_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Log",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_merge",
+      "description": "Merge a branch into HEAD, or abort an in-progress merge (or a polyrepo sub-repo via `repo`); merging needs confirmed=true.\n\n    On conflict, the merge is left unresolved for inspection/fixing, or call again with abort=true.\n    ",
+      "inputSchema": {
+        "properties": {
+          "branch": {
+            "default": "",
+            "description": "Branch to merge into HEAD. Ignored when abort=true.",
+            "title": "Branch",
+            "type": "string"
+          },
+          "no_ff": {
+            "default": false,
+            "description": "When true, always create a merge commit (no fast-forward).",
+            "title": "No Ff",
+            "type": "boolean"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional custom merge commit message.",
+            "title": "Message"
+          },
+          "abort": {
+            "default": false,
+            "description": "When true, abort an in-progress merge instead of starting one.",
+            "title": "Abort",
+            "type": "boolean"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "git_merge_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Merge",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_pull",
+      "description": "Pull a remote branch (or a polyrepo sub-repo via `repo`); rebase or non-fast-forward pulls need confirmed=true.\n\n    On conflict, the in-progress merge/rebase is auto-aborted and reported as `error_kind: \"pull_conflict\"`.\n    ",
+      "inputSchema": {
+        "properties": {
+          "remote": {
+            "default": "origin",
+            "description": "Remote name to pull from.",
+            "title": "Remote",
+            "type": "string"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Remote branch to pull. Defaults to the current branch's name.",
+            "title": "Branch"
+          },
+          "ff_only": {
+            "default": true,
+            "description": "When true (default), only allow a fast-forward pull.",
+            "title": "Ff Only",
+            "type": "boolean"
+          },
+          "rebase": {
+            "default": false,
+            "description": "When true, rebase local commits onto the pulled branch instead of merging.",
+            "title": "Rebase",
+            "type": "boolean"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "git_pull_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Pull",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "git_push",
+      "description": "Push a branch through the audited structural workflow (safe mode routes pushes here).\n\n    Pushing a `settings.protected_branches` branch, a real (non-dry-run) push, or force_with_lease all require\n    confirmed=true in safe mode. Full mode also permits raw shell push.\n    ",
+      "inputSchema": {
+        "properties": {
+          "remote": {
+            "default": "origin",
+            "description": "Remote name to push to.",
+            "title": "Remote",
+            "type": "string"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Branch to push. Defaults to the current branch; required on a detached HEAD.",
+            "title": "Branch"
+          },
+          "set_upstream": {
+            "default": false,
+            "description": "When true, set the pushed branch's upstream tracking.",
+            "title": "Set Upstream",
+            "type": "boolean"
+          },
+          "force_with_lease": {
+            "default": false,
+            "description": "When true, push with --force-with-lease. Only available when the server enables ALLOW_FORCE_PUSH, and always needs confirmed=true.",
+            "title": "Force With Lease",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "git_push_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Push",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "git_reset",
+      "description": "Reset HEAD to a target revision; full mode skips internal confirmation, while hard remains separately gated.",
+      "inputSchema": {
+        "properties": {
+          "mode": {
+            "default": "mixed",
+            "description": "Reset mode. Hard additionally requires ALLOW_HARD_RESET=true.",
+            "enum": [
+              "soft",
+              "mixed",
+              "hard"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "target": {
+            "default": "HEAD~1",
+            "description": "Revision to reset HEAD to.",
+            "title": "Target",
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "git_reset_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Reset",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_restore",
+      "description": "Unstage or discard changes for paths (or a polyrepo sub-repo via `repo`); discarding needs confirmed=true.",
+      "inputSchema": {
+        "properties": {
+          "paths": {
+            "description": "Repo-relative paths to restore.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Paths",
+            "type": "array"
+          },
+          "staged": {
+            "default": false,
+            "description": "When true, unstage only (always safe). When false, discard working-tree changes (needs confirmed).",
+            "title": "Staged",
+            "type": "boolean"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional revision to restore file contents from.",
+            "title": "Source"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "title": "git_restore_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Restore",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_revert",
+      "description": "Revert a revision (or a polyrepo sub-repo via `repo`); needs confirmed=true. On conflict, auto-aborts and reports conflicts.",
+      "inputSchema": {
+        "properties": {
+          "revision": {
+            "description": "Revision to revert.",
+            "title": "Revision",
+            "type": "string"
+          },
+          "no_commit": {
+            "default": false,
+            "description": "When true, apply the revert to the working tree/index without committing.",
+            "title": "No Commit",
+            "type": "boolean"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "title": "git_revert_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Revert",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_show",
+      "description": "Show a commit object or a file at a given revision (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "title": "git_show_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Show",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_stash",
+      "description": "Run git stash push/pop/apply/list/show/drop (or a polyrepo sub-repo via `repo`); pop/drop need confirmed=true.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "default": "push",
+            "description": "Stash subcommand to run.",
+            "enum": [
+              "push",
+              "pop",
+              "apply",
+              "list",
+              "show",
+              "drop"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional message for action='push'.",
+            "title": "Message"
+          },
+          "include_untracked": {
+            "default": true,
+            "description": "When true, include untracked files in action='push'.",
+            "title": "Include Untracked",
+            "type": "boolean"
+          },
+          "stash_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stash reference for apply/pop/drop/show, defaults to stash@{0}.",
+            "title": "Stash Ref"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "git_stash_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Stash",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_status",
+      "description": "Return the current git status for the repository (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "short": {
+            "default": true,
+            "title": "Short",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "git_status_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Status",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_switch_branch",
+      "description": "Switch to a branch (or a polyrepo sub-repo via `repo`), refusing to run over a dirty tree unless stash_first=true.",
+      "inputSchema": {
+        "properties": {
+          "branch": {
+            "description": "Branch name to switch to.",
+            "title": "Branch",
+            "type": "string"
+          },
+          "create": {
+            "default": false,
+            "description": "When true, create the branch (like `git switch -c`).",
+            "title": "Create",
+            "type": "boolean"
+          },
+          "start_point": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Starting point for a newly created branch. Only valid with create=true.",
+            "title": "Start Point"
+          },
+          "stash_first": {
+            "default": false,
+            "description": "When true, auto-stash a dirty working tree before switching.",
+            "title": "Stash First",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "branch"
+        ],
+        "title": "git_switch_branch_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Switch Branch",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_worktree_add",
+      "description": "Add a worktree under `.chatrepo-worktrees/` for a branch (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "branch": {
+            "description": "Branch to check out into the new worktree.",
+            "title": "Branch",
+            "type": "string"
+          },
+          "base": {
+            "default": "HEAD",
+            "description": "Revision the new branch is created from, when create_branch=true.",
+            "title": "Base",
+            "type": "string"
+          },
+          "create_branch": {
+            "default": true,
+            "description": "When true, create `branch` from `base`; when false, `branch` must already exist.",
+            "title": "Create Branch",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "branch"
+        ],
+        "title": "git_worktree_add_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Worktree Add",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_worktree_guard",
+      "description": "Use this before edits/commits to verify branch, rebase state, and unexpected dirty files (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "allowed_dirty_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Dirty paths allowed to exist before work starts.",
+            "title": "Allowed Dirty Paths"
+          },
+          "require_branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional required current branch name.",
+            "title": "Require Branch"
+          },
+          "require_not_rebasing": {
+            "default": true,
+            "description": "When true, fail if git rebase state exists.",
+            "title": "Require Not Rebasing",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "git_worktree_guard_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Worktree Guard",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_worktree_list",
+      "description": "List worktrees registered against the repository (or a polyrepo sub-repo via `repo`).",
+      "inputSchema": {
+        "properties": {
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "git_worktree_list_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Worktree List",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_worktree_remove",
+      "description": "Remove a worktree (or a polyrepo sub-repo via `repo`); needs confirmed=true.",
+      "inputSchema": {
+        "properties": {
+          "worktree_path": {
+            "description": "Path of the worktree to remove (must stay within allowed workspace roots).",
+            "title": "Worktree Path",
+            "type": "string"
+          },
+          "force": {
+            "default": false,
+            "description": "When true, remove even if the worktree has local modifications.",
+            "title": "Force",
+            "type": "boolean"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "worktree_path"
+        ],
+        "title": "git_worktree_remove_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Git Worktree Remove",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "insert_after_heading",
+      "description": "Use this when you need to insert markdown after a heading with a small payload.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "heading": {
+            "description": "Exact Markdown heading text, for example '## Goal'.",
+            "title": "Heading",
+            "type": "string"
+          },
+          "content": {
+            "description": "UTF-8 text payload. Prefer compact chunks for ChatGPT tool reliability.",
+            "title": "Content",
+            "type": "string"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes.",
+            "title": "Expected Sha256"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "path",
+          "heading",
+          "content"
+        ],
+        "title": "insert_after_heading_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Insert After Heading",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "insert_after_line",
+      "description": "Use this when you need to insert compact text after a specific line number.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "line": {
+            "description": "1-based line number.",
+            "title": "Line",
+            "type": "integer"
+          },
+          "content": {
+            "description": "UTF-8 text payload. Prefer compact chunks for ChatGPT tool reliability.",
+            "title": "Content",
+            "type": "string"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes.",
+            "title": "Expected Sha256"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "path",
+          "line",
+          "content"
+        ],
+        "title": "insert_after_line_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Insert After Line",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "insert_before_heading",
+      "description": "Use this when you need to insert markdown before a heading with a small payload.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "heading": {
+            "description": "Exact Markdown heading text, for example '## Goal'.",
+            "title": "Heading",
+            "type": "string"
+          },
+          "content": {
+            "description": "UTF-8 text payload. Prefer compact chunks for ChatGPT tool reliability.",
+            "title": "Content",
+            "type": "string"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes.",
+            "title": "Expected Sha256"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "path",
+          "heading",
+          "content"
+        ],
+        "title": "insert_before_heading_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Insert Before Heading",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "insert_before_line",
+      "description": "Use this when you need to insert compact text before a specific line number.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "line": {
+            "description": "1-based line number.",
+            "title": "Line",
+            "type": "integer"
+          },
+          "content": {
+            "description": "UTF-8 text payload. Prefer compact chunks for ChatGPT tool reliability.",
+            "title": "Content",
+            "type": "string"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes.",
+            "title": "Expected Sha256"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "path",
+          "line",
+          "content"
+        ],
+        "title": "insert_before_line_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Insert Before Line",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "insert_text_in_file",
+      "description": "Use this when you need to insert text before or after an exact anchor in an allowed repo file.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "anchor": {
+            "description": "Exact text anchor already present in the target file.",
+            "title": "Anchor",
+            "type": "string"
+          },
+          "position": {
+            "description": "Insert content before or after the exact anchor.",
+            "enum": [
+              "before",
+              "after"
+            ],
+            "title": "Position",
+            "type": "string"
+          },
+          "content": {
+            "description": "UTF-8 text payload. Prefer compact chunks for ChatGPT tool reliability.",
+            "title": "Content",
+            "type": "string"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes.",
+            "title": "Expected Sha256"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "path",
+          "anchor",
+          "position",
+          "content"
+        ],
+        "title": "insert_text_in_file_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Insert Text In File",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_dir",
+      "description": "List files and directories under a repo-relative path.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "default": ".",
+            "title": "Path",
+            "type": "string"
+          },
+          "include_hidden": {
+            "default": true,
+            "title": "Include Hidden",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 200,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "list_dir_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "List Directory",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_repos",
+      "description": "List all git repositories in the workspace (polyrepo discovery): path, detected stack, branch, makefile targets.",
+      "inputSchema": {
+        "properties": {},
+        "title": "list_repos_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "List Repos",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_test_presets",
+      "description": "Use this to list built-in/autodetected and repo-local command/test presets from .chatrepo/mcp.yml.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional workspace sub-directory to resolve presets for (as returned by list_repos). When omitted, returns the repo-profile presets plus a per-repo summary of autodetected actions across the whole workspace.",
+            "title": "Path"
+          }
+        },
+        "title": "list_test_presets_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "List Test Presets",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "move_path",
+      "description": "Use this when you need to rename or move an allowed UTF-8 repo file.",
+      "inputSchema": {
+        "properties": {
+          "source_path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Source Path",
+            "type": "string"
+          },
+          "destination_path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Destination Path",
+            "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "description": "When true, overwrite the destination path if it exists.",
+            "title": "Overwrite",
+            "type": "boolean"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes.",
+            "title": "Expected Sha256"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "source_path",
+          "destination_path"
+        ],
+        "title": "move_path_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Move Path",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "quality_gate_and_commit",
+      "description": "Use this to run quality gates and commit exactly listed files only if all required gates pass.",
+      "inputSchema": {
+        "properties": {
+          "checks": {
+            "description": "Required/optional checks to run before committing.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "commit": {
+            "additionalProperties": true,
+            "description": "Commit config with message, paths, and optional enabled boolean.",
+            "title": "Commit",
+            "type": "object"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional human-readable gate name.",
+            "title": "Name"
+          },
+          "require_clean_after_commit": {
+            "default": true,
+            "description": "When true, final status must be clean after commit.",
+            "title": "Require Clean After Commit",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "checks",
+          "commit"
+        ],
+        "title": "quality_gate_and_commit_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Quality Gate And Commit",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "read_multiple_files",
+      "description": "Read several repo files at once. Useful when comparing modules or gathering context.",
+      "inputSchema": {
+        "properties": {
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Paths",
+            "type": "array"
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "title": "read_multiple_files_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Read Multiple Files",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "read_text_file",
+      "description": "Read a text file from the repository, optionally limiting the line range.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "start_line": {
+            "default": 1,
+            "title": "Start Line",
+            "type": "integer"
+          },
+          "end_line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "End Line"
+          },
+          "with_line_numbers": {
+            "default": true,
+            "title": "With Line Numbers",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "read_text_file_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Read Text File",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "recent_changes",
+      "description": "Return files sorted by recent filesystem modification time.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "default": ".",
+            "title": "Path",
+            "type": "string"
+          },
+          "paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Paths"
+          },
+          "limit": {
+            "default": 100,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "recent_changes_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Recent Changes",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "replace_lines",
+      "description": "Use this when you need to replace a small line range in an allowed UTF-8 repo file.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "start_line": {
+            "description": "1-based line number.",
+            "title": "Start Line",
+            "type": "integer"
+          },
+          "end_line": {
+            "description": "1-based line number.",
+            "title": "End Line",
+            "type": "integer"
+          },
+          "replacement": {
+            "description": "UTF-8 text payload. Prefer compact chunks for ChatGPT tool reliability.",
+            "title": "Replacement",
+            "type": "string"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes.",
+            "title": "Expected Sha256"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "path",
+          "start_line",
+          "end_line",
+          "replacement"
+        ],
+        "title": "replace_lines_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Replace Lines",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "replace_text_in_file",
+      "description": "Use this when you need to replace an exact text fragment in an allowed UTF-8 repo file.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "find": {
+            "description": "Exact UTF-8 text fragment to find.",
+            "title": "Find",
+            "type": "string"
+          },
+          "replace": {
+            "description": "Replacement UTF-8 text.",
+            "title": "Replace",
+            "type": "string"
+          },
+          "replace_all": {
+            "default": false,
+            "description": "When false, replace exactly one occurrence.",
+            "title": "Replace All",
+            "type": "boolean"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes.",
+            "title": "Expected Sha256"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "path",
+          "find",
+          "replace"
+        ],
+        "title": "replace_text_in_file_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Replace Text In File",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "repo_info",
+      "description": "Return the MCP server configuration relevant to the inspected repository.\n\n    ``repo`` optionally selects a sub-repository in a polyrepo workspace; when\n    the workspace root itself is not a git repository and ``repo`` is omitted,\n    the git section reports ``polyrepo: true`` with the discovered repos.\n    ",
+      "inputSchema": {
+        "properties": {
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "repo_info_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Repository Info",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "run_command",
+      "description": "Use this when you need to run an allowlisted validation command and report exit code.",
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "description": "Repo-local command to run through /bin/bash -lc. Prefer run_test_preset for known tests. Server policy blocks secrets paths and forbidden executables.",
+            "title": "Command",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional timeout in milliseconds, capped by server configuration.",
+            "title": "Timeout Ms"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional repository-relative working directory. Defaults to the repository root.",
+            "title": "Cwd"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional environment overrides. Keys must be shell-safe names; secret values are redacted from output.",
+            "title": "Env"
+          },
+          "max_output_chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional stdout/stderr character cap, capped by server configuration.",
+            "title": "Max Output Chars"
+          },
+          "tail_lines": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 200,
+            "description": "Number of trailing stdout/stderr lines to include in command results. Use null to omit tails.",
+            "title": "Tail Lines"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms a command that server policy marks risky.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "parse_kind": {
+            "default": "auto",
+            "description": "Output parser to attach structured summary. Use auto for command-based inference.",
+            "enum": [
+              "auto",
+              "none",
+              "vitest",
+              "tsc",
+              "git_diff_check",
+              "pytest",
+              "gotest",
+              "gobuild",
+              "ruff",
+              "mypy",
+              "cargo_test",
+              "cargo_build",
+              "eslint"
+            ],
+            "title": "Parse Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "title": "run_command_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Run Command",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "run_commands",
+      "description": "Use this when you need to run several allowlisted validation commands and compare exit codes.",
+      "inputSchema": {
+        "properties": {
+          "commands": {
+            "description": "Ordered repo-local commands to run. Use this instead of shell operators like &&.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Commands",
+            "type": "array"
+          },
+          "stop_on_failure": {
+            "default": false,
+            "description": "When true, stop after the first non-zero exit code.",
+            "title": "Stop On Failure",
+            "type": "boolean"
+          },
+          "timeout_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional timeout in milliseconds, capped by server configuration.",
+            "title": "Timeout Ms"
+          },
+          "tail_lines": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 200,
+            "description": "Number of trailing stdout/stderr lines to include in command results. Use null to omit tails.",
+            "title": "Tail Lines"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms commands that server policy marks risky.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "parse_kind": {
+            "default": "auto",
+            "description": "Output parser for every command result. Use auto for command-based inference.",
+            "enum": [
+              "auto",
+              "none",
+              "vitest",
+              "tsc",
+              "git_diff_check",
+              "pytest",
+              "gotest",
+              "gobuild",
+              "ruff",
+              "mypy",
+              "cargo_test",
+              "cargo_build",
+              "eslint"
+            ],
+            "title": "Parse Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "commands"
+        ],
+        "title": "run_commands_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Run Commands",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "run_quality_gate",
+      "description": "Use this to run a structured quality gate from presets, commands, and policy scans.\n\n    `repo` sets the default sub-repository for policy-scan checks in a\n    polyrepo workspace; an individual check can override it with its own `repo` key.\n    ",
+      "inputSchema": {
+        "properties": {
+          "checks": {
+            "description": "Ordered checks. Each item uses preset or command, plus optional id, required, timeout_ms, parse_kind, repo.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional human-readable gate name.",
+            "title": "Name"
+          },
+          "stop_on_failure": {
+            "default": true,
+            "description": "When true, stop after the first failed required check.",
+            "title": "Stop On Failure",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "checks"
+        ],
+        "title": "run_quality_gate_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Run Quality Gate",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "run_test_preset",
+      "description": "Use this when you need to run a stack-autodetected or named test/lint/build preset without sending a long command string.\n\n    `cwd` is a convenience for the bare action-name form: passing\n    `preset=\"test\", cwd=\"api-gateway\"` is equivalent to `preset=\"api-gateway:test\"`.\n    It is ignored when `preset` already uses the composite `service:action` syntax\n    or names an explicit profile preset.\n    ",
+      "inputSchema": {
+        "properties": {
+          "preset": {
+            "description": "Preset to run: an action name (test, lint, typecheck, format, build) resolved for the workspace root or the given cwd; a composite 'service/path:action' to resolve it for a polyrepo sub-directory (autodetected via go.mod/pyproject.toml/package.json/Cargo.toml/Makefile, see list_repos/list_test_presets); or a named preset key from .chatrepo/mcp.yml or the generic built-ins: git_diff_check, node_version, npm_version.",
+            "title": "Preset",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional timeout in milliseconds, capped by server configuration.",
+            "title": "Timeout Ms"
+          },
+          "tail_lines": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 200,
+            "description": "Number of trailing stdout/stderr lines to include in command results. Use null to omit tails.",
+            "title": "Tail Lines"
+          },
+          "background": {
+            "default": false,
+            "description": "When true, start the preset as a background job and poll it later.",
+            "title": "Background",
+            "type": "boolean"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional repository-relative working directory. Defaults to the repository root.",
+            "title": "Cwd"
+          }
+        },
+        "required": [
+          "preset"
+        ],
+        "title": "run_test_preset_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Run Test Preset",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "scan_new_policy_violations",
+      "description": "Use this to scan only newly added diff lines for policy violations such as new any casts.",
+      "inputSchema": {
+        "properties": {
+          "base_ref": {
+            "default": "HEAD",
+            "description": "Git base revision to diff against, for example HEAD or HEAD~1.",
+            "title": "Base Ref",
+            "type": "string"
+          },
+          "paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional repo-relative paths to limit the diff scan.",
+            "title": "Paths"
+          },
+          "rules": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional rule ids. Defaults come from .chatrepo/mcp.yml or built-ins.",
+            "title": "Rules"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "title": "scan_new_policy_violations_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Scan New Policy Violations",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "search_text",
+      "description": "Search text across the repository or within a specific file/directory.",
+      "inputSchema": {
+        "properties": {
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "path": {
+            "default": ".",
+            "title": "Path",
+            "type": "string"
+          },
+          "paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Paths"
+          },
+          "regex": {
+            "default": false,
+            "title": "Regex",
+            "type": "boolean"
+          },
+          "case_sensitive": {
+            "default": false,
+            "title": "Case Sensitive",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "search_text_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Search Text",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "smoke_all",
+      "description": "Run a self-check smoke test of core MCP capabilities in one call.",
+      "inputSchema": {
+        "properties": {},
+        "title": "smoke_all_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Smoke All",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "start_command_job",
+      "description": "Use this for long-running allowlisted repo commands that should be polled later.",
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "description": "Long-running repo-local command to start in the background. Poll with get_command_job.",
+            "title": "Command",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional timeout in milliseconds, capped by server configuration.",
+            "title": "Timeout Ms"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional repository-relative working directory. Defaults to the repository root.",
+            "title": "Cwd"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional environment overrides. Secret-like output is redacted.",
+            "title": "Env"
+          },
+          "tail_lines": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 200,
+            "description": "Number of trailing stdout/stderr lines to include in command results. Use null to omit tails.",
+            "title": "Tail Lines"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after owner confirmation for policy-gated commands.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "concurrency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional lock key. Jobs with the same key cannot start in parallel silently.",
+            "title": "Concurrency Key"
+          },
+          "on_conflict": {
+            "default": "fail",
+            "description": "How to behave if concurrency_key is already locked by a running job.",
+            "enum": [
+              "fail",
+              "attach",
+              "wait"
+            ],
+            "title": "On Conflict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "title": "start_command_job_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Start Command Job",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "summarize_command_log",
+      "description": "Use this to parse and summarize a saved command log.",
+      "inputSchema": {
+        "properties": {
+          "log_id": {
+            "description": "Log id returned by run_command or run_commands.",
+            "title": "Log Id",
+            "type": "string"
+          },
+          "parser": {
+            "default": "auto",
+            "description": "Parser to apply to the saved log.",
+            "enum": [
+              "auto",
+              "none",
+              "vitest",
+              "tsc",
+              "git_diff_check",
+              "pytest",
+              "gotest",
+              "gobuild",
+              "ruff",
+              "mypy",
+              "cargo_test",
+              "cargo_build",
+              "eslint"
+            ],
+            "title": "Parser",
+            "type": "string"
+          }
+        },
+        "required": [
+          "log_id"
+        ],
+        "title": "summarize_command_log_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Summarize Command Log",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "symbol_definition",
+      "description": "Find definitions of a symbol (ctags index when available, else a regex heuristic) in the repo or a polyrepo sub-repo via `repo`.",
+      "inputSchema": {
+        "properties": {
+          "symbol": {
+            "description": "Exact symbol name to find definitions for.",
+            "title": "Symbol",
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional ctags kind filter, e.g. 'function' or 'class'.",
+            "title": "Kind"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Maximum number of definitions to return.",
+            "title": "Limit",
+            "type": "integer"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "symbol"
+        ],
+        "title": "symbol_definition_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Symbol Definition",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "symbol_search",
+      "description": "Heuristically search for declarations or references of a symbol name.",
+      "inputSchema": {
+        "properties": {
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "path": {
+            "default": ".",
+            "title": "Path",
+            "type": "string"
+          },
+          "paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Paths"
+          },
+          "limit": {
+            "default": 100,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "symbol"
+        ],
+        "title": "symbol_search_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Symbol Search",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "todo_scan",
+      "description": "Find TODO, FIXME, XXX, and HACK markers across the repository.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "default": ".",
+            "title": "Path",
+            "type": "string"
+          },
+          "paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Paths"
+          },
+          "limit": {
+            "default": 100,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "todo_scan_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Todo Scan",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "tree",
+      "description": "Return a textual directory tree for a repo-relative path.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "default": ".",
+            "title": "Path",
+            "type": "string"
+          },
+          "depth": {
+            "default": 4,
+            "title": "Depth",
+            "type": "integer"
+          },
+          "include_hidden": {
+            "default": true,
+            "title": "Include Hidden",
+            "type": "boolean"
+          }
+        },
+        "title": "tree_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Tree",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "update_current_mission",
+      "description": "Use this when you need to add a mission section to the repo's configured mission file (see profile.mission) before ## Goal.",
+      "inputSchema": {
+        "properties": {
+          "section_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Markdown section heading/title to insert when not using a preset.",
+            "title": "Section Title"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Markdown content for the new section. Prefer chunks for long content.",
+            "title": "Content"
+          },
+          "position": {
+            "const": "before_goal",
+            "default": "before_goal",
+            "description": "Where to insert the mission section.",
+            "title": "Position",
+            "type": "string"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "const": "mandatory_system_tool_log",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional server-side mission template. Use this to avoid large ChatGPT payloads.",
+            "title": "Preset"
+          },
+          "chunks": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional ordered content chunks joined server-side for safer long mission updates.",
+            "title": "Chunks"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "title": "update_current_mission_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Update Current Mission",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "workspace_symbols",
+      "description": "Fuzzy/substring-search symbol names across the repo or a polyrepo sub-repo via `repo` (ctags index or text-search fallback).",
+      "inputSchema": {
+        "properties": {
+          "query": {
+            "description": "Substring to search for across indexed symbol names.",
+            "title": "Query",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "description": "Maximum number of matching symbols to return.",
+            "title": "Limit",
+            "type": "integer"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "workspace_symbols_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Workspace Symbols",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "write_text_file",
+      "description": "Use this when you need to replace the entire contents of an allowed UTF-8 repo text file.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          },
+          "content": {
+            "description": "UTF-8 text payload. Prefer compact chunks for ChatGPT tool reliability.",
+            "title": "Content",
+            "type": "string"
+          },
+          "create_if_missing": {
+            "default": false,
+            "description": "When true, create the file if it does not exist.",
+            "title": "Create If Missing",
+            "type": "boolean"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes.",
+            "title": "Expected Sha256"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "title": "write_text_file_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Write Text File",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

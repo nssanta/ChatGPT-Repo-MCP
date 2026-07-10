@@ -14,7 +14,10 @@ ChatGPT (Developer Mode)
 Reverse Proxy (Caddy or Nginx)
         │
         ▼
-Python FastMCP server
+Shared MCP contract (87 tools)
+        │
+        ├── Python FastMCP package
+        └── Go MCP binary
         │
         ├── Filesystem tools (validated reads)
         ├── Git tools + git-workflow (branch/stash/fetch/pull/push/merge/worktree)
@@ -26,6 +29,10 @@ Python FastMCP server
         ▼
 One workspace folder on disk (single repo or polyrepo)
 ```
+
+Both servers expose the same names, input schemas, annotations, `.env`
+configuration, and structured behavior. `contracts/tool-schemas/tools.json` is
+the checked-in public API; language-specific acceptance tests reject drift.
 
 ## Core design decisions
 
@@ -70,6 +77,12 @@ Search-heavy tools rely on `rg`, because it is fast and scales well for large tr
 
 Even in read-only mode, not every file should be exposed.  
 This server blocks sensitive patterns by default. Structured access can be enabled only with `ACCESS_MODE=full` plus `ALLOW_SECRET_ACCESS=true`; raw full-mode shell follows OS permissions.
+
+### 7) Two implementations, one release
+
+The Python package and Go binary are equal public implementations. Go embeds a
+generated copy of the shared contract so release binaries need no runtime schema files. A single
+`VERSION`, tag, CI workflow, and documentation set covers both packages.
 
 ## Tool groups
 

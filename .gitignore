@@ -1,7 +1,13 @@
 .venv/
+python/.venv/
 __pycache__/
 *.pyc
 .env
 dist/
 build/
 *.egg-info/
+bin/
+coverage*.out
+.coverage
+htmlcov/
+python-coverage.json

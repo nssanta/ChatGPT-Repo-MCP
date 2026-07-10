@@ -2,9 +2,13 @@
 
 ## Requirements
 
+This runbook supports both implementations. Choose one executable during
+installation; the `.env`, proxy, endpoint, security model, and tool contract are
+the same.
+
 Install:
 
-- Python 3.11+ (Ubuntu 24 ships Python 3.12 by default, which works fine)
+- a Go release binary, Go 1.25+ for source builds, or Python 3.11+
 - git
 - ripgrep (the `rg` binary — required by the search tools)
 - Caddy or Nginx
@@ -42,14 +46,26 @@ sudo chown -R $USER:$USER /opt/myproject
 git clone <TARGET_REPO_URL> /opt/myproject
 ```
 
-## 3. Create virtualenv and install
+## 3. Install one implementation
+
+Go from this checkout:
+
+```bash
+cd /opt/chatrepo-mcp
+make build
+```
+
+Alternatively, place the downloaded release binary at
+`/opt/chatrepo-mcp/bin/chatrepo-mcp`.
+
+Python:
 
 ```bash
 cd /opt/chatrepo-mcp
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install -e .
+pip install -e ./python
 ```
 
 ## 4. Configure environment
@@ -68,12 +84,20 @@ PORT=8000
 TRANSPORT=streamable-http
 ACCESS_MODE=safe
 # Add the actual public hostname used by ChatGPT:
-ALLOWED_HOSTS=127.0.0.1,localhost,mcp.example.com
+ALLOWED_HOSTS=127.0.0.1:*,localhost:*,mcp.example.com
 ```
 
 For a private, single-owner full agent, set `ACCESS_MODE=full` and select **Allow all actions** in ChatGPT. Full mode is limited by the service account and systemd sandbox. The bundled unit uses `ProtectHome=true`/`ProtectSystem=full`; if full-machine access is intentional, create a reviewed systemd override that relaxes those settings and grant the `chatrepo` user only the OS permissions you actually want it to have.
 
 ## 5. Test locally
+
+Go:
+
+```bash
+./bin/chatrepo-mcp
+```
+
+Python:
 
 ```bash
 source .venv/bin/activate
@@ -99,6 +123,10 @@ sudo systemctl enable chatrepo-mcp
 sudo systemctl start chatrepo-mcp
 sudo systemctl status chatrepo-mcp
 ```
+
+The default unit starts the Go binary. For Python, copy
+`deploy/systemd/chatrepo-mcp-python.service.example` as
+`/etc/systemd/system/chatrepo-mcp.service` instead.
 
 ## 7. Put HTTPS in front
 

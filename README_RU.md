@@ -1,14 +1,17 @@
 # ChatRepo MCP
 
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](#)
-[![MCP](https://img.shields.io/badge/MCP-Remote%20Server-black)](#)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](python/)
+[![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go/)
+[![CI](https://github.com/nssanta/ChatGPT-Repo-MCP/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![MCP](https://img.shields.io/badge/MCP-87%20tools-black)](contracts/tool-schemas/tools.json)
+[![Platforms](https://img.shields.io/badge/Go-Linux%20%7C%20macOS%20%7C%20Windows-5c6ac4)](docs/INSTALL.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Для постоянного запуска на локальном Linux ПК через OpenAI Secure MCP Tunnel,
 подключения к ChatGPT и автозапуска после reboot есть
 [полный runbook на английском](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP-сервер, который превращает **любую папку или репозиторий** в рабочую среду для автономного кодинг-агента внутри ChatGPT: чтение, поиск, редактирование, запуск тестов/сборки, полноценный git, работа с GitHub PR/CI и диагностика кода — всё через один коннектор, который вы наводите на свой собственный проект.
+MCP-сервер, который превращает **любую папку или репозиторий** в рабочую среду для автономного кодинг-агента внутри ChatGPT. Пользователь выбирает Python-пакет или самостоятельный Go-бинарник; обе версии публикуют одинаковые 87 инструментов, конфигурацию и режимы доступа.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -38,9 +41,10 @@ ChatRepo MCP — это удалённый [MCP](https://modelcontextprotocol.io
 
 Обязательно нужны на машине, где запускается сервер:
 
-- **Python 3.11+**
+- **Python 3.11+** для Python-версии либо готовый **Go-бинарник**
 - **git**
 - **[ripgrep](https://github.com/BurntSushi/ripgrep)** (бинарь `rg`) — используется тулами поиска
+- **bash** — встроен в Linux/macOS; для нативного Windows Go-бинарника нужен Git Bash
 
 Опционально, включают дополнительные группы тулов (при отсутствии сервер не падает — тул вернёт `missing_tools`/`install_hint`; на запуск сервера это не влияет):
 
@@ -48,7 +52,9 @@ ChatRepo MCP — это удалённый [MCP](https://modelcontextprotocol.io
 - **[universal-ctags](https://github.com/universal-ctags/ctags)** (`ctags`) — для точного `symbol_definition` / `document_symbols` / `workspace_symbols`; без него эти тулы работают через regex-эвристику
 - Диагностические тулы по вашему стеку, например `pyright` или `ruff` (Python), `go vet` (Go, идёт вместе с тулчейном Go), `tsc` через `npx` (TypeScript) — используются `code_diagnostics`
 
-### 2. Установка
+### 2. Установите одну реализацию
+
+Python-пакет:
 
 ```bash
 git clone <url-этого-репозитория>.git chatrepo-mcp
@@ -57,8 +63,16 @@ cd chatrepo-mcp
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install -e .
+pip install -e ./python
 ```
+
+Go из исходников (готовый release-архив предоставляет ту же команду `chatrepo-mcp`):
+
+```bash
+make build
+```
+
+Готовые бинарники, checksum и особенности ОС описаны в [инструкции по установке](docs/INSTALL.md).
 
 ### 3. Наведите сервер на свою папку
 
@@ -74,8 +88,16 @@ PROJECT_ROOT=/home/you/code/my-project
 
 ### 4. Запуск
 
+Python:
+
 ```bash
 python -m chatrepo_mcp
+```
+
+Go:
+
+```bash
+./bin/chatrepo-mcp
 ```
 
 MCP endpoint теперь доступен по адресу:
@@ -165,7 +187,7 @@ WORKSPACE_ROOTS=/home/you/code/shared-protos
 
 ## Группы тулов
 
-Сервер регистрирует около 90 тулов; вызов `doctor` (или `smoke_all`) вернёт точное актуальное число для вашей сборки и матрицу возможностей (какие опциональные бинари — `gh`, `ctags`, `pyright`, `go`, ... — установлены). Группы:
+Обе реализации регистрируют 87 тулов; вызов `doctor` (или `smoke_all`) вернёт точное число и матрицу возможностей (какие опциональные бинари — `gh`, `ctags`, `pyright`, `go`, ... — установлены). Группы:
 
 - **Чтение / поиск** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`.
 - **Git (только чтение)** — `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_blame`, `git_grep` — все принимают опциональный `repo=` для polyrepo-workspace.
@@ -257,7 +279,19 @@ chatrepo-mcp/
 ├── README.md
 ├── README_RU.md
 ├── .env.example
-├── pyproject.toml
+├── VERSION
+├── Makefile
+├── python/
+│   ├── pyproject.toml
+│   ├── src/chatrepo_mcp/
+│   └── tests/
+├── go/
+│   ├── go.mod
+│   ├── cmd/chatrepo-mcp/
+│   └── internal/
+├── contracts/
+│   ├── tool-schemas/
+│   └── acceptance/
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── DEPLOY_VPS.md
@@ -268,28 +302,7 @@ chatrepo-mcp/
 │   ├── caddy/
 │   ├── nginx/
 │   └── systemd/
-├── scripts/
-│   ├── install_ubuntu.sh
-│   ├── check_tools.py
-│   └── smoke_test.sh
-├── src/chatrepo_mcp/
-│   ├── __main__.py
-│   ├── config.py
-│   ├── server.py
-│   ├── fs_tools.py
-│   ├── edit_tools.py
-│   ├── command_tools.py
-│   ├── git_tools.py
-│   ├── git_workflow_tools.py
-│   ├── github_tools.py
-│   ├── lsp_tools.py
-│   ├── index_tools.py
-│   ├── workspace.py
-│   ├── profile.py
-│   ├── workflows.py
-│   ├── parsers.py
-│   └── security.py
-└── tests/
+└── scripts/
 ```
 
 * * *

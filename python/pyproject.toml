@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chatrepo-mcp"
+version = "0.2.0"
+description = "Full coding-agent MCP server for ChatGPT over a repository, workspace, or trusted machine"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+  { name = "OpenAI ChatGPT" }
+]
+dependencies = [
+  "mcp>=1.0.0",
+  "pydantic>=2.7.0",
+  "python-dotenv>=1.0.0",
+]
+keywords = ["mcp", "chatgpt", "git", "repository", "developer-tools"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Operating System :: POSIX :: Linux",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.3.0",
+  "coverage[toml]>=7.6.0",
+  "mypy>=1.10.0",
+  "pytest>=8.0.0",
+  "ruff>=0.5.0",
+  "PyYAML>=6.0.0",
+]
+
+[project.scripts]
+chatrepo-mcp = "chatrepo_mcp.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+
+[tool.coverage.run]
+branch = true
+source = ["chatrepo_mcp"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]

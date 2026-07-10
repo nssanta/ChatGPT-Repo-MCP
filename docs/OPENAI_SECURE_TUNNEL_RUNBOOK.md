@@ -15,7 +15,9 @@ entry point does not change when the home IP changes or the PC reboots.
 
 ## Scope and prerequisites
 
-This guide is for Linux hosts using `systemd` and Python 3.11+. You need:
+This guide is for Linux hosts using `systemd` and supports either packaged
+implementation. The examples use the Go binary; the Python command is shown
+alongside it. See [Installation](INSTALL.md) for platform prerequisites. You need:
 
 - A clone of this repository and a local Git repository to expose through it.
 - A Platform organization with tunnel permissions:
@@ -94,12 +96,18 @@ export CHATREPO_DIR="$HOME/src/chatrepo-mcp"
 export PROJECT_ROOT="$HOME/src/my-project"
 
 cd "$CHATREPO_DIR"
+make build
+
+mkdir -p "$HOME/.config/chatrepo-mcp"
+```
+
+For Python instead of Go:
+
+```bash
 python3 -m venv .venv
 . .venv/bin/activate
 pip install --upgrade pip
-pip install -e .
-
-mkdir -p "$HOME/.config/chatrepo-mcp"
+pip install -e ./python
 ```
 
 Create `$HOME/.config/chatrepo-mcp/chatrepo-mcp.env` and substitute your own
@@ -110,7 +118,7 @@ HOST=127.0.0.1
 PORT=2091
 TRANSPORT=streamable-http
 PROJECT_ROOT=/home/USER/src/my-project
-ALLOWED_HOSTS=127.0.0.1,localhost
+ALLOWED_HOSTS=127.0.0.1:*,localhost:*
 MCP_AUTH_MODE=none
 ```
 
@@ -173,12 +181,13 @@ Start the MCP server in the first terminal:
 
 ```bash
 cd "$CHATREPO_DIR"
-. .venv/bin/activate
 set -a
 . "$HOME/.config/chatrepo-mcp/chatrepo-mcp.env"
 set +a
-python -m chatrepo_mcp
+./bin/chatrepo-mcp
 ```
+
+For Python, activate `.venv` and run `python -m chatrepo_mcp` instead.
 
 In a second terminal validate and start the tunnel client:
 
@@ -246,7 +255,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/home/USER/src/chatrepo-mcp
 EnvironmentFile=%h/.config/chatrepo-mcp/chatrepo-mcp.env
-ExecStart=/home/USER/src/chatrepo-mcp/.venv/bin/python -m chatrepo_mcp
+ExecStart=/home/USER/src/chatrepo-mcp/bin/chatrepo-mcp
 Restart=always
 RestartSec=5
 UMask=0077
@@ -254,6 +263,9 @@ UMask=0077
 [Install]
 WantedBy=default.target
 ```
+
+For Python, replace `ExecStart` with
+`/home/USER/src/chatrepo-mcp/.venv/bin/python -m chatrepo_mcp`.
 
 Create `$HOME/.config/systemd/user/chatrepo-mcp-tunnel.service`:
 
