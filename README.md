@@ -5,6 +5,9 @@
 [![Safe Writes](https://img.shields.io/badge/Mode-Safe%20Writes-orange)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+Run it from a private Linux PC through OpenAI Secure MCP Tunnel, including
+ChatGPT connection and reboot-safe systemd services: [full runbook](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
+
 MCP server for ChatGPT that gives the model deep access to **one Git repository** on your VPS, with safe text-edit tools.
 
 [Русская версия](README_RU.md) | [English](README.md)

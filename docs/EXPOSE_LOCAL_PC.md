@@ -9,12 +9,19 @@ which most home connections don't have (CGNAT, dynamic IP, ISP terms). The
 correct primitive is an **outbound tunnel** with a fixed address, not an inbound
 proxy. Caddy only makes sense on a VPS with a public IP.
 
-## ⚠️ Check the plan gate first, not the tunnel
+## Check the plan gate first, not the tunnel
 
-Full write-capable MCP connectors in ChatGPT are a rolling beta for
-**Business / Enterprise / Edu**. On a personal **Plus** plan you likely only get
-a read/fetch connector — in which case the V5 write+command layer should not be
-exposed at all. A tunnel solves *delivery*, not this *permission*.
+OpenAI's current policy says full write/modify MCP support is beta for
+**Business / Enterprise / Edu**; Pro can create apps and connect MCPs with
+read/fetch permissions. Product UI and entitlements are rolling out, so confirm
+what your own ChatGPT workspace allows before exposing write or command tools.
+A tunnel solves *delivery*, not this *permission*.
+
+## Complete OpenAI Tunnel walkthrough
+
+For the exact Linux setup used with this project - Platform tunnel creation,
+runtime key, `tunnel-client`, ChatGPT app, `systemd --user`, reboot verification,
+and troubleshooting - see the [OpenAI Secure MCP Tunnel runbook](OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
 ## Comparison
 

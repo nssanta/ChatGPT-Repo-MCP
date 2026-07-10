@@ -5,6 +5,10 @@
 [![Safe Writes](https://img.shields.io/badge/Mode-Safe%20Writes-orange)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+Для постоянного запуска на локальном Linux ПК через OpenAI Secure MCP Tunnel,
+подключения к ChatGPT и автозапуска после reboot есть
+[полный runbook на английском](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
+
 MCP сервер для ChatGPT, который даёт модели глубокий доступ к **одному Git-репозиторию** на вашем VPS и умеет безопасно редактировать текстовые файлы.
 
 [Русская версия](README_RU.md) | [English](README.md)

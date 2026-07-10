@@ -2,15 +2,19 @@
 
 ## Prerequisites
 
-You need:
-
-- ChatGPT developer mode enabled
-- a public HTTPS URL to your MCP endpoint
-- the server already running
+You need ChatGPT developer-mode access and a running MCP server. You can connect
+it either through a public HTTPS URL or through an OpenAI Secure MCP Tunnel.
 
 Official docs say developer mode is enabled via **Settings → Apps → Advanced settings → Developer mode** and that app creation supports **SSE** / **streaming HTTP** with **OAuth**, **No Authentication**, or **Mixed Authentication**.
 
-## Recommended full-agent settings
+## Option A: OpenAI Secure MCP Tunnel (recommended for a local PC)
+
+If the MCP server runs on a private PC, do not expose it publicly. In the app
+creation form choose **Connection -> Tunnel**, select the tunnel or paste its
+`tunnel_id`, and keep `tunnel-client` running locally. Full setup, systemd
+autostart, and troubleshooting: [OpenAI Secure MCP Tunnel runbook](OPENAI_SECURE_TUNNEL_RUNBOOK.md).
+
+## Option B: public HTTPS endpoint
 
 Use:
 
@@ -30,17 +34,16 @@ No-auth is only acceptable for temporary read-only experiments. OAuth/HMAC can b
 
 ## Steps
 
-1. Open ChatGPT.
-2. Go to **Settings → Apps**.
-3. Enable **Developer mode**.
-4. Click **Create app**.
-5. Fill in:
+1. Open [ChatGPT Plugins / Apps](https://chatgpt.com/plugins).
+2. Enable developer mode if your workspace exposes the toggle.
+3. Click the **+** button to create an app.
+4. Fill in:
    - Name
    - Description
-   - MCP URL
+   - MCP URL, or select **Tunnel** under Connection
    - Authentication type
-6. Confirm the warning.
-7. Create the app.
+5. Confirm the warning.
+6. Create the app.
 
 ## First prompts to test
 
