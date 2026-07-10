@@ -82,7 +82,7 @@ This server blocks sensitive patterns by default. Structured access can be enabl
 
 The Python package and Go binary are equal public implementations. Go embeds a
 generated copy of the shared contract so release binaries need no runtime schema files. A single
-`VERSION`, tag, CI workflow, and documentation set covers both packages.
+`VERSION`, release tag workflow, and documentation set cover both packages.
 
 ## Tool groups
 

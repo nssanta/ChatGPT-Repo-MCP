@@ -2,7 +2,6 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](python/)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go/)
-[![CI](https://github.com/nssanta/ChatGPT-Repo-MCP/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 [![MCP](https://img.shields.io/badge/MCP-87%20tools-black)](contracts/tool-schemas/tools.json)
 [![Platforms](https://img.shields.io/badge/Go-Linux%20%7C%20macOS%20%7C%20Windows-5c6ac4)](docs/INSTALL.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
