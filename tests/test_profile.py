@@ -15,7 +15,9 @@ def test_missing_profile_uses_defaults(tmp_path: Path) -> None:
 
     assert profile.path is None
     assert "git_diff_check" in profile.presets
-    assert "no_new_as_any" in profile.quality_rules
+    # Default quality rules are neutral/stack-agnostic; stack-specific rules
+    # (TS/Python/Go/...) are opt-in via .chatrepo/mcp.yml, not imposed by default.
+    assert profile.quality_rules == ["no_secret_like_literals"]
     assert profile.mission["current"] == "missions/CURRENT.md"
 
 

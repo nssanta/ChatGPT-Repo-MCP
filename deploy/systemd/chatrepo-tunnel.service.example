@@ -1,0 +1,20 @@
+[Unit]
+Description=OpenAI Secure MCP Tunnel for chatrepo-mcp
+After=network-online.target chatrepo-mcp.service
+Wants=network-online.target
+Requires=chatrepo-mcp.service
+
+[Service]
+Type=simple
+User=chatrepo
+Group=chatrepo
+Environment=HOME=/opt/chatrepo-mcp
+EnvironmentFile=/etc/chatrepo-tunnel.env
+ExecStart=/usr/local/bin/tunnel-client run --profile chatrepo-local
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

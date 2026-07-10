@@ -2,7 +2,7 @@
 
 ## Goal
 
-Expose a **single repository** on a VPS to ChatGPT through a remote MCP server, with strong path, secret, edit, and command guardrails.
+Expose a workspace, polyrepo, or trusted machine to ChatGPT through remote MCP, with an explicit safe/full operating mode.
 
 ## High-level design
 
@@ -17,25 +17,26 @@ Reverse Proxy (Caddy or Nginx)
 Python FastMCP server
         │
         ├── Filesystem tools (validated reads)
-        ├── Git tools (git subprocess, read-only)
+        ├── Git tools + git-workflow (branch/stash/fetch/pull/push/merge/worktree)
+        ├── GitHub tools (PR/CI via `gh`) + diagnostics/symbol index
         ├── Safe text edit tools (diff + hash guarded)
-        ├── Safe command runner (allowlisted, no shell)
+        ├── Policy-gated command runner (allowlist / guarded / unrestricted)
         └── Security / limits / blocked paths
         │
         ▼
-One local repository on disk
+One workspace folder on disk (single repo or polyrepo)
 ```
 
 ## Core design decisions
 
-### 1) One repository only
+### 1) One workspace root, optionally many repos
 
-`PROJECT_ROOT` points to exactly one repo.  
-Every path-based tool resolves relative to that root and rejects traversal outside it.
+`PROJECT_ROOT` points to the workspace folder — one git repo, or a parent folder containing several independent repos (polyrepo; see `list_repos`/`workspace.py`).
+Every path-based tool resolves relative to that root (or an extra `WORKSPACE_ROOTS` folder) and rejects traversal outside it, unless `FILESYSTEM_UNRESTRICTED=true` removes the perimeter on purpose.
 
 ### 2) Safe edit layer
 
-Write tools are limited to UTF-8 text files inside `PROJECT_ROOT`.
+Structured write tools operate on UTF-8 text files inside the configured roots (or anywhere in full mode).
 Every write path is checked against:
 
 - repo-root traversal protection
@@ -44,20 +45,20 @@ Every write path is checked against:
 - binary/non-UTF-8 detection
 - optional `expected_sha256` stale-state guard
 
-Write tools return unified diffs and default to `dry_run=true`.
+Write tools return unified diffs. If `dry_run` is omitted, safe mode previews and full mode applies; an explicit value always wins.
 
 ### 3) Git through subprocess
 
 Git information is obtained through `git` CLI commands executed with:
 
-- working directory = `PROJECT_ROOT`
+- working directory = the selected repository (`PROJECT_ROOT` by default)
 - explicit timeout
 - explicit argument list
 - capped output
 
-### 4) Safe command runner
+### 4) Safe/full command runner
 
-`run_command` supports two policies. `allowlist` runs only known validation commands. `full_repo` allows repo-local bash through `/bin/bash -lc`, but keeps `cwd` inside `PROJECT_ROOT`, blocks secret paths, redacts output, and gates destructive/service commands.
+`ACCESS_MODE=safe` uses scoped paths, allowlisted commands by default, preview writes, hashes, and confirmation gates. `ACCESS_MODE=full` forces unrestricted bash/filesystem, applies writes by default, enables move/delete, and treats structural confirmations as granted. Safe mode blocks raw `git push`; full mode intentionally permits it because it is real shell access. Separate structural interlocks remain for secret tools, force push, and hard reset.
 
 Command output is redacted for common secret patterns and command executions are audit-logged without raw secrets.
 
@@ -68,7 +69,7 @@ Search-heavy tools rely on `rg`, because it is fast and scales well for large tr
 ### 6) Secret-aware file access
 
 Even in read-only mode, not every file should be exposed.  
-This server blocks sensitive patterns by default, especially `.env` and private key material.
+This server blocks sensitive patterns by default. Structured access can be enabled only with `ACCESS_MODE=full` plus `ALLOW_SECRET_ACCESS=true`; raw full-mode shell follows OS permissions.
 
 ## Tool groups
 
@@ -109,10 +110,26 @@ This server blocks sensitive patterns by default, especially `.env` and private 
 
 ### Commands
 
-- allowlisted validation commands with exit code, stdout, stderr, duration, and timeout reporting
-- multi-command validation batches
+- policy-gated validation commands with exit code, stdout, stderr, duration, and timeout reporting
+- multi-command validation batches, stack-autodetected test/lint/build presets
 - background jobs for long E2E commands with polling and cancellation
-- controlled `git_commit` for explicitly listed paths, without push
+- controlled `git_commit` for explicitly listed paths (no push)
+
+### Git workflow
+
+- branch/stash/restore/fetch/pull/merge/revert/reset, plus worktree add/list/remove
+- safe mode routes push through `git_push`; full mode also exposes raw shell
+- structured force push and hard reset require `ALLOW_FORCE_PUSH` / `ALLOW_HARD_RESET`
+
+### GitHub (via `gh` CLI)
+
+- PR create/list/view/comment/merge, CI check/run inspection and rerun, issue list/view
+- graceful `gh_unavailable`/`no_github_remote` errors when `gh` isn't installed/authenticated or there's no GitHub remote
+
+### Diagnostics and symbols
+
+- one-shot `code_diagnostics` (`go vet` / `pyright` or `ruff` / `tsc --noEmit`, autodetected per stack)
+- `symbol_definition` / `document_symbols` / `workspace_symbols` via `ctags` when installed, else a regex heuristic
 
 ## Output philosophy
 
@@ -123,10 +140,7 @@ Tool outputs are structured and concise enough for the model to reason over them
 - search results as lists of `{path, line, text}`
 - diffs capped to prevent context overload
 
-## Future v2 ideas
+## Future ideas
 
-- GitHub MCP layer for PRs / issues
-- write tools with approval
-- safe `run_tests`
-- optional UI resource
-- language-aware symbol indexing
+- a full LSP client (find-references/rename via live `gopls`/`pyright`) beyond the current one-shot diagnostics + ctags index
+- optional UI resource for tree/diff views

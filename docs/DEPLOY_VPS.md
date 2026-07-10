@@ -4,11 +4,13 @@
 
 Install:
 
-- Python 3.12+
+- Python 3.11+ (Ubuntu 24 ships Python 3.12 by default, which works fine)
 - git
-- ripgrep
+- ripgrep (the `rg` binary — required by the search tools)
 - Caddy or Nginx
 - systemd
+
+Optional, only if you want the corresponding tool groups: `gh` (GitHub CLI, for `gh_*` PR/CI tools) and `universal-ctags` (for precise symbol tools; a heuristic fallback is used without it).
 
 ## Recommended filesystem layout
 
@@ -64,7 +66,12 @@ PROJECT_ROOT=/opt/myproject
 HOST=127.0.0.1
 PORT=8000
 TRANSPORT=streamable-http
+ACCESS_MODE=safe
+# Add the actual public hostname used by ChatGPT:
+ALLOWED_HOSTS=127.0.0.1,localhost,mcp.example.com
 ```
+
+For a private, single-owner full agent, set `ACCESS_MODE=full` and select **Allow all actions** in ChatGPT. Full mode is limited by the service account and systemd sandbox. The bundled unit uses `ProtectHome=true`/`ProtectSystem=full`; if full-machine access is intentional, create a reviewed systemd override that relaxes those settings and grant the `chatrepo` user only the OS permissions you actually want it to have.
 
 ## 5. Test locally
 
@@ -116,9 +123,11 @@ If you currently only have IPv4 and no domain yet, finish the code deployment fi
 
 ## 9. First production hardening steps
 
-- keep server read-only
-- keep blocked patterns enabled
-- run as a dedicated system user
+Write/edit/command tools are always registered (there is no switch to disable them entirely); the levers that actually control exposure are:
+
+- for ChatGPT public-URL connections, put a real OAuth/ChatGPT-supported authentication layer in front; static bearer works only for clients that can send the header directly
+- keep `ACCESS_MODE=safe` for shared deployments; use `full` only for a private trusted endpoint
+- keep secret patterns blocked, or require both full mode and `ALLOW_SECRET_ACCESS=true` for structured secret access
+- run as a dedicated system user with the least filesystem access it needs
 - do not store secrets in readable repo files
-- monitor logs
-- do not expose write tools until you really need them
+- monitor `COMMAND_AUDIT_LOG_PATH` and `journalctl -u chatrepo-mcp`

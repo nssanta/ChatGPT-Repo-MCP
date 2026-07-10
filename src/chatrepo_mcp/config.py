@@ -4,6 +4,13 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+
+# `python -m chatrepo_mcp` is the documented local entrypoint.  Load the
+# adjacent .env before Settings.from_env() is evaluated by server.py.
+load_dotenv()
+
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -59,12 +66,76 @@ class Settings:
     mcp_bearer_token: str | None
     command_policy_mode: str
     command_jobs_dir: Path
+    workspace_roots: tuple[str, ...]
+    filesystem_unrestricted: bool
+    workspace_scan_depth: int
+    denied_words: tuple[str, ...]
+    destructive_words: tuple[str, ...]
+    command_shell_prelude: str
+    git_network_timeout: int
+    protected_branches: tuple[str, ...]
+    allow_force_push: bool
+    gh_timeout: int
+    github_tools_enabled: bool
+    secret_globs: tuple[str, ...]
+    binary_globs: tuple[str, ...]
+    access_mode: str = "safe"
+    allow_secret_access: bool = False
+    allow_hard_reset: bool = False
+
+    @property
+    def full_access(self) -> bool:
+        return self.access_mode == "full"
+
+    @property
+    def default_dry_run(self) -> bool:
+        return not self.full_access
+
+    def effective_dry_run(self, requested: bool | None) -> bool:
+        return self.default_dry_run if requested is None else requested
+
+    def confirmation_granted(self, confirmed: bool | None) -> bool:
+        return self.full_access or confirmed is True
 
     @staticmethod
     def from_env() -> "Settings":
-        project_root = Path(os.getenv("PROJECT_ROOT", "")).expanduser().resolve()
-        if not str(project_root):
+        raw_project_root = os.getenv("PROJECT_ROOT", "").strip()
+        if not raw_project_root:
             raise RuntimeError("PROJECT_ROOT is required")
+        project_root = Path(raw_project_root).expanduser().resolve()
+        if not project_root.exists() or not project_root.is_dir():
+            raise RuntimeError(f"PROJECT_ROOT must be an existing directory: {project_root}")
+
+        access_mode = os.getenv("ACCESS_MODE", "safe").strip().lower()
+        if access_mode not in {"safe", "full"}:
+            raise RuntimeError("ACCESS_MODE must be one of: safe, full")
+        full_access = access_mode == "full"
+        allow_secret_access = full_access and _env_bool("ALLOW_SECRET_ACCESS", False)
+        secret_globs = _env_csv(
+            "SECRET_GLOBS",
+            ".env,.env.*,*.pem,*.key,*.p12,*.pfx,**/.git/**",
+        )
+        if not secret_globs and not allow_secret_access:
+            raise RuntimeError(
+                "SECRET_GLOBS must not be empty unless ACCESS_MODE=full and ALLOW_SECRET_ACCESS=true"
+            )
+
+        auth_mode = os.getenv("MCP_AUTH_MODE", "none").strip().lower()
+        if auth_mode not in {"none", "bearer"}:
+            raise RuntimeError("MCP_AUTH_MODE must be one of: none, bearer")
+        bearer_token = os.getenv("MCP_BEARER_TOKEN")
+        if auth_mode == "bearer" and not (bearer_token and bearer_token.strip()):
+            raise RuntimeError("MCP_BEARER_TOKEN is required when MCP_AUTH_MODE=bearer")
+
+        command_policy_mode = (
+            "unrestricted"
+            if full_access
+            else os.getenv("COMMAND_POLICY_MODE", "allowlist").strip().lower()
+        )
+        if command_policy_mode not in {"allowlist", "guarded", "unrestricted", "full_repo"}:
+            raise RuntimeError(
+                "COMMAND_POLICY_MODE must be one of: allowlist, guarded, unrestricted, full_repo"
+            )
         return Settings(
             app_name=os.getenv("APP_NAME", "chatrepo-mcp"),
             host=os.getenv("HOST", "127.0.0.1"),
@@ -88,26 +159,60 @@ class Settings:
             allow_hidden_default=_env_bool("ALLOW_HIDDEN_DEFAULT", True),
             allowed_hosts=_env_csv("ALLOWED_HOSTS", "127.0.0.1,localhost"),
             enable_dns_rebinding_protection=_env_bool("ENABLE_DNS_REBINDING_PROTECTION", True),
-            canonical_namespace=os.getenv("CANONICAL_NAMESPACE", "/Eva_Ai"),
+            canonical_namespace=os.getenv("CANONICAL_NAMESPACE") or f"/{project_root.name}",
             ephemeral_handles_supported=_env_bool("EPHEMERAL_HANDLES_SUPPORTED", False),
             writable_globs=_env_csv(
                 "WRITABLE_GLOBS",
                 "**/*",
             ),
             max_write_file_bytes=_env_int("MAX_WRITE_FILE_BYTES", 1_000_000),
-            dangerously_allow_all_writes=_env_bool("DANGEROUSLY_ALLOW_ALL_WRITES", True),
-            require_expected_hash_for_writes=_env_bool("REQUIRE_EXPECTED_HASH_FOR_WRITES", True),
+            dangerously_allow_all_writes=(
+                full_access or _env_bool("DANGEROUSLY_ALLOW_ALL_WRITES", False)
+            ),
+            require_expected_hash_for_writes=(
+                False
+                if full_access
+                else _env_bool("REQUIRE_EXPECTED_HASH_FOR_WRITES", True)
+            ),
             max_batch_operations=_env_int("MAX_BATCH_OPERATIONS", 50),
             max_combined_diff_chars=_env_int("MAX_COMBINED_DIFF_CHARS", 300_000),
-            allow_move_delete_operations=_env_bool("ALLOW_MOVE_DELETE_OPERATIONS", True),
+            allow_move_delete_operations=(
+                full_access or _env_bool("ALLOW_MOVE_DELETE_OPERATIONS", False)
+            ),
             max_patch_bytes=_env_int("MAX_PATCH_BYTES", 500_000),
             max_command_output_chars=_env_int("MAX_COMMAND_OUTPUT_CHARS", 200_000),
             command_timeout_ms=_env_int("COMMAND_TIMEOUT_MS", 300_000),
             command_audit_log_path=Path(
-                os.getenv("COMMAND_AUDIT_LOG_PATH", "/var/log/chatrepo-mcp/commands.log")
+                os.getenv("COMMAND_AUDIT_LOG_PATH", "~/.local/state/chatrepo-mcp/commands.log")
             ).expanduser(),
-            mcp_auth_mode=os.getenv("MCP_AUTH_MODE", "none"),
-            mcp_bearer_token=os.getenv("MCP_BEARER_TOKEN"),
-            command_policy_mode=os.getenv("COMMAND_POLICY_MODE", "allowlist"),
+            mcp_auth_mode=auth_mode,
+            mcp_bearer_token=bearer_token,
+            command_policy_mode=command_policy_mode,
             command_jobs_dir=Path(os.getenv("COMMAND_JOBS_DIR", "/tmp/chatrepo-mcp-jobs")).expanduser(),
+            workspace_roots=_env_csv("WORKSPACE_ROOTS", ""),
+            filesystem_unrestricted=(
+                full_access or _env_bool("FILESYSTEM_UNRESTRICTED", False)
+            ),
+            workspace_scan_depth=_env_int("WORKSPACE_SCAN_DEPTH", 2),
+            denied_words=_env_csv("DENIED_WORDS", "sudo,su"),
+            destructive_words=_env_csv(
+                "DESTRUCTIVE_WORDS",
+                "rm -rf,rmdir,git push --force,git reset --hard,git clean,"
+                "docker system prune,chmod -R,chown -R,mkfs,dd",
+            ),
+            command_shell_prelude=os.getenv("COMMAND_SHELL_PRELUDE", ""),
+            git_network_timeout=_env_int("GIT_NETWORK_TIMEOUT", 60),
+            protected_branches=_env_csv("PROTECTED_BRANCHES", "main,master"),
+            allow_force_push=_env_bool("ALLOW_FORCE_PUSH", False),
+            gh_timeout=_env_int("GH_TIMEOUT", 60),
+            github_tools_enabled=_env_bool("GITHUB_TOOLS_ENABLED", True),
+            secret_globs=secret_globs,
+            binary_globs=_env_csv(
+                "BINARY_GLOBS",
+                "**/.venv/**,**/node_modules/**,**/*.db,**/*.sqlite,**/*.sqlite3,**/*.bin,"
+                "**/*.png,**/*.jpg,**/*.jpeg,**/*.webp,**/*.pdf,**/*.zip,**/*.tar,**/*.gz",
+            ),
+            access_mode=access_mode,
+            allow_secret_access=allow_secret_access,
+            allow_hard_reset=_env_bool("ALLOW_HARD_RESET", False),
         )

@@ -42,7 +42,7 @@ Use the printed URL with `/mcp` appended, for example:
 https://example.trycloudflare.com/mcp
 ```
 
-ChatGPT auth mode: `Bearer token` when `MCP_AUTH_MODE=bearer`.
+For a public ChatGPT URL, use OAuth or another authentication method offered by the app dialog. Static `MCP_AUTH_MODE=bearer` is only for clients that can send the header directly.
 
 ## Verify Tools
 
@@ -51,9 +51,9 @@ cd /opt/evaai/ChatGPT-Repo-MCP
 .venv/bin/python scripts/check_tools.py "https://CURRENT.trycloudflare.com/mcp"
 ```
 
-Expected: 19 tools including `repo_info`, `read_text_file`, `find_files`, `git_blame`, and `git_grep`.
+Expected: the read/search/git-read tool group, including `repo_info`, `read_text_file`, `find_files`, `git_blame`, and `git_grep`. Compare the exact count against `doctor`'s `tool_count` field rather than a hardcoded number — it moves as tools are added.
 
-For the V5 full agent workflow layer, expected tools: 47. The list should include:
+The full agent workflow layer additionally includes (non-exhaustive):
 
 - `write_text_file`
 - `replace_text_in_file`
@@ -79,6 +79,9 @@ For the V5 full agent workflow layer, expected tools: 47. The list should includ
 - `get_command_job`
 - `cancel_command_job`
 - `git_commit`
+- the git-workflow group (`git_switch_branch`, `git_add`, `git_stash`, `git_fetch`, `git_pull`, `git_push`, `git_merge`, worktrees, ...)
+- the `gh_*` GitHub PR/CI group (needs `gh` installed and authenticated)
+- `code_diagnostics`, `symbol_definition`, `document_symbols`, `workspace_symbols`
 
 ## V2 Smoke
 
@@ -90,11 +93,9 @@ URL="$(journalctl -u chatrepo-mcp-tunnel -n 80 --no-pager | grep -o 'https://[^ 
 
 Then call `doctor` and `smoke_all` from ChatGPT. `smoke_all.ok` should be `true`.
 
-`run_command` can run full repo bash when `COMMAND_POLICY_MODE=full_repo`. It still keeps `cwd` inside `PROJECT_ROOT`, redacts output, and gates service/destructive commands behind confirmation.
+`ACCESS_MODE=safe` uses the allowlist by default. `COMMAND_POLICY_MODE=guarded` enables repo bash with destructive confirmation. `ACCESS_MODE=full` forces unrestricted bash/filesystem and removes internal confirmation/dry-run defaults; it remains limited by the service account and systemd sandbox.
 
-Allowed examples include `git diff --check`, `git diff`, `npm run build -w packages/agent`, selected `npm run test ...`, `npx vitest run ...`, and selected scenario `npx tsx ...` commands.
-
-Service/live commands return `confirmation_required` and are not executed by default.
+Destructive/service-style commands return `confirmation_required` in `guarded` mode and are not executed until called again with `confirmed=true`.
 
 For long E2E runs, prefer `start_command_job` and poll with `get_command_job` instead of holding one MCP call open.
 
@@ -105,7 +106,7 @@ Use a root-only env file such as `/etc/chatrepo-mcp.env`:
 ```text
 MCP_AUTH_MODE=bearer
 MCP_BEARER_TOKEN=<secret>
-COMMAND_POLICY_MODE=full_repo
+ACCESS_MODE=safe
 COMMAND_TIMEOUT_MS=300000
 ```
 

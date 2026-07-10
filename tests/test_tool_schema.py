@@ -65,3 +65,24 @@ def test_quality_gate_commit_is_marked_write_action() -> None:
 
     assert annotations.readOnlyHint is False
     assert annotations.destructiveHint is True
+
+
+def test_mode_aware_write_defaults_and_full_git_schema() -> None:
+    tools = _tools_by_name()
+
+    for tool_name in (
+        "write_text_file",
+        "replace_text_in_file",
+        "batch_edit_files",
+        "apply_patch",
+        "git_add",
+        "git_push",
+        "gh_pr_create",
+    ):
+        dry_run = tools[tool_name].inputSchema["properties"]["dry_run"]
+        assert dry_run.get("default") is None
+
+    reset_mode = tools["git_reset"].inputSchema["properties"]["mode"]
+    assert reset_mode["enum"] == ["soft", "mixed", "hard"]
+    assert "repo" in tools["apply_patch"].inputSchema["properties"]
+    assert "repo" in tools["git_commit"].inputSchema["properties"]

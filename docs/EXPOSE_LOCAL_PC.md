@@ -68,6 +68,51 @@ address can never drift.
 - The client is open source (Apache-2.0, `openai/tunnel-client`).
 - Reboot survival is on you (systemd).
 
+#### Official tunnel setup: Platform → binary → ChatGPT
+
+1. Open <https://platform.openai.com/settings/organization/tunnels>, click **Create tunnel**, name it, and associate it with the Platform organization and ChatGPT workspace that must use it. Copy the generated `tunnel_id`; do not copy the ID shown in somebody else's screenshot.
+2. Open <https://platform.openai.com/settings/organization/api-keys> and create a dedicated runtime API key for this tunnel client. Prefer the narrowest available project/organization permissions. Copy the secret once into a root-readable environment file; never commit it and never place it in screenshots.
+3. On the Tunnels page, click **Download tunnel-client**, or download the latest release from <https://github.com/openai/tunnel-client/releases>. Do not hard-code a versioned asset URL in automation; OpenAI recommends following the latest release.
+4. Install the downloaded binary for the machine architecture and verify it:
+
+   ```bash
+   chmod +x ./tunnel-client
+   sudo install -m 0755 ./tunnel-client /usr/local/bin/tunnel-client
+   tunnel-client help quickstart
+   ```
+
+5. Start this MCP server privately on `http://127.0.0.1:8000/mcp`, then initialize the HTTP tunnel profile as the same OS user that will run the service:
+
+   ```bash
+   export CONTROL_PLANE_API_KEY='sk-REPLACE_ME'
+
+   tunnel-client init \
+     --sample sample_mcp_stdio_local \
+     --profile chatrepo-local \
+     --tunnel-id tunnel_REPLACE_ME \
+     --mcp-server-url http://127.0.0.1:8000/mcp
+
+   tunnel-client doctor --profile chatrepo-local --explain
+   tunnel-client run --profile chatrepo-local
+   ```
+
+   OpenAI's quickstart uses the named sample above and says HTTP servers should pass `--mcp-server-url` instead of `--mcp-command`. If a later client release changes the sample name, follow `tunnel-client help quickstart`.
+6. Keep `tunnel-client run` alive. Its local admin UI and `/healthz`, `/readyz`, and `/metrics` endpoints can verify readiness; the admin UI is loopback-only by default.
+7. Open <https://chatgpt.com/plugins>, press **+**, choose **Tunnel** under Connection, select the tunnel (or paste its ID), choose **No Authentication** for this loopback-only MCP server, scan tools, and create the app.
+8. In the app's action permissions, select **Allow all actions** only for a private trusted full-agent deployment.
+
+The runtime API key authenticates `tunnel-client` to the OpenAI control plane. It is not the MCP app's OAuth credential and is not `MCP_BEARER_TOKEN`.
+
+#### Run tunnel-client with systemd
+
+Save only the secret in `/etc/chatrepo-tunnel.env`:
+
+```text
+CONTROL_PLANE_API_KEY=sk-REPLACE_ME
+```
+
+Then install [`deploy/systemd/chatrepo-tunnel.service.example`](../deploy/systemd/chatrepo-tunnel.service.example), adjusting `User`, `HOME`, and the profile name. Run `tunnel-client init` as that same user before starting the unit.
+
 ### Cloudflare Named Tunnel — universal, any client
 
 A permanent subdomain on your own domain, TLS terminated by Cloudflare, zero open
@@ -94,10 +139,7 @@ These do not depend on which tunnel you pick.
 1. **Two separate systemd services** — the server (`chatrepo-mcp`) and the tunnel
    client as distinct units with `Restart=always` and `enable`. Then a server
    redeploy never changes the address and everything comes back after a reboot.
-2. **Bearer token on the public edge** — the default is `MCP_AUTH_MODE=none`, but
-   write/command tools are exposed. Set `MCP_AUTH_MODE=bearer` plus a long
-   `MCP_BEARER_TOKEN`. Less critical for the OpenAI tunnel (traffic only comes
-   from OpenAI) but still worth it.
+2. **Match authentication to the transport** — for a loopback-only OpenAI Secure MCP Tunnel, use `MCP_AUTH_MODE=none`; the runtime API key belongs only to `tunnel-client`. For a public URL, use OAuth or another authentication mechanism supported by the ChatGPT app dialog. Static bearer mode is for clients that can send the header directly.
 3. **Verify the ChatGPT gate before anything else** — confirm your plan/workspace
    can create a write connector at all. If it is read/fetch only, do not expose
    the V5 write layer.

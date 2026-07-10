@@ -11,10 +11,12 @@ from chatrepo_mcp.command_tools import (
     git_commit,
     run_command,
     run_commands,
+    run_test_preset,
     summarize_command_log,
     start_command_job,
 )
 from chatrepo_mcp.config import Settings
+from chatrepo_mcp.profile import list_test_presets
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -53,6 +55,45 @@ def make_settings(tmp_path: Path) -> Settings:
         mcp_bearer_token=None,
         command_policy_mode="allowlist",
         command_jobs_dir=tmp_path / "jobs",
+        workspace_roots=(),
+        filesystem_unrestricted=False,
+        workspace_scan_depth=2,
+        denied_words=("sudo", "su"),
+        destructive_words=(
+            "rm -rf",
+            "rmdir",
+            "git push --force",
+            "git reset --hard",
+            "git clean",
+            "docker system prune",
+            "chmod -R",
+            "chown -R",
+            "mkfs",
+            "dd",
+        ),
+        command_shell_prelude="",
+        git_network_timeout=60,
+        protected_branches=("main", "master"),
+        allow_force_push=False,
+        gh_timeout=60,
+        github_tools_enabled=True,
+        secret_globs=(".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "**/.git/**"),
+        binary_globs=(
+            "**/.venv/**",
+            "**/node_modules/**",
+            "**/*.db",
+            "**/*.sqlite",
+            "**/*.sqlite3",
+            "**/*.bin",
+            "**/*.png",
+            "**/*.jpg",
+            "**/*.jpeg",
+            "**/*.webp",
+            "**/*.pdf",
+            "**/*.zip",
+            "**/*.tar",
+            "**/*.gz",
+        ),
     )
 
 
@@ -79,8 +120,29 @@ def test_run_command_rejects_shell_and_denied_commands(tmp_path: Path) -> None:
             assert True
 
 
+def test_full_access_policy_allows_raw_shell_and_git_push(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(
+        **{
+            **settings.__dict__,
+            "access_mode": "full",
+            "command_policy_mode": "unrestricted",
+            "filesystem_unrestricted": True,
+        }
+    )
+
+    result = command_policy_check("git push origin feature", settings)
+
+    assert result["allowed"] is True
+    assert result["mode"] == "unrestricted"
+
+
 def test_run_command_uses_bash_environment_and_redacts(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
+    # _resolved_binaries now only probes binaries relevant to the detected
+    # stack of `cwd` (instead of unconditionally shelling out for
+    # node/npm/npx on every command), so give the cwd a node stack marker.
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
 
     result = run_command("git status --short", settings, env={"TOKEN": "secret"}, tail_lines=10)
 
@@ -90,19 +152,92 @@ def test_run_command_uses_bash_environment_and_redacts(tmp_path: Path) -> None:
     assert (tmp_path / "audit.log").exists()
 
 
-def test_run_command_confirmation_required(tmp_path: Path) -> None:
+def test_run_command_confirmation_required_in_allowlist_mode(tmp_path: Path) -> None:
+    # CONFIRMATION_COMMANDS is now a generic, stack-agnostic list (docker
+    # compose / systemctl) instead of project-specific scripts/vitest configs.
     settings = make_settings(tmp_path)
 
-    for command, env in [
-        ("bash scripts/start_local.sh", None),
-        ("npx vitest run --config vitest.e2e.live.config.ts -t Tool", None),
-        ("npx vitest run packages/agent/src/example.test.ts", {"EVA_LIVE_TESTS": "1"}),
-    ]:
+    for command in ["docker compose up -d", "systemctl restart nginx"]:
         try:
-            run_command(command, settings, env=env)
-            assert False, "expected confirmation"
+            run_command(command, settings)
+            assert False, f"expected confirmation: {command}"
         except ConfirmationRequiredError:
             assert True
+
+
+def test_run_command_confirmation_required_for_destructive_in_guarded_mode(tmp_path: Path) -> None:
+    # guarded is the new default policy mode: shell operators are allowed,
+    # but destructive_words patterns (rm -rf, git reset --hard, docker
+    # system prune, ...) require confirmed=true.
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "guarded"})
+
+    for command in ["rm -rf ./scratch", "git reset --hard HEAD~1", "docker system prune -f"]:
+        try:
+            run_command(command, settings)
+            assert False, f"expected confirmation: {command}"
+        except ConfirmationRequiredError:
+            assert True
+
+
+def test_run_command_blocks_raw_git_push_in_every_mode(tmp_path: Path) -> None:
+    # git_push (git_workflow_tools) is the single audited door for a real push: raw
+    # `git push` through run_command is blocked outright, in every command_policy_mode,
+    # even with confirmed=true and even in the otherwise-unrestricted full_repo mode.
+    settings = make_settings(tmp_path)
+
+    for mode in ("guarded", "allowlist", "full_repo"):
+        mode_settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": mode})
+        for command in ["git push", "git push --force origin main", "git push origin main"]:
+            try:
+                run_command(command, mode_settings, confirmed=True)
+                assert False, f"expected raw git push to be blocked in mode={mode}: {command}"
+            except CommandPolicyError as exc:
+                assert "git_push" in str(exc)
+
+
+def test_guarded_mode_denies_words_by_first_token_only(tmp_path: Path) -> None:
+    # Regression test for the old bug where DENIED_WORDS matched any token
+    # anywhere in the command (so `git log --grep curl` was falsely
+    # blocked). _deny_check now only matches the first executable token of
+    # each `;`/`|`/`&&`/`||` segment.
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(
+        **{**settings.__dict__, "command_policy_mode": "guarded", "denied_words": ("sudo", "su", "curl")}
+    )
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=a@example.com", "-c", "user.name=A", "commit", "--allow-empty", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    ok_result = run_command("git log --grep curl", settings)
+    assert ok_result["exit_code"] == 0
+
+    try:
+        run_command("curl https://example.com", settings)
+        assert False, "expected curl itself to be denied"
+    except CommandPolicyError:
+        assert True
+
+    try:
+        run_command("sudo rm -rf /", settings, confirmed=True)
+        assert False, "expected sudo to be denied even when confirmed"
+    except CommandPolicyError:
+        assert True
+
+
+def test_guarded_mode_is_unrestricted_when_denied_words_is_empty(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "guarded", "denied_words": ()})
+
+    result = run_command("node --version", settings, confirmed=True)
+
+    assert result["exit_code"] != 127
 
 
 def test_full_repo_mode_does_not_require_confirmation(tmp_path: Path) -> None:
@@ -277,3 +412,102 @@ def test_get_job_status_and_timeout_kill_process_group(tmp_path: Path) -> None:
     assert status["timed_out"] is True
     assert status["process_alive"] is False
     assert status["kill_status"] in {"terminated", "killed", "not_running"}
+
+
+def test_run_test_preset_resolves_bare_action_at_workspace_root(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'root'\n")
+    (tmp_path / "test_sample.py").write_text("def test_ok():\n    assert True\n")
+    settings = make_settings(tmp_path)
+
+    result = run_test_preset("test", settings)
+
+    assert result["command"] == "pytest -x -q"
+    assert result["resolved_action"] == "test"
+    assert result["resolved_cwd"] == ""
+    assert result["ok"] is True
+    assert result["parsed"]["kind"] == "pytest"
+
+
+def test_run_test_preset_resolves_composite_service_action(tmp_path: Path) -> None:
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "svc" / "pyproject.toml").write_text("[project]\nname = 'svc'\n")
+    (tmp_path / "svc" / "test_sample.py").write_text("def test_ok():\n    assert True\n")
+    settings = make_settings(tmp_path)
+
+    result = run_test_preset("svc:test", settings)
+
+    assert result["command"] == "pytest -x -q"
+    assert result["resolved_action"] == "test"
+    assert result["resolved_cwd"] == "svc"
+    assert result["cwd"].endswith("svc")
+    assert result["ok"] is True
+
+
+def test_run_test_preset_unknown_action_lists_available_actions(tmp_path: Path) -> None:
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "svc" / "go.mod").write_text("module example.com/svc\n\ngo 1.21\n")
+    settings = make_settings(tmp_path)
+
+    try:
+        run_test_preset("svc:bogus", settings)
+        raise AssertionError("expected CommandPolicyError")
+    except CommandPolicyError as exc:
+        message = str(exc)
+        assert "svc" in message
+        assert "test" in message
+        assert "lint" in message
+
+
+def test_run_test_preset_profile_override_wins_for_matching_cwd(tmp_path: Path) -> None:
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "svc" / "pyproject.toml").write_text("[project]\nname = 'svc'\n")
+    chatrepo_dir = tmp_path / ".chatrepo"
+    chatrepo_dir.mkdir()
+    (chatrepo_dir / "mcp.yml").write_text("presets:\n  test:\n    command: echo overridden\n    cwd: svc\n")
+    settings = make_settings(tmp_path)
+
+    result = run_test_preset("svc:test", settings)
+
+    assert result["command"] == "echo overridden"
+    assert result["resolved_cwd"] == "svc"
+    assert result["ok"] is True
+
+
+def test_run_test_preset_named_profile_preset_still_works(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+
+    result = run_test_preset("git_diff_check", settings)
+
+    assert result["command"] == "git diff --check"
+    assert result["resolved_action"] == "git_diff_check"
+    assert result["ok"] is True
+
+
+def test_list_test_presets_without_path_summarizes_workspace(tmp_path: Path) -> None:
+    (tmp_path / "go-svc").mkdir()
+    (tmp_path / "go-svc" / "go.mod").write_text("module example.com/go-svc\n\ngo 1.21\n")
+    (tmp_path / "py-svc").mkdir()
+    (tmp_path / "py-svc" / "pyproject.toml").write_text("[project]\nname = 'py-svc'\n")
+    settings = make_settings(tmp_path)
+
+    summary = list_test_presets(settings)
+
+    repos_by_path = {repo["path"]: repo for repo in summary["repos"]}
+    assert set(repos_by_path["go-svc"]["actions"]) == {"test", "lint", "build", "format"}
+    assert set(repos_by_path["py-svc"]["actions"]) == {"test", "lint", "typecheck", "format"}
+    assert "git_diff_check" in summary["presets"]
+
+
+def test_list_test_presets_with_path_resolves_directory(tmp_path: Path) -> None:
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "svc" / "pyproject.toml").write_text("[project]\nname = 'svc'\n")
+    settings = make_settings(tmp_path)
+
+    resolved = list_test_presets(settings, path="svc")
+
+    assert resolved["path"] == "svc"
+    assert resolved["presets"]["test"]["command"] == "pytest -x -q"
+    assert resolved["presets"]["test"]["cwd"] == "svc"

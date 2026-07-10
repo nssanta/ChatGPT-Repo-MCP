@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "chatrepo-mcp"
 version = "0.1.0"
-description = "MCP server for ChatGPT to inspect and safely edit one repository with filesystem, Git, and validation tools"
+description = "Full coding-agent MCP server for ChatGPT over a repository, workspace, or trusted machine"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
@@ -14,6 +14,7 @@ authors = [
 dependencies = [
   "mcp>=1.0.0",
   "pydantic>=2.7.0",
+  "python-dotenv>=1.0.0",
 ]
 keywords = ["mcp", "chatgpt", "git", "repository", "developer-tools"]
 classifiers = [
@@ -21,6 +22,14 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
   "License :: OSI Approved :: MIT License",
   "Operating System :: POSIX :: Linux",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.10.0",
+  "pytest>=8.0.0",
+  "ruff>=0.5.0",
+  "PyYAML>=6.0.0",
 ]
 
 [project.scripts]

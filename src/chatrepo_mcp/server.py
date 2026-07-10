@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from typing import Annotated, Any, Literal
 
 from mcp.server.auth.provider import AccessToken
@@ -64,6 +65,7 @@ from .fs_tools import (
     tree,
 )
 from .git_tools import (
+    GitToolError,
     git_blame,
     git_branches,
     git_diff,
@@ -71,15 +73,48 @@ from .git_tools import (
     git_log,
     git_show,
     git_status,
+    list_repos,
     repo_git_info,
 )
-from .profile import list_test_presets
+from .git_workflow_tools import (
+    git_add,
+    git_create_branch,
+    git_fetch,
+    git_merge,
+    git_pull,
+    git_push,
+    git_reset,
+    git_restore,
+    git_revert,
+    git_stash,
+    git_switch_branch,
+    git_worktree_add,
+    git_worktree_list,
+    git_worktree_remove,
+)
+from .github_tools import (
+    gh_checks,
+    gh_issue_list,
+    gh_issue_view,
+    gh_pr_comment,
+    gh_pr_create,
+    gh_pr_list,
+    gh_pr_merge,
+    gh_pr_view,
+    gh_run_rerun,
+    gh_run_view,
+    gh_status,
+)
+from .index_tools import document_symbols, symbol_definition, workspace_symbols
+from .lsp_tools import code_diagnostics
+from .profile import load_repo_profile, list_test_presets
 from .workflows import (
     git_worktree_guard,
     quality_gate_and_commit,
     run_quality_gate,
     scan_new_policy_violations,
 )
+from .workspace import list_workspace_repos
 
 settings = Settings.from_env()
 
@@ -118,6 +153,40 @@ mcp = FastMCP(
     ),
 )
 
+_TOOL_REGISTRY: list[str] = []
+
+
+def _tool(*args: Any, **kwargs: Any):
+    """Wrap ``mcp.tool`` while recording the registered name in ``_TOOL_REGISTRY``.
+
+    This keeps a source-of-truth tool-name list in sync automatically (built at
+    decoration time) instead of a hand-maintained literal list that can drift.
+    """
+
+    def decorator(fn):
+        name = kwargs.get("name") or fn.__name__
+        _TOOL_REGISTRY.append(name)
+        return mcp.tool(*args, **kwargs)(fn)
+
+    return decorator
+
+
+def _tool_names() -> list[str]:
+    """Return the names of all tools registered on this server.
+
+    Prefers the FastMCP tool manager's own registry (authoritative at call
+    time); falls back to the decorator-time ``_TOOL_REGISTRY`` if that
+    private API is unavailable in a future ``mcp`` package version.
+    """
+    try:
+        names = [tool.name for tool in mcp._tool_manager.list_tools()]
+        if names:
+            return sorted(names)
+    except Exception:  # noqa: BLE001
+        pass
+    return sorted(_TOOL_REGISTRY)
+
+
 READ_ONLY = {
     "readOnlyHint": True,
     "destructiveHint": False,
@@ -142,17 +211,48 @@ COMMAND_ACTION = {
     "openWorldHint": True,
 }
 
+NETWORK_READ = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "openWorldHint": True,
+}
 
-RepoPath = Annotated[str, Field(description="Repository-relative path. Absolute paths and ../ traversal are rejected.")]
+NETWORK_WRITE = {
+    "readOnlyHint": False,
+    "destructiveHint": True,
+    "openWorldHint": True,
+}
+
+
+RepoPath = Annotated[
+    str,
+    Field(description="Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access."),
+]
 OptionalRepoPath = Annotated[
     str | None,
     Field(description="Optional repository-relative working directory. Defaults to the repository root."),
+]
+RepoScope = Annotated[
+    str | None,
+    Field(
+        description=(
+            "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). "
+            "Defaults to the workspace root's own git repository, if any."
+        )
+    ),
 ]
 ExpectedSha = Annotated[
     str | None,
     Field(description="Expected current file SHA-256. Use the sha256 returned by read tools to avoid stale writes."),
 ]
-DryRun = Annotated[bool, Field(description="When true, return the diff/preview without changing files.")]
+DryRun = Annotated[
+    bool | None,
+    Field(description="Preview when true; apply when false; omit to use the ACCESS_MODE default."),
+]
+Confirmed = Annotated[
+    bool,
+    Field(description="Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned."),
+]
 SmallText = Annotated[str, Field(description="UTF-8 text payload. Prefer compact chunks for ChatGPT tool reliability.")]
 LineNumber = Annotated[int, Field(description="1-based line number.")]
 TailLines = Annotated[
@@ -163,41 +263,50 @@ TimeoutMs = Annotated[
     int | None,
     Field(description="Optional timeout in milliseconds, capped by server configuration."),
 ]
-TestPreset = Literal[
-    "agent_message_processor",
-    "gateway_adapter",
-    "tg_d59",
-    "tg_d62",
-    "tg_d64",
-    "tg_d67",
-    "full_agent_tests",
-    "full_gateway_tests",
+ParseKind = Literal[
+    "auto",
+    "none",
+    "vitest",
+    "tsc",
+    "git_diff_check",
+    "pytest",
+    "gotest",
+    "gobuild",
+    "ruff",
+    "mypy",
+    "cargo_test",
+    "cargo_build",
+    "eslint",
 ]
-ParseKind = Literal["auto", "vitest", "tsc", "git_diff_check", "none"]
 MissionPreset = Literal["mandatory_system_tool_log"]
 MissionPosition = Literal["before_goal"]
 InsertPosition = Literal["before", "after"]
 
 
-@mcp.tool(
+@_tool(
     name="repo_info",
     annotations={**READ_ONLY, "title": "Repository Info"},
 )
-def repo_info_tool() -> dict:
-    """Return the MCP server configuration relevant to the inspected repository."""
-    return _repo_info_with_git()
+def repo_info_tool(repo: RepoScope = None) -> dict:
+    """Return the MCP server configuration relevant to the inspected repository.
+
+    ``repo`` optionally selects a sub-repository in a polyrepo workspace; when
+    the workspace root itself is not a git repository and ``repo`` is omitted,
+    the git section reports ``polyrepo: true`` with the discovered repos.
+    """
+    return _repo_info_with_git(repo=repo)
 
 
-def _repo_info_with_git() -> dict:
+def _repo_info_with_git(repo: str | None = None) -> dict:
     result = repo_info(settings)
     try:
-        result["git"] = repo_git_info(settings)
+        result["git"] = repo_git_info(settings, repo=repo)
     except Exception as exc:  # noqa: BLE001
         result["git_error"] = str(exc)
     return result
 
 
-@mcp.tool(
+@_tool(
     name="list_dir",
     annotations={**READ_ONLY, "title": "List Directory"},
 )
@@ -206,7 +315,7 @@ def list_dir_tool(path: str = ".", include_hidden: bool = True, limit: int = 200
     return list_dir(path=path, settings=settings, include_hidden=include_hidden, limit=limit)
 
 
-@mcp.tool(
+@_tool(
     name="tree",
     annotations={**READ_ONLY, "title": "Tree"},
 )
@@ -215,7 +324,7 @@ def tree_tool(path: str = ".", depth: int = 4, include_hidden: bool = True) -> d
     return tree(path=path, settings=settings, depth=depth, include_hidden=include_hidden)
 
 
-@mcp.tool(
+@_tool(
     name="read_text_file",
     annotations={**READ_ONLY, "title": "Read Text File"},
 )
@@ -235,7 +344,7 @@ def read_text_file_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="read_multiple_files",
     annotations={**READ_ONLY, "title": "Read Multiple Files"},
 )
@@ -244,7 +353,7 @@ def read_multiple_files_tool(paths: list[str]) -> dict:
     return read_multiple_files(paths=paths, settings=settings)
 
 
-@mcp.tool(
+@_tool(
     name="file_metadata",
     annotations={**READ_ONLY, "title": "File Metadata"},
 )
@@ -253,7 +362,7 @@ def file_metadata_tool(path: str, include_stat: bool = True) -> dict:
     return file_metadata(path=path, settings=settings, include_stat=include_stat)
 
 
-@mcp.tool(
+@_tool(
     name="find_files",
     annotations={**READ_ONLY, "title": "Find Files"},
 )
@@ -273,7 +382,7 @@ def find_files_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="search_text",
     annotations={**READ_ONLY, "title": "Search Text"},
 )
@@ -297,7 +406,7 @@ def search_text_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="symbol_search",
     annotations={**READ_ONLY, "title": "Symbol Search"},
 )
@@ -306,7 +415,7 @@ def symbol_search_tool(symbol: str, path: str = ".", paths: list[str] | None = N
     return symbol_search(symbol=symbol, settings=settings, path=path, paths=paths, limit=limit)
 
 
-@mcp.tool(
+@_tool(
     name="recent_changes",
     annotations={**READ_ONLY, "title": "Recent Changes"},
 )
@@ -315,7 +424,7 @@ def recent_changes_tool(path: str = ".", paths: list[str] | None = None, limit: 
     return recent_changes(settings=settings, path=path, paths=paths, limit=limit)
 
 
-@mcp.tool(
+@_tool(
     name="todo_scan",
     annotations={**READ_ONLY, "title": "Todo Scan"},
 )
@@ -324,7 +433,7 @@ def todo_scan_tool(path: str = ".", paths: list[str] | None = None, limit: int =
     return todo_scan(settings=settings, path=path, paths=paths, limit=limit)
 
 
-@mcp.tool(
+@_tool(
     name="dependency_map",
     annotations={**READ_ONLY, "title": "Dependency Map"},
 )
@@ -333,16 +442,16 @@ def dependency_map_tool(path: str = ".") -> dict:
     return dependency_map(settings=settings, path=path)
 
 
-@mcp.tool(
+@_tool(
     name="git_status",
     annotations={**READ_ONLY, "title": "Git Status"},
 )
-def git_status_tool(short: bool = True) -> dict:
-    """Return the current git status for the repository."""
-    return git_status(settings=settings, short=short)
+def git_status_tool(short: bool = True, repo: RepoScope = None) -> dict:
+    """Return the current git status for the repository (or a polyrepo sub-repo via `repo`)."""
+    return git_status(settings=settings, short=short, repo=repo)
 
 
-@mcp.tool(
+@_tool(
     name="git_diff",
     annotations={**READ_ONLY, "title": "Git Diff"},
 )
@@ -350,48 +459,54 @@ def git_diff_tool(
     staged: bool = False,
     pathspec: str | None = None,
     context_lines: int = 3,
+    repo: RepoScope = None,
 ) -> dict:
-    """Return git diff output for the working tree or staged changes."""
-    return git_diff(settings=settings, staged=staged, pathspec=pathspec, context_lines=context_lines)
+    """Return git diff output for the working tree or staged changes (or a polyrepo sub-repo via `repo`)."""
+    return git_diff(settings=settings, staged=staged, pathspec=pathspec, context_lines=context_lines, repo=repo)
 
 
-@mcp.tool(
+@_tool(
     name="git_log",
     annotations={**READ_ONLY, "title": "Git Log"},
 )
-def git_log_tool(limit: int = 20, pathspec: str | None = None, since: str | None = None) -> dict:
-    """Return recent commit history, optionally filtered by path or since-date."""
-    return git_log(settings=settings, limit=limit, pathspec=pathspec, since=since)
+def git_log_tool(
+    limit: int = 20,
+    pathspec: str | None = None,
+    since: str | None = None,
+    repo: RepoScope = None,
+) -> dict:
+    """Return recent commit history, optionally filtered by path or since-date (or a polyrepo sub-repo via `repo`)."""
+    return git_log(settings=settings, limit=limit, pathspec=pathspec, since=since, repo=repo)
 
 
-@mcp.tool(
+@_tool(
     name="git_show",
     annotations={**READ_ONLY, "title": "Git Show"},
 )
-def git_show_tool(revision: str, path: str | None = None) -> dict:
-    """Show a commit object or a file at a given revision."""
-    return git_show(settings=settings, revision=revision, path=path)
+def git_show_tool(revision: str, path: str | None = None, repo: RepoScope = None) -> dict:
+    """Show a commit object or a file at a given revision (or a polyrepo sub-repo via `repo`)."""
+    return git_show(settings=settings, revision=revision, path=path, repo=repo)
 
 
-@mcp.tool(
+@_tool(
     name="git_branches",
     annotations={**READ_ONLY, "title": "Git Branches"},
 )
-def git_branches_tool(all_branches: bool = True) -> dict:
-    """List local or all branches with tracking information."""
-    return git_branches(settings=settings, all_branches=all_branches)
+def git_branches_tool(all_branches: bool = True, repo: RepoScope = None) -> dict:
+    """List local or all branches with tracking information (or a polyrepo sub-repo via `repo`)."""
+    return git_branches(settings=settings, all_branches=all_branches, repo=repo)
 
 
-@mcp.tool(
+@_tool(
     name="git_blame",
     annotations={**READ_ONLY, "title": "Git Blame"},
 )
-def git_blame_tool(path: str, start_line: int = 1, end_line: int | None = None) -> dict:
-    """Blame a file line range to see who changed it and in which commit."""
-    return git_blame(settings=settings, path=path, start_line=start_line, end_line=end_line)
+def git_blame_tool(path: str, start_line: int = 1, end_line: int | None = None, repo: RepoScope = None) -> dict:
+    """Blame a file line range to see who changed it and in which commit (or a polyrepo sub-repo via `repo`)."""
+    return git_blame(settings=settings, path=path, start_line=start_line, end_line=end_line, repo=repo)
 
 
-@mcp.tool(
+@_tool(
     name="git_grep",
     annotations={**READ_ONLY, "title": "Git Grep"},
 )
@@ -401,8 +516,13 @@ def git_grep_tool(
     pathspec: str | None = None,
     paths: list[str] | None = None,
     case_sensitive: bool = False,
+    repo: RepoScope = None,
 ) -> dict:
-    """Search tracked content through git grep, optionally at a revision."""
+    """Search tracked content through git grep, optionally at a revision.
+
+    If `repo` is omitted and the workspace root is a polyrepo (not itself a
+    git repository), the search fans out across all discovered sub-repos.
+    """
     return git_grep(
         settings=settings,
         query=query,
@@ -410,68 +530,17 @@ def git_grep_tool(
         pathspec=pathspec,
         paths=paths,
         case_sensitive=case_sensitive,
+        repo=repo,
     )
 
 
-TOOL_NAMES = [
-    "dependency_map",
-    "file_metadata",
-    "find_files",
-    "git_blame",
-    "git_branches",
-    "git_diff",
-    "git_grep",
-    "git_log",
-    "git_show",
-    "git_status",
-    "list_dir",
-    "read_multiple_files",
-    "read_text_file",
-    "recent_changes",
-    "repo_info",
-    "search_text",
-    "symbol_search",
-    "todo_scan",
-    "tree",
-    "doctor",
-    "context_bootstrap",
-    "batch_call",
-    "smoke_all",
-    "write_text_file",
-    "replace_text_in_file",
-    "insert_text_in_file",
-    "delete_text_in_file",
-    "create_text_file",
-    "move_path",
-    "delete_path",
-    "ensure_directory",
-    "batch_edit_files",
-    "replace_lines",
-    "insert_before_line",
-    "insert_after_line",
-    "insert_before_heading",
-    "insert_after_heading",
-    "append_to_file",
-    "apply_patch",
-    "apply_change_set",
-    "update_current_mission",
-    "run_command",
-    "run_commands",
-    "run_test_preset",
-    "list_test_presets",
-    "run_quality_gate",
-    "quality_gate_and_commit",
-    "scan_new_policy_violations",
-    "command_policy_check",
-    "get_command_log",
-    "summarize_command_log",
-    "git_worktree_guard",
-    "start_command_job",
-    "get_command_job",
-    "get_job_status",
-    "cancel_command_job",
-    "git_commit",
-]
+@_tool(
+    name="list_repos",
+    annotations={**READ_ONLY, "title": "List Repos"},
+)
+def list_repos_tool() -> dict:
+    """List all git repositories in the workspace (polyrepo discovery): path, detected stack, branch, makefile targets."""
+    return list_repos(settings)
 
 
 def _namespace_info() -> dict:
@@ -527,6 +596,13 @@ def _batch_dispatch(tool: str, args: dict | None = None) -> dict:
 
 def _write_config_info() -> dict:
     return {
+        "access_mode": settings.access_mode,
+        "full_access": settings.full_access,
+        "default_dry_run": settings.default_dry_run,
+        "filesystem_unrestricted": settings.filesystem_unrestricted,
+        "allow_secret_access": settings.allow_secret_access,
+        "allow_force_push": settings.allow_force_push,
+        "allow_hard_reset": settings.allow_hard_reset,
         "write_tools_enabled": True,
         "writable_globs": list(settings.writable_globs),
         "max_write_file_bytes": settings.max_write_file_bytes,
@@ -544,10 +620,34 @@ def _write_config_info() -> dict:
 
 
 def _write_result(func, *args, **kwargs) -> dict:
+    if "dry_run" in kwargs and kwargs["dry_run"] is None:
+        kwargs["dry_run"] = settings.default_dry_run
     try:
         return func(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001
         return structured_error(exc)
+
+
+def _structural_result(func, *args, **kwargs) -> dict:
+    """Call a git-workflow/github/lsp/index tool function with uniform error handling.
+
+    Mirrors the confirmation-required handling already used by the command
+    tools (`_command_result`), so every structural tool behaves the same way
+    when it needs explicit owner confirmation. Also converts `GitToolError`
+    (raised for truly exceptional git failures, e.g. an invalid revision or a
+    disabled feature) into a structured `{"ok": False, "error_kind": "git_error", ...}`
+    result instead of letting it propagate as an unhandled exception.
+    """
+    if "dry_run" in kwargs and kwargs["dry_run"] is None:
+        kwargs["dry_run"] = settings.default_dry_run
+    if "confirmed" in kwargs:
+        kwargs["confirmed"] = settings.confirmation_granted(kwargs["confirmed"])
+    try:
+        return func(*args, **kwargs)
+    except ConfirmationRequiredError as exc:
+        return {"ok": False, "error_kind": "confirmation_required", "message": str(exc)}
+    except GitToolError as exc:
+        return {"ok": False, "error_kind": "git_error", "message": str(exc)}
 
 
 def _command_result(
@@ -580,112 +680,223 @@ def _command_result(
         return {"ok": False, "error_kind": "command_failed", "error": str(exc), "command": command}
 
 
-@mcp.tool(
+def _first_existing_repo_file(candidates: list[str]) -> str | None:
+    """Return the first candidate repo-relative path that exists as a file."""
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            if (settings.project_root / candidate).is_file():
+                return candidate
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _mission_context_candidates() -> list[str]:
+    """Candidate context files for this repo: profile-declared mission files, then README."""
+    profile = load_repo_profile(settings)
+    candidates = [
+        profile.mission.get("current"),
+        profile.mission.get("memory"),
+        "README.md",
+        "README_RU.md",
+    ]
+    return list(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+
+def _first_root_markdown_file() -> str | None:
+    """Return the first Markdown file found at the repository root, if any."""
+    try:
+        listing = list_dir(path=".", settings=settings, include_hidden=False, limit=200)
+    except Exception:  # noqa: BLE001
+        return None
+    for entry in listing.get("entries", []):
+        if entry.get("type") == "file" and str(entry.get("name", "")).lower().endswith(".md"):
+            return entry.get("path") or entry.get("name")
+    return None
+
+
+def _search_probe_token() -> str:
+    """Pick a neutral token to sanity-check search_text/symbol_search.
+
+    Uses the name of the first file found at the repository root so the
+    check never depends on any project-specific symbol; falls back to a
+    generic keyword when the root has no files.
+    """
+    try:
+        listing = list_dir(path=".", settings=settings, include_hidden=False, limit=50)
+        for entry in listing.get("entries", []):
+            if entry.get("type") == "file" and entry.get("name"):
+                return entry["name"]
+    except Exception:  # noqa: BLE001
+        pass
+    return "def"
+
+
+def _capability_matrix() -> dict[str, dict[str, Any]]:
+    """Report which external CLI binaries are available on PATH."""
+    binaries = ["git", "rg", "gh", "ctags", "go", "python3", "node", "docker"]
+    return {name: {"found": (path := shutil.which(name)) is not None, "path": path} for name in binaries}
+
+
+@_tool(
     name="doctor",
     annotations={**READ_ONLY, "title": "Doctor"},
 )
 def doctor_tool() -> dict:
     """Run a compact health check for repository, git, policy, search, and symbol tools."""
-    checks = {}
+    checks: dict[str, Any] = {}
     try:
         checks["repo_info"] = {"ok": True, "result": _repo_info_with_git()}
     except Exception as exc:  # noqa: BLE001
         checks["repo_info"] = {"ok": False, "error": str(exc)}
-    for name, args in [
-        ("git_status", {"short": True}),
-        ("read_text_file", {"path": ".claude/MEMORY.md", "start_line": 1, "end_line": 1}),
-        ("read_text_file", {"path": ".env", "start_line": 1, "end_line": 1}),
-        ("search_text", {"query": "tts_synthesizing", "path": ".", "limit": 1}),
-        ("symbol_search", {"symbol": "tts_synthesizing", "path": ".", "limit": 1}),
-    ]:
-        key = "blocked_policy" if name == "read_text_file" and args["path"] == ".env" else name
+
+    try:
+        checks["git_status"] = {"ok": True, "result": _batch_dispatch("git_status", {"short": True})}
+    except Exception as exc:  # noqa: BLE001
+        checks["git_status"] = {"ok": False, "error": str(exc)}
+
+    mission_path = _first_existing_repo_file(_mission_context_candidates())
+    if mission_path:
         try:
-            result = _batch_dispatch(name, args)
-            checks[key] = {"ok": key != "blocked_policy", "result": result}
+            result = _batch_dispatch("read_text_file", {"path": mission_path, "start_line": 1, "end_line": 1})
+            checks["mission_context"] = {"ok": True, "path": mission_path, "result": result}
         except Exception as exc:  # noqa: BLE001
-            checks[key] = {"ok": key == "blocked_policy", "error": str(exc)}
+            checks["mission_context"] = {"ok": False, "path": mission_path, "error": str(exc)}
+    else:
+        checks["mission_context"] = {
+            "ok": True,
+            "status": "skipped",
+            "reason": "no mission or README context file found",
+        }
+
+    try:
+        _batch_dispatch("read_text_file", {"path": ".env", "start_line": 1, "end_line": 1})
+        checks["blocked_policy"] = {"ok": False, "error": "expected .env to be blocked by policy"}
+    except Exception as exc:  # noqa: BLE001
+        checks["blocked_policy"] = {"ok": True, "error": str(exc)}
+
+    probe_token = _search_probe_token()
+    for tool_name in ("search_text", "symbol_search"):
+        args = (
+            {"query": probe_token, "path": ".", "limit": 1}
+            if tool_name == "search_text"
+            else {"symbol": probe_token, "path": ".", "limit": 1}
+        )
+        try:
+            checks[tool_name] = {"ok": True, "probe_token": probe_token, "result": _batch_dispatch(tool_name, args)}
+        except Exception as exc:  # noqa: BLE001
+            checks[tool_name] = {"ok": False, "probe_token": probe_token, "error": str(exc)}
+
+    try:
+        checks["workspace"] = {"ok": True, "result": list_workspace_repos(settings)}
+    except Exception as exc:  # noqa: BLE001
+        checks["workspace"] = {"ok": False, "error": str(exc)}
+
+    checks["capabilities"] = {"ok": True, "result": _capability_matrix()}
+
+    tools = _tool_names()
     return {
         "project_root": str(settings.project_root),
         **_namespace_info(),
         **_write_config_info(),
-        "tools": TOOL_NAMES,
-        "tool_count": len(TOOL_NAMES),
+        "tools": tools,
+        "tool_count": len(tools),
         "checks": checks,
     }
 
 
-@mcp.tool(
+@_tool(
     name="smoke_all",
     annotations={**READ_ONLY, "title": "Smoke All"},
 )
 def smoke_all_tool() -> dict:
-    """Run the standard Eva_Ai MCP smoke test in one call."""
-    checks = []
-    for name, args in [
-        ("repo_info", {}),
-        ("read_text_file", {"path": ".claude/MEMORY.md", "start_line": 1, "end_line": 1}),
-        ("list_dir", {"path": ".", "limit": 300}),
-        ("search_text", {"query": "tts_synthesizing", "path": ".", "limit": 3}),
-        ("symbol_search", {"symbol": "tts_synthesizing", "path": ".", "limit": 3}),
-        ("git_status", {"short": True}),
-        ("git_log", {"limit": 3}),
-        ("git_show", {"revision": "HEAD"}),
-        ("read_text_file", {"path": ".env", "start_line": 1, "end_line": 1}),
-        ("replace_text_in_file", {"path": ".claude/MEMORY.md", "find": "\n", "replace": "\n", "dry_run": True}),
-        ("insert_before_heading", {"path": "missions/CURRENT.md", "heading": "## Mission goal", "content": "\n", "dry_run": True}),
-        ("batch_edit_files", {"operations": [{"op": "ensure_directory", "path": "reports/mcp-smoke"}], "dry_run": True}),
-        ("run_command", {"command": "git diff --check"}),
-        ("run_command", {"command": "npm --version"}),
-        ("list_test_presets", {}),
-        ("scan_new_policy_violations", {"base_ref": "HEAD", "paths": []}),
-    ]:
-        key = "blocked_policy" if name == "read_text_file" and args["path"] == ".env" else name
-        if name == "replace_text_in_file":
-            key = "write_dry_run"
-            try:
-                args["expected_sha256"] = current_text_sha256(".claude/MEMORY.md", settings)
-            except Exception:
-                pass
-        if name == "batch_edit_files":
-            key = "batch_write_dry_run"
-        if name == "insert_before_heading":
-            key = "heading_write_dry_run"
-            try:
-                args["expected_sha256"] = current_text_sha256("missions/CURRENT.md", settings)
-            except Exception:
-                pass
-        if name == "run_command":
-            key = "run_command_npm_visibility" if args["command"] == "npm --version" else "run_command_git_diff_check"
-        if name == "list_test_presets":
-            key = "list_test_presets"
-        if name == "scan_new_policy_violations":
-            key = "policy_scan"
+    """Run a self-check smoke test of core MCP capabilities in one call."""
+    probe_token = _search_probe_token()
+    mission_path = _first_existing_repo_file(_mission_context_candidates())
+    md_path = _first_root_markdown_file()
+
+    plan: list[tuple[str, str, dict[str, Any]]] = [
+        ("repo_info", "repo_info", {}),
+        ("list_dir", "list_dir", {"path": ".", "limit": 300}),
+        ("search_text", "search_text", {"query": probe_token, "path": ".", "limit": 3}),
+        ("symbol_search", "symbol_search", {"symbol": probe_token, "path": ".", "limit": 3}),
+        ("git_status", "git_status", {"short": True}),
+        ("git_log", "git_log", {"limit": 3}),
+        ("git_show", "git_show", {"revision": "HEAD"}),
+        ("blocked_policy", "read_text_file", {"path": ".env", "start_line": 1, "end_line": 1}),
+        ("batch_write_dry_run", "batch_edit_files", {"operations": [{"op": "ensure_directory", "path": "reports/mcp-smoke"}], "dry_run": True}),
+        ("run_command_git_diff_check", "run_command", {"command": "git diff --check"}),
+        ("run_command_git_version", "run_command", {"command": "git --version"}),
+        ("list_test_presets", "list_test_presets", {}),
+        ("policy_scan", "scan_new_policy_violations", {"base_ref": "HEAD", "paths": []}),
+    ]
+    if mission_path:
+        plan.insert(1, ("mission_context", "read_text_file", {"path": mission_path, "start_line": 1, "end_line": 1}))
+    if md_path:
         try:
-            if name == "run_command":
+            expected_sha = current_text_sha256(md_path, settings)
+        except Exception:  # noqa: BLE001
+            expected_sha = None
+        plan.append(
+            (
+                "write_dry_run",
+                "replace_text_in_file",
+                {"path": md_path, "find": "\n", "replace": "\n", "dry_run": True, "expected_sha256": expected_sha},
+            )
+        )
+
+    checks = []
+    for key, tool, args in plan:
+        try:
+            if tool == "run_command":
                 result = _command_result(**args)
-            elif name == "list_test_presets":
+            elif tool == "list_test_presets":
                 result = list_test_presets(settings)
-            elif name == "scan_new_policy_violations":
+            elif tool == "scan_new_policy_violations":
                 result = scan_new_policy_violations(settings, **args)
             else:
-                result = _batch_dispatch(name, args)
+                result = _batch_dispatch(tool, args)
             ok = key != "blocked_policy"
-            item = {"name": key, "tool": name, "ok": ok}
-            if name == "list_dir":
+            item = {"name": key, "tool": tool, "ok": ok}
+            if tool == "list_dir":
                 names = [entry["name"] for entry in result.get("entries", [])]
                 item["blocked_visible"] = [
                     value for value in [".env", ".git", "node_modules", ".venv"] if value in names
                 ]
                 item["ok"] = not item["blocked_visible"]
-            elif name in {"search_text", "symbol_search", "git_log"}:
+            elif tool in {"search_text", "symbol_search", "git_log"}:
                 item["count"] = result.get("count")
-            elif name == "repo_info":
+            elif tool == "repo_info":
                 item["project_root"] = result.get("project_root")
                 item["git_error"] = result.get("git_error")
                 item["ok"] = not result.get("git_error")
             checks.append(item)
         except Exception as exc:  # noqa: BLE001
-            checks.append({"name": key, "tool": name, "ok": key == "blocked_policy", "error": str(exc)})
+            checks.append({"name": key, "tool": tool, "ok": key == "blocked_policy", "error": str(exc)})
+
+    if not mission_path:
+        checks.append(
+            {
+                "name": "mission_context",
+                "tool": "read_text_file",
+                "ok": True,
+                "status": "skipped",
+                "reason": "no mission or README context file found",
+            }
+        )
+    if not md_path:
+        checks.append(
+            {
+                "name": "write_dry_run",
+                "tool": "replace_text_in_file",
+                "ok": True,
+                "status": "skipped",
+                "reason": "no markdown file found at repository root",
+            }
+        )
+
     return {
         **_namespace_info(),
         **_write_config_info(),
@@ -695,13 +906,32 @@ def smoke_all_tool() -> dict:
     }
 
 
-@mcp.tool(
+@_tool(
     name="context_bootstrap",
     annotations={**READ_ONLY, "title": "Context Bootstrap"},
 )
 def context_bootstrap_tool() -> dict:
-    """Read the repository's standard context files in one call."""
-    paths = [".claude/MEMORY.md", "missions/CURRENT.md", "AGENTS.md", "missions/BACKLOG.md"]
+    """Read the repository's standard context files and polyrepo workspace info in one call.
+
+    Reads a neutral, stack-agnostic set of optional context files (README,
+    AGENTS/CLAUDE guides, the repo's ``.chatrepo/mcp.yml`` profile, plus any
+    mission files declared in that profile) and reports discovered
+    sub-repositories for polyrepo workspaces. Missing files are reported as
+    ``missing``, never as an error.
+    """
+    profile = load_repo_profile(settings)
+    paths = list(
+        dict.fromkeys(
+            [
+                "AGENTS.md",
+                "CLAUDE.md",
+                "README.md",
+                "README_RU.md",
+                ".chatrepo/mcp.yml",
+                *profile.mission.values(),
+            ]
+        )
+    )
     files = []
     for path in paths:
         try:
@@ -715,10 +945,14 @@ def context_bootstrap_tool() -> dict:
                 files.append({"path": path, "error": str(exc)})
         except Exception as exc:  # noqa: BLE001
             files.append({"path": path, "error": str(exc)})
-    return {"files": files, "count": len(files)}
+    try:
+        workspace_repos = list_workspace_repos(settings)
+    except Exception:  # noqa: BLE001
+        workspace_repos = []
+    return {"files": files, "count": len(files), "workspace": workspace_repos}
 
 
-@mcp.tool(
+@_tool(
     name="batch_call",
     annotations={**READ_ONLY, "title": "Batch Call"},
 )
@@ -751,7 +985,7 @@ def batch_call_tool(
     return {"results": results, "count": len(results)}
 
 
-@mcp.tool(
+@_tool(
     name="write_text_file",
     annotations={**WRITE_ACTION, "title": "Write Text File"},
 )
@@ -760,7 +994,7 @@ def write_text_file_tool(
     content: SmallText,
     create_if_missing: Annotated[bool, Field(description="When true, create the file if it does not exist.")] = False,
     expected_sha256: ExpectedSha = None,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when you need to replace the entire contents of an allowed UTF-8 repo text file."""
     return _write_result(
@@ -774,7 +1008,7 @@ def write_text_file_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="replace_text_in_file",
     annotations={**SAFE_EDIT_ACTION, "title": "Replace Text In File"},
 )
@@ -784,7 +1018,7 @@ def replace_text_in_file_tool(
     replace: Annotated[str, Field(description="Replacement UTF-8 text.")],
     replace_all: Annotated[bool, Field(description="When false, replace exactly one occurrence.")] = False,
     expected_sha256: ExpectedSha = None,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when you need to replace an exact text fragment in an allowed UTF-8 repo file."""
     return _write_result(
@@ -799,7 +1033,7 @@ def replace_text_in_file_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="insert_text_in_file",
     annotations={**SAFE_EDIT_ACTION, "title": "Insert Text In File"},
 )
@@ -809,7 +1043,7 @@ def insert_text_in_file_tool(
     position: Annotated[InsertPosition, Field(description="Insert content before or after the exact anchor.")],
     content: SmallText,
     expected_sha256: ExpectedSha = None,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when you need to insert text before or after an exact anchor in an allowed repo file."""
     return _write_result(
@@ -824,7 +1058,7 @@ def insert_text_in_file_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="delete_text_in_file",
     annotations={**WRITE_ACTION, "title": "Delete Text In File"},
 )
@@ -834,7 +1068,7 @@ def delete_text_in_file_tool(
     start_line: Annotated[int | None, Field(description="1-based first line to delete when deleting by line range.")] = None,
     end_line: Annotated[int | None, Field(description="1-based last line to delete when deleting by line range.")] = None,
     expected_sha256: ExpectedSha = None,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when you need to delete exact text or a line range from an allowed repo file."""
     return _write_result(
@@ -849,7 +1083,7 @@ def delete_text_in_file_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="create_text_file",
     annotations={**SAFE_EDIT_ACTION, "title": "Create Text File"},
 )
@@ -857,13 +1091,13 @@ def create_text_file_tool(
     path: RepoPath,
     content: SmallText,
     overwrite: Annotated[bool, Field(description="When true, replace an existing text file.")] = False,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when you need to create a new UTF-8 text file in the repository."""
     return _write_result(create_text_file, path=path, content=content, settings=settings, overwrite=overwrite, dry_run=dry_run)
 
 
-@mcp.tool(
+@_tool(
     name="move_path",
     annotations={**WRITE_ACTION, "title": "Move Path"},
 )
@@ -872,7 +1106,7 @@ def move_path_tool(
     destination_path: RepoPath,
     overwrite: Annotated[bool, Field(description="When true, overwrite the destination path if it exists.")] = False,
     expected_sha256: ExpectedSha = None,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when you need to rename or move an allowed UTF-8 repo file."""
     return _write_result(
@@ -886,29 +1120,29 @@ def move_path_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="delete_path",
     annotations={**WRITE_ACTION, "title": "Delete Path"},
 )
 def delete_path_tool(
     path: RepoPath,
     expected_sha256: ExpectedSha = None,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when you need to delete an allowed UTF-8 repo file."""
     return _write_result(delete_path, path=path, settings=settings, expected_sha256=expected_sha256, dry_run=dry_run)
 
 
-@mcp.tool(
+@_tool(
     name="ensure_directory",
     annotations={**SAFE_EDIT_ACTION, "title": "Ensure Directory"},
 )
-def ensure_directory_tool(path: RepoPath, dry_run: DryRun = True) -> dict:
+def ensure_directory_tool(path: RepoPath, dry_run: DryRun = None) -> dict:
     """Use this when you need to create a directory for docs, reports, packets, or source files."""
     return _write_result(ensure_directory, path=path, settings=settings, dry_run=dry_run)
 
 
-@mcp.tool(
+@_tool(
     name="batch_edit_files",
     annotations={**WRITE_ACTION, "title": "Batch Edit Files"},
 )
@@ -923,13 +1157,13 @@ def batch_edit_files_tool(
         ),
     ],
     atomic: Annotated[bool, Field(description="When true, rollback all earlier operations if any operation fails.")] = True,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when several related repo edits must be previewed or applied together with one combined diff."""
     return _write_result(batch_edit_files, operations=operations, settings=settings, atomic=atomic, dry_run=dry_run)
 
 
-@mcp.tool(
+@_tool(
     name="apply_change_set",
     annotations={**WRITE_ACTION, "title": "Apply Change Set"},
 )
@@ -939,14 +1173,14 @@ def apply_change_set_tool(
         Field(description="Non-empty list of exact edit operations. Each file operation may include expected_sha256."),
     ],
     atomic: Annotated[bool, Field(description="When true, rollback earlier applied operations if any operation fails.")] = True,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
     name: Annotated[str | None, Field(description="Optional human-readable change-set name.")] = None,
 ) -> dict:
     """Use this for multi-file exact repo edits with dry-run diff preview, rollback, and structured errors."""
     return _write_result(apply_change_set, operations=operations, settings=settings, atomic=atomic, dry_run=dry_run, name=name)
 
 
-@mcp.tool(
+@_tool(
     name="replace_lines",
     annotations={**SAFE_EDIT_ACTION, "title": "Replace Lines"},
 )
@@ -956,7 +1190,7 @@ def replace_lines_tool(
     end_line: LineNumber,
     replacement: SmallText,
     expected_sha256: ExpectedSha = None,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when you need to replace a small line range in an allowed UTF-8 repo file."""
     return _write_result(
@@ -971,7 +1205,7 @@ def replace_lines_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="insert_before_line",
     annotations={**SAFE_EDIT_ACTION, "title": "Insert Before Line"},
 )
@@ -980,7 +1214,7 @@ def insert_before_line_tool(
     line: LineNumber,
     content: SmallText,
     expected_sha256: ExpectedSha = None,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when you need to insert compact text before a specific line number."""
     return _write_result(
@@ -994,7 +1228,7 @@ def insert_before_line_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="insert_after_line",
     annotations={**SAFE_EDIT_ACTION, "title": "Insert After Line"},
 )
@@ -1003,7 +1237,7 @@ def insert_after_line_tool(
     line: LineNumber,
     content: SmallText,
     expected_sha256: ExpectedSha = None,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when you need to insert compact text after a specific line number."""
     return _write_result(
@@ -1017,7 +1251,7 @@ def insert_after_line_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="insert_before_heading",
     annotations={**SAFE_EDIT_ACTION, "title": "Insert Before Heading"},
 )
@@ -1026,7 +1260,7 @@ def insert_before_heading_tool(
     heading: Annotated[str, Field(description="Exact Markdown heading text, for example '## Goal'.")],
     content: SmallText,
     expected_sha256: ExpectedSha = None,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when you need to insert markdown before a heading with a small payload."""
     return _write_result(
@@ -1040,7 +1274,7 @@ def insert_before_heading_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="insert_after_heading",
     annotations={**SAFE_EDIT_ACTION, "title": "Insert After Heading"},
 )
@@ -1049,7 +1283,7 @@ def insert_after_heading_tool(
     heading: Annotated[str, Field(description="Exact Markdown heading text, for example '## Goal'.")],
     content: SmallText,
     expected_sha256: ExpectedSha = None,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when you need to insert markdown after a heading with a small payload."""
     return _write_result(
@@ -1063,7 +1297,7 @@ def insert_after_heading_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="append_to_file",
     annotations={**SAFE_EDIT_ACTION, "title": "Append To File"},
 )
@@ -1071,7 +1305,7 @@ def append_to_file_tool(
     path: RepoPath,
     content: SmallText,
     expected_sha256: ExpectedSha = None,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
     """Use this when you need to append a small text block to an allowed UTF-8 repo file."""
     return _write_result(
@@ -1084,23 +1318,31 @@ def append_to_file_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="apply_patch",
     annotations={**WRITE_ACTION, "title": "Apply Patch"},
 )
 def apply_patch_tool(
     patch: Annotated[str, Field(description="Unified diff patch text using diff --git file headers.")],
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
     expected_base_sha: Annotated[
         str | None,
         Field(description="Optional expected git HEAD/base SHA before applying the patch."),
     ] = None,
+    repo: RepoScope = None,
 ) -> dict:
     """Use this when you need to apply a unified diff patch across one or more allowed repo files."""
-    return _write_result(apply_patch_diff, patch=patch, settings=settings, dry_run=dry_run, expected_base_sha=expected_base_sha)
+    return _write_result(
+        apply_patch_diff,
+        patch=patch,
+        settings=settings,
+        dry_run=dry_run,
+        expected_base_sha=expected_base_sha,
+        repo=repo,
+    )
 
 
-@mcp.tool(
+@_tool(
     name="update_current_mission",
     annotations={**SAFE_EDIT_ACTION, "title": "Update Current Mission"},
 )
@@ -1122,9 +1364,9 @@ def update_current_mission_tool(
         list[str] | None,
         Field(description="Optional ordered content chunks joined server-side for safer long mission updates."),
     ] = None,
-    dry_run: DryRun = True,
+    dry_run: DryRun = None,
 ) -> dict:
-    """Use this when you need to add a mission section to missions/CURRENT.md before ## Goal."""
+    """Use this when you need to add a mission section to the repo's configured mission file (see profile.mission) before ## Goal."""
     return _write_result(
         update_current_mission,
         section_title=section_title,
@@ -1137,7 +1379,7 @@ def update_current_mission_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="run_command",
     annotations={**COMMAND_ACTION, "title": "Run Command"},
 )
@@ -1179,12 +1421,12 @@ def run_command_tool(
         env=env,
         max_output_chars=max_output_chars,
         tail_lines=tail_lines,
-        confirmed=confirmed,
+        confirmed=settings.confirmation_granted(confirmed),
         parse_kind=parse_kind,
     )
 
 
-@mcp.tool(
+@_tool(
     name="run_commands",
     annotations={**COMMAND_ACTION, "title": "Run Commands"},
 )
@@ -1217,20 +1459,41 @@ def run_commands_tool(
     )
 
 
-@mcp.tool(
+@_tool(
     name="run_test_preset",
     annotations={**COMMAND_ACTION, "title": "Run Test Preset"},
 )
 def run_test_preset_tool(
-    preset: Annotated[str, Field(description=f"Named test preset from built-ins or .chatrepo/mcp.yml. Built-ins: {', '.join(TEST_PRESETS)}.")],
+    preset: Annotated[
+        str,
+        Field(
+            description=(
+                "Preset to run: an action name (test, lint, typecheck, format, build) resolved for the "
+                "workspace root or the given cwd; a composite 'service/path:action' to resolve it for a "
+                "polyrepo sub-directory (autodetected via go.mod/pyproject.toml/package.json/Cargo.toml/"
+                "Makefile, see list_repos/list_test_presets); or a named preset key from .chatrepo/mcp.yml "
+                f"or the generic built-ins: {', '.join(TEST_PRESETS)}."
+            )
+        ),
+    ],
     timeout_ms: TimeoutMs = None,
     tail_lines: TailLines = 200,
     background: Annotated[bool, Field(description="When true, start the preset as a background job and poll it later.")] = False,
+    cwd: OptionalRepoPath = None,
 ) -> dict:
-    """Use this when you need to run a named test preset without sending a long command string."""
+    """Use this when you need to run a stack-autodetected or named test/lint/build preset without sending a long command string.
+
+    `cwd` is a convenience for the bare action-name form: passing
+    `preset="test", cwd="api-gateway"` is equivalent to `preset="api-gateway:test"`.
+    It is ignored when `preset` already uses the composite `service:action` syntax
+    or names an explicit profile preset.
+    """
+    effective_preset = preset
+    if cwd and ":" not in preset:
+        effective_preset = f"{cwd.strip('/')}:{preset}"
     try:
         return run_test_preset(
-            preset=preset,
+            preset=effective_preset,
             settings=settings,
             timeout_ms=timeout_ms,
             tail_lines=tail_lines,
@@ -1242,32 +1505,48 @@ def run_test_preset_tool(
         return {"ok": False, "error_kind": "command_failed", "error": str(exc), "preset": preset}
 
 
-@mcp.tool(
+@_tool(
     name="list_test_presets",
     annotations={**READ_ONLY, "title": "List Test Presets"},
 )
-def list_test_presets_tool() -> dict:
-    """Use this to list built-in and repo-local command/test presets from .chatrepo/mcp.yml."""
-    return list_test_presets(settings)
+def list_test_presets_tool(
+    path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional workspace sub-directory to resolve presets for (as returned by list_repos). "
+                "When omitted, returns the repo-profile presets plus a per-repo summary of autodetected "
+                "actions across the whole workspace."
+            )
+        ),
+    ] = None,
+) -> dict:
+    """Use this to list built-in/autodetected and repo-local command/test presets from .chatrepo/mcp.yml."""
+    return list_test_presets(settings, path=path)
 
 
-@mcp.tool(
+@_tool(
     name="run_quality_gate",
     annotations={**COMMAND_ACTION, "title": "Run Quality Gate"},
 )
 def run_quality_gate_tool(
-    checks: Annotated[list[dict[str, Any]], Field(description="Ordered checks. Each item uses preset or command, plus optional id, required, timeout_ms, parse_kind.")],
+    checks: Annotated[list[dict[str, Any]], Field(description="Ordered checks. Each item uses preset or command, plus optional id, required, timeout_ms, parse_kind, repo.")],
     name: Annotated[str | None, Field(description="Optional human-readable gate name.")] = None,
     stop_on_failure: Annotated[bool, Field(description="When true, stop after the first failed required check.")] = True,
+    repo: RepoScope = None,
 ) -> dict:
-    """Use this to run a structured quality gate from presets, commands, and policy scans."""
+    """Use this to run a structured quality gate from presets, commands, and policy scans.
+
+    `repo` sets the default sub-repository for policy-scan checks in a
+    polyrepo workspace; an individual check can override it with its own `repo` key.
+    """
     try:
-        return run_quality_gate(settings, checks=checks, name=name, stop_on_failure=stop_on_failure)
+        return run_quality_gate(settings, checks=checks, name=name, stop_on_failure=stop_on_failure, repo=repo)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error_kind": "quality_gate_failed", "error": str(exc)}
 
 
-@mcp.tool(
+@_tool(
     name="quality_gate_and_commit",
     annotations={**WRITE_ACTION, "title": "Quality Gate And Commit"},
 )
@@ -1276,6 +1555,7 @@ def quality_gate_and_commit_tool(
     commit: Annotated[dict[str, Any], Field(description="Commit config with message, paths, and optional enabled boolean.")],
     name: Annotated[str | None, Field(description="Optional human-readable gate name.")] = None,
     require_clean_after_commit: Annotated[bool, Field(description="When true, final status must be clean after commit.")] = True,
+    repo: RepoScope = None,
 ) -> dict:
     """Use this to run quality gates and commit exactly listed files only if all required gates pass."""
     try:
@@ -1285,12 +1565,13 @@ def quality_gate_and_commit_tool(
             commit=commit,
             name=name,
             require_clean_after_commit=require_clean_after_commit,
+            repo=repo,
         )
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error_kind": "quality_gate_commit_failed", "error": str(exc)}
 
 
-@mcp.tool(
+@_tool(
     name="scan_new_policy_violations",
     annotations={**READ_ONLY, "title": "Scan New Policy Violations"},
 )
@@ -1298,15 +1579,16 @@ def scan_new_policy_violations_tool(
     base_ref: Annotated[str, Field(description="Git base revision to diff against, for example HEAD or HEAD~1.")] = "HEAD",
     paths: Annotated[list[str] | None, Field(description="Optional repo-relative paths to limit the diff scan.")] = None,
     rules: Annotated[list[str] | None, Field(description="Optional rule ids. Defaults come from .chatrepo/mcp.yml or built-ins.")] = None,
+    repo: RepoScope = None,
 ) -> dict:
     """Use this to scan only newly added diff lines for policy violations such as new any casts."""
     try:
-        return scan_new_policy_violations(settings, base_ref=base_ref, paths=paths, rules=rules)
+        return scan_new_policy_violations(settings, base_ref=base_ref, paths=paths, rules=rules, repo=repo)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error_kind": "policy_scan_failed", "error": str(exc)}
 
 
-@mcp.tool(
+@_tool(
     name="command_policy_check",
     annotations={**READ_ONLY, "title": "Command Policy Check"},
 )
@@ -1315,7 +1597,7 @@ def command_policy_check_tool(command: Annotated[str, Field(description="Command
     return command_policy_check(command, settings)
 
 
-@mcp.tool(
+@_tool(
     name="get_command_log",
     annotations={**READ_ONLY, "title": "Get Command Log"},
 )
@@ -1333,7 +1615,7 @@ def get_command_log_tool(
         return {"ok": False, "error_kind": "command_log_error", "error": str(exc), "log_id": log_id}
 
 
-@mcp.tool(
+@_tool(
     name="summarize_command_log",
     annotations={**READ_ONLY, "title": "Summarize Command Log"},
 )
@@ -1348,7 +1630,7 @@ def summarize_command_log_tool(
         return {"ok": False, "error_kind": "command_log_error", "error": str(exc), "log_id": log_id}
 
 
-@mcp.tool(
+@_tool(
     name="git_worktree_guard",
     annotations={**READ_ONLY, "title": "Git Worktree Guard"},
 )
@@ -1356,20 +1638,22 @@ def git_worktree_guard_tool(
     allowed_dirty_paths: Annotated[list[str] | None, Field(description="Dirty paths allowed to exist before work starts.")] = None,
     require_branch: Annotated[str | None, Field(description="Optional required current branch name.")] = None,
     require_not_rebasing: Annotated[bool, Field(description="When true, fail if git rebase state exists.")] = True,
+    repo: RepoScope = None,
 ) -> dict:
-    """Use this before edits/commits to verify branch, rebase state, and unexpected dirty files."""
+    """Use this before edits/commits to verify branch, rebase state, and unexpected dirty files (or a polyrepo sub-repo via `repo`)."""
     try:
         return git_worktree_guard(
             settings,
             allowed_dirty_paths=allowed_dirty_paths,
             require_branch=require_branch,
             require_not_rebasing=require_not_rebasing,
+            repo=repo,
         )
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error_kind": "worktree_guard_failed", "error": str(exc)}
 
 
-@mcp.tool(
+@_tool(
     name="start_command_job",
     annotations={**COMMAND_ACTION, "title": "Start Command Job"},
 )
@@ -1419,7 +1703,7 @@ def start_command_job_tool(
         return {"ok": False, "error_kind": "command_failed", "error": str(exc), "command": command}
 
 
-@mcp.tool(
+@_tool(
     name="get_command_job",
     annotations={**READ_ONLY, "title": "Get Command Job"},
 )
@@ -1431,7 +1715,7 @@ def get_command_job_tool(job_id: str, tail_lines: int | None = 200) -> dict:
         return {"ok": False, "error_kind": "job_error", "error": str(exc), "job_id": job_id}
 
 
-@mcp.tool(
+@_tool(
     name="get_job_status",
     annotations={**READ_ONLY, "title": "Get Job Status"},
 )
@@ -1443,7 +1727,7 @@ def get_job_status_tool(job_id: Annotated[str, Field(description="Background com
         return {"ok": False, "error_kind": "job_error", "error": str(exc), "job_id": job_id}
 
 
-@mcp.tool(
+@_tool(
     name="cancel_command_job",
     annotations={**WRITE_ACTION, "title": "Cancel Command Job"},
 )
@@ -1455,15 +1739,588 @@ def cancel_command_job_tool(job_id: str) -> dict:
         return {"ok": False, "error_kind": "job_error", "error": str(exc), "job_id": job_id}
 
 
-@mcp.tool(
+@_tool(
     name="git_commit",
     annotations={**WRITE_ACTION, "title": "Git Commit"},
 )
-def git_commit_tool(message: str, paths: list[str], dry_run: bool = True) -> dict:
+def git_commit_tool(message: str, paths: list[str], dry_run: DryRun = None, repo: RepoScope = None) -> dict:
     """Use this when you need to commit exactly listed files without pushing."""
     try:
-        return git_commit(message=message, paths=paths, settings=settings, dry_run=dry_run)
+        return git_commit(
+            message=message,
+            paths=paths,
+            settings=settings,
+            dry_run=settings.effective_dry_run(dry_run),
+            repo=repo,
+        )
     except GitCommitError as exc:
         return {"ok": False, "error_kind": "git_commit_rejected", "error": str(exc)}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error_kind": "git_commit_failed", "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Git workflow tools (branch/stage/stash/fetch/pull/push/merge/revert/reset/worktree)
+# ---------------------------------------------------------------------------
+
+
+@_tool(
+    name="git_switch_branch",
+    annotations={**SAFE_EDIT_ACTION, "title": "Git Switch Branch"},
+)
+def git_switch_branch_tool(
+    branch: Annotated[str, Field(description="Branch name to switch to.")],
+    create: Annotated[bool, Field(description="When true, create the branch (like `git switch -c`).")] = False,
+    start_point: Annotated[str | None, Field(description="Starting point for a newly created branch. Only valid with create=true.")] = None,
+    stash_first: Annotated[bool, Field(description="When true, auto-stash a dirty working tree before switching.")] = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Switch to a branch (or a polyrepo sub-repo via `repo`), refusing to run over a dirty tree unless stash_first=true."""
+    return _structural_result(
+        git_switch_branch,
+        settings,
+        branch,
+        repo=repo,
+        create=create,
+        start_point=start_point,
+        stash_first=stash_first,
+    )
+
+
+@_tool(
+    name="git_create_branch",
+    annotations={**SAFE_EDIT_ACTION, "title": "Git Create Branch"},
+)
+def git_create_branch_tool(
+    branch: Annotated[str, Field(description="New branch name; validated via `git check-ref-format`.")],
+    start_point: Annotated[str, Field(description="Revision the new branch starts from.")] = "HEAD",
+    checkout: Annotated[bool, Field(description="When true, check out the new branch immediately.")] = True,
+    repo: RepoScope = None,
+) -> dict:
+    """Create a new branch (or a polyrepo sub-repo via `repo`) from start_point."""
+    return _structural_result(
+        git_create_branch,
+        settings,
+        branch,
+        repo=repo,
+        start_point=start_point,
+        checkout=checkout,
+    )
+
+
+@_tool(
+    name="git_add",
+    annotations={**SAFE_EDIT_ACTION, "title": "Git Add"},
+)
+def git_add_tool(
+    paths: Annotated[list[str], Field(description="Explicit repo-relative paths to stage. Blanket '.'/'-A'/'--all' is rejected.")],
+    dry_run: DryRun = None,
+    repo: RepoScope = None,
+) -> dict:
+    """Stage explicit paths (or a polyrepo sub-repo via `repo`); paths blocked by policy are reported, not staged."""
+    return _structural_result(git_add, settings, paths, repo=repo, dry_run=dry_run)
+
+
+@_tool(
+    name="git_restore",
+    annotations={**WRITE_ACTION, "title": "Git Restore"},
+)
+def git_restore_tool(
+    paths: Annotated[list[str], Field(description="Repo-relative paths to restore.")],
+    staged: Annotated[bool, Field(description="When true, unstage only (always safe). When false, discard working-tree changes (needs confirmed).")] = False,
+    source: Annotated[str | None, Field(description="Optional revision to restore file contents from.")] = None,
+    confirmed: Confirmed = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Unstage or discard changes for paths (or a polyrepo sub-repo via `repo`); discarding needs confirmed=true."""
+    return _structural_result(
+        git_restore,
+        settings,
+        paths,
+        repo=repo,
+        staged=staged,
+        source=source,
+        confirmed=confirmed,
+    )
+
+
+@_tool(
+    name="git_stash",
+    annotations={**SAFE_EDIT_ACTION, "title": "Git Stash"},
+)
+def git_stash_tool(
+    action: Annotated[
+        Literal["push", "pop", "apply", "list", "show", "drop"],
+        Field(description="Stash subcommand to run."),
+    ] = "push",
+    message: Annotated[str | None, Field(description="Optional message for action='push'.")] = None,
+    include_untracked: Annotated[bool, Field(description="When true, include untracked files in action='push'.")] = True,
+    stash_ref: Annotated[str | None, Field(description="Stash reference for apply/pop/drop/show, defaults to stash@{0}.")] = None,
+    confirmed: Confirmed = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Run git stash push/pop/apply/list/show/drop (or a polyrepo sub-repo via `repo`); pop/drop need confirmed=true."""
+    return _structural_result(
+        git_stash,
+        settings,
+        repo=repo,
+        action=action,
+        message=message,
+        include_untracked=include_untracked,
+        stash_ref=stash_ref,
+        confirmed=confirmed,
+    )
+
+
+@_tool(
+    name="git_fetch",
+    annotations={**NETWORK_READ, "title": "Git Fetch"},
+)
+def git_fetch_tool(
+    remote: Annotated[str, Field(description="Remote name to fetch from.")] = "origin",
+    prune: Annotated[bool, Field(description="When true, prune remote-tracking refs deleted upstream.")] = False,
+    all_repos: Annotated[bool, Field(description="When true, fetch every git repo discovered in the polyrepo workspace.")] = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Fetch a remote (or a polyrepo sub-repo via `repo`), reporting which remote-tracking refs moved."""
+    return _structural_result(git_fetch, settings, repo=repo, remote=remote, prune=prune, all_repos=all_repos)
+
+
+@_tool(
+    name="git_pull",
+    annotations={**NETWORK_WRITE, "title": "Git Pull"},
+)
+def git_pull_tool(
+    remote: Annotated[str, Field(description="Remote name to pull from.")] = "origin",
+    branch: Annotated[str | None, Field(description="Remote branch to pull. Defaults to the current branch's name.")] = None,
+    ff_only: Annotated[bool, Field(description="When true (default), only allow a fast-forward pull.")] = True,
+    rebase: Annotated[bool, Field(description="When true, rebase local commits onto the pulled branch instead of merging.")] = False,
+    confirmed: Confirmed = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Pull a remote branch (or a polyrepo sub-repo via `repo`); rebase or non-fast-forward pulls need confirmed=true.
+
+    On conflict, the in-progress merge/rebase is auto-aborted and reported as `error_kind: "pull_conflict"`.
+    """
+    return _structural_result(
+        git_pull,
+        settings,
+        repo=repo,
+        remote=remote,
+        branch=branch,
+        ff_only=ff_only,
+        rebase=rebase,
+        confirmed=confirmed,
+    )
+
+
+@_tool(
+    name="git_push",
+    annotations={**NETWORK_WRITE, "title": "Git Push"},
+)
+def git_push_tool(
+    remote: Annotated[str, Field(description="Remote name to push to.")] = "origin",
+    branch: Annotated[str | None, Field(description="Branch to push. Defaults to the current branch; required on a detached HEAD.")] = None,
+    set_upstream: Annotated[bool, Field(description="When true, set the pushed branch's upstream tracking.")] = False,
+    force_with_lease: Annotated[
+        bool,
+        Field(description="When true, push with --force-with-lease. Only available when the server enables ALLOW_FORCE_PUSH, and always needs confirmed=true."),
+    ] = False,
+    dry_run: DryRun = None,
+    confirmed: Confirmed = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Push a branch through the audited structural workflow (safe mode routes pushes here).
+
+    Pushing a `settings.protected_branches` branch, a real (non-dry-run) push, or force_with_lease all require
+    confirmed=true in safe mode. Full mode also permits raw shell push.
+    """
+    return _structural_result(
+        git_push,
+        settings,
+        repo=repo,
+        remote=remote,
+        branch=branch,
+        set_upstream=set_upstream,
+        force_with_lease=force_with_lease,
+        dry_run=dry_run,
+        confirmed=confirmed,
+    )
+
+
+@_tool(
+    name="git_merge",
+    annotations={**WRITE_ACTION, "title": "Git Merge"},
+)
+def git_merge_tool(
+    branch: Annotated[str, Field(description="Branch to merge into HEAD. Ignored when abort=true.")] = "",
+    no_ff: Annotated[bool, Field(description="When true, always create a merge commit (no fast-forward).")] = False,
+    message: Annotated[str | None, Field(description="Optional custom merge commit message.")] = None,
+    abort: Annotated[bool, Field(description="When true, abort an in-progress merge instead of starting one.")] = False,
+    confirmed: Confirmed = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Merge a branch into HEAD, or abort an in-progress merge (or a polyrepo sub-repo via `repo`); merging needs confirmed=true.
+
+    On conflict, the merge is left unresolved for inspection/fixing, or call again with abort=true.
+    """
+    return _structural_result(
+        git_merge,
+        settings,
+        branch,
+        repo=repo,
+        no_ff=no_ff,
+        message=message,
+        abort=abort,
+        confirmed=confirmed,
+    )
+
+
+@_tool(
+    name="git_revert",
+    annotations={**WRITE_ACTION, "title": "Git Revert"},
+)
+def git_revert_tool(
+    revision: Annotated[str, Field(description="Revision to revert.")],
+    no_commit: Annotated[bool, Field(description="When true, apply the revert to the working tree/index without committing.")] = False,
+    confirmed: Confirmed = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Revert a revision (or a polyrepo sub-repo via `repo`); needs confirmed=true. On conflict, auto-aborts and reports conflicts."""
+    return _structural_result(
+        git_revert,
+        settings,
+        revision,
+        repo=repo,
+        no_commit=no_commit,
+        confirmed=confirmed,
+    )
+
+
+@_tool(
+    name="git_reset",
+    annotations={**WRITE_ACTION, "title": "Git Reset"},
+)
+def git_reset_tool(
+    mode: Annotated[
+        Literal["soft", "mixed", "hard"],
+        Field(description="Reset mode. Hard additionally requires ALLOW_HARD_RESET=true."),
+    ] = "mixed",
+    target: Annotated[str, Field(description="Revision to reset HEAD to.")] = "HEAD~1",
+    confirmed: Confirmed = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Reset HEAD to a target revision; full mode skips internal confirmation, while hard remains separately gated."""
+    return _structural_result(git_reset, settings, repo=repo, mode=mode, target=target, confirmed=confirmed)
+
+
+@_tool(
+    name="git_worktree_add",
+    annotations={**SAFE_EDIT_ACTION, "title": "Git Worktree Add"},
+)
+def git_worktree_add_tool(
+    branch: Annotated[str, Field(description="Branch to check out into the new worktree.")],
+    base: Annotated[str, Field(description="Revision the new branch is created from, when create_branch=true.")] = "HEAD",
+    create_branch: Annotated[bool, Field(description="When true, create `branch` from `base`; when false, `branch` must already exist.")] = True,
+    repo: RepoScope = None,
+) -> dict:
+    """Add a worktree under `.chatrepo-worktrees/` for a branch (or a polyrepo sub-repo via `repo`)."""
+    return _structural_result(git_worktree_add, settings, branch, repo=repo, base=base, create_branch=create_branch)
+
+
+@_tool(
+    name="git_worktree_list",
+    annotations={**SAFE_EDIT_ACTION, "title": "Git Worktree List"},
+)
+def git_worktree_list_tool(repo: RepoScope = None) -> dict:
+    """List worktrees registered against the repository (or a polyrepo sub-repo via `repo`)."""
+    return _structural_result(git_worktree_list, settings, repo=repo)
+
+
+@_tool(
+    name="git_worktree_remove",
+    annotations={**WRITE_ACTION, "title": "Git Worktree Remove"},
+)
+def git_worktree_remove_tool(
+    worktree_path: Annotated[str, Field(description="Path of the worktree to remove (must stay within allowed workspace roots).")],
+    force: Annotated[bool, Field(description="When true, remove even if the worktree has local modifications.")] = False,
+    confirmed: Confirmed = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Remove a worktree (or a polyrepo sub-repo via `repo`); needs confirmed=true."""
+    return _structural_result(
+        git_worktree_remove,
+        settings,
+        worktree_path,
+        repo=repo,
+        force=force,
+        confirmed=confirmed,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GitHub tools (PRs, checks, runs, issues) via the `gh` CLI
+# ---------------------------------------------------------------------------
+
+
+@_tool(
+    name="gh_status",
+    annotations={**NETWORK_READ, "title": "GitHub Status"},
+)
+def gh_status_tool() -> dict:
+    """Report whether the `gh` CLI is installed/authenticated, plus a brief API rate-limit snapshot."""
+    return _structural_result(gh_status, settings)
+
+
+@_tool(
+    name="gh_pr_create",
+    annotations={**NETWORK_WRITE, "title": "GitHub PR Create"},
+)
+def gh_pr_create_tool(
+    title: Annotated[str, Field(description="Pull request title.")],
+    body: Annotated[str, Field(description="Pull request body (Markdown).")],
+    base: Annotated[str | None, Field(description="Base branch to merge into. Defaults to the repo's default branch.")] = None,
+    head: Annotated[str | None, Field(description="Head branch. Defaults to the current branch.")] = None,
+    draft: Annotated[bool, Field(description="When true, create the PR as a draft.")] = False,
+    dry_run: DryRun = None,
+    confirmed: Confirmed = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Create a GitHub pull request for the current branch (or a polyrepo sub-repo via `repo`).
+
+    Requires the current branch to already be pushed (call git_push first). A real (non-dry-run)
+    PR creation needs confirmed=true.
+    """
+    return _structural_result(
+        gh_pr_create,
+        settings,
+        title,
+        body,
+        repo=repo,
+        base=base,
+        head=head,
+        draft=draft,
+        dry_run=dry_run,
+        confirmed=confirmed,
+    )
+
+
+@_tool(
+    name="gh_pr_list",
+    annotations={**NETWORK_READ, "title": "GitHub PR List"},
+)
+def gh_pr_list_tool(
+    state: Annotated[Literal["open", "closed", "merged", "all"], Field(description="PR state filter.")] = "open",
+    limit: Annotated[int, Field(description="Maximum number of pull requests to return.")] = 20,
+    repo: RepoScope = None,
+) -> dict:
+    """List pull requests (or a polyrepo sub-repo via `repo`)."""
+    return _structural_result(gh_pr_list, settings, repo=repo, state=state, limit=limit)
+
+
+@_tool(
+    name="gh_pr_view",
+    annotations={**NETWORK_READ, "title": "GitHub PR View"},
+)
+def gh_pr_view_tool(
+    number: Annotated[int, Field(description="Pull request number.")],
+    include_diff: Annotated[bool, Field(description="When true, also fetch the PR's diff.")] = False,
+    include_comments: Annotated[bool, Field(description="When true, include PR-level comments.")] = True,
+    repo: RepoScope = None,
+) -> dict:
+    """View pull request metadata, reviews, and optionally its diff (or a polyrepo sub-repo via `repo`)."""
+    return _structural_result(
+        gh_pr_view,
+        settings,
+        number,
+        repo=repo,
+        include_diff=include_diff,
+        include_comments=include_comments,
+    )
+
+
+@_tool(
+    name="gh_pr_comment",
+    annotations={**NETWORK_WRITE, "title": "GitHub PR Comment"},
+)
+def gh_pr_comment_tool(
+    number: Annotated[int, Field(description="Pull request number to comment on.")],
+    body: Annotated[str, Field(description="Comment body (Markdown).")],
+    reply_to: Annotated[int | None, Field(description="Optional review comment id to reply to instead of posting a top-level PR comment.")] = None,
+    confirmed: Confirmed = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Post a real, visible comment on a pull request (or a polyrepo sub-repo via `repo`); always needs confirmed=true."""
+    return _structural_result(
+        gh_pr_comment,
+        settings,
+        number,
+        body,
+        repo=repo,
+        reply_to=reply_to,
+        confirmed=confirmed,
+    )
+
+
+@_tool(
+    name="gh_pr_merge",
+    annotations={**NETWORK_WRITE, "title": "GitHub PR Merge"},
+)
+def gh_pr_merge_tool(
+    number: Annotated[int, Field(description="Pull request number to merge.")],
+    method: Annotated[Literal["merge", "squash", "rebase"], Field(description="Merge strategy.")] = "squash",
+    confirmed: Confirmed = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Merge a pull request on GitHub (or a polyrepo sub-repo via `repo`); always needs confirmed=true."""
+    return _structural_result(gh_pr_merge, settings, number, repo=repo, method=method, confirmed=confirmed)
+
+
+@_tool(
+    name="gh_checks",
+    annotations={**NETWORK_READ, "title": "GitHub Checks"},
+)
+def gh_checks_tool(
+    pr_number: Annotated[int | None, Field(description="Pull request number to list CI checks for.")] = None,
+    ref: Annotated[str | None, Field(description="Commit ref to list CI checks for, instead of a PR number.")] = None,
+    repo: RepoScope = None,
+) -> dict:
+    """List CI check runs for a pull request or a commit ref (or a polyrepo sub-repo via `repo`); one of pr_number/ref is required."""
+    return _structural_result(gh_checks, settings, repo=repo, pr_number=pr_number, ref=ref)
+
+
+@_tool(
+    name="gh_run_view",
+    annotations={**NETWORK_READ, "title": "GitHub Run View"},
+)
+def gh_run_view_tool(
+    run_id: Annotated[str | None, Field(description="Workflow run id. Defaults to the latest run on the current branch.")] = None,
+    failed_only: Annotated[bool, Field(description="When true, also fetch the failed-jobs-only log tail.")] = True,
+    log_tail: Annotated[int, Field(description="Number of trailing failed-log lines to include.")] = 200,
+    repo: RepoScope = None,
+) -> dict:
+    """View a GitHub Actions workflow run and optionally its failed-job log tail (or a polyrepo sub-repo via `repo`)."""
+    return _structural_result(
+        gh_run_view,
+        settings,
+        repo=repo,
+        run_id=run_id,
+        failed_only=failed_only,
+        log_tail=log_tail,
+    )
+
+
+@_tool(
+    name="gh_run_rerun",
+    annotations={**NETWORK_WRITE, "title": "GitHub Run Rerun"},
+)
+def gh_run_rerun_tool(
+    run_id: Annotated[str, Field(description="Workflow run id to re-trigger.")],
+    failed_only: Annotated[bool, Field(description="When true, only rerun failed jobs.")] = True,
+    confirmed: Confirmed = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Re-trigger a GitHub Actions workflow run (or a polyrepo sub-repo via `repo`); always needs confirmed=true."""
+    return _structural_result(
+        gh_run_rerun,
+        settings,
+        run_id,
+        repo=repo,
+        failed_only=failed_only,
+        confirmed=confirmed,
+    )
+
+
+@_tool(
+    name="gh_issue_list",
+    annotations={**NETWORK_READ, "title": "GitHub Issue List"},
+)
+def gh_issue_list_tool(
+    state: Annotated[Literal["open", "closed", "all"], Field(description="Issue state filter.")] = "open",
+    limit: Annotated[int, Field(description="Maximum number of issues to return.")] = 20,
+    repo: RepoScope = None,
+) -> dict:
+    """List issues (or a polyrepo sub-repo via `repo`)."""
+    return _structural_result(gh_issue_list, settings, repo=repo, state=state, limit=limit)
+
+
+@_tool(
+    name="gh_issue_view",
+    annotations={**NETWORK_READ, "title": "GitHub Issue View"},
+)
+def gh_issue_view_tool(
+    number: Annotated[int, Field(description="Issue number.")],
+    repo: RepoScope = None,
+) -> dict:
+    """View a single issue's metadata and comments (or a polyrepo sub-repo via `repo`)."""
+    return _structural_result(gh_issue_view, settings, number, repo=repo)
+
+
+# ---------------------------------------------------------------------------
+# One-shot diagnostics and symbol index tools
+# ---------------------------------------------------------------------------
+
+
+@_tool(
+    name="code_diagnostics",
+    annotations={**READ_ONLY, "title": "Code Diagnostics"},
+)
+def code_diagnostics_tool(
+    paths: Annotated[list[str] | None, Field(description="Optional paths to limit the check to, passed through to the underlying checker.")] = None,
+    language: Annotated[
+        Literal["auto", "go", "python", "ts"],
+        Field(description="Language checker to run. 'auto' detects the stack(s) present and runs every applicable runner."),
+    ] = "auto",
+    severity_min: Annotated[Literal["hint", "info", "warning", "error"], Field(description="Minimum severity to include.")] = "warning",
+    limit: Annotated[int, Field(description="Maximum number of diagnostics to return.")] = 200,
+    repo: RepoScope = None,
+) -> dict:
+    """Run one-shot diagnostics (go vet / pyright or ruff / tsc --noEmit) for the workspace or a polyrepo sub-repo via `repo`.
+
+    Missing external checker binaries never fail the call; they are reported in `missing_tools`.
+    """
+    return _structural_result(
+        code_diagnostics,
+        settings,
+        repo=repo,
+        paths=paths,
+        language=language,
+        severity_min=severity_min,
+        limit=limit,
+    )
+
+
+@_tool(
+    name="symbol_definition",
+    annotations={**READ_ONLY, "title": "Symbol Definition"},
+)
+def symbol_definition_tool(
+    symbol: Annotated[str, Field(description="Exact symbol name to find definitions for.")],
+    kind: Annotated[str | None, Field(description="Optional ctags kind filter, e.g. 'function' or 'class'.")] = None,
+    limit: Annotated[int, Field(description="Maximum number of definitions to return.")] = 20,
+    repo: RepoScope = None,
+) -> dict:
+    """Find definitions of a symbol (ctags index when available, else a regex heuristic) in the repo or a polyrepo sub-repo via `repo`."""
+    return _structural_result(symbol_definition, settings, symbol, repo=repo, kind=kind, limit=limit)
+
+
+@_tool(
+    name="document_symbols",
+    annotations={**READ_ONLY, "title": "Document Symbols"},
+)
+def document_symbols_tool(path: RepoPath, repo: RepoScope = None) -> dict:
+    """Return a file's outline (name/kind/line/signature/scope), from ctags when available or a regex heuristic."""
+    return _structural_result(document_symbols, settings, path, repo=repo)
+
+
+@_tool(
+    name="workspace_symbols",
+    annotations={**READ_ONLY, "title": "Workspace Symbols"},
+)
+def workspace_symbols_tool(
+    query: Annotated[str, Field(description="Substring to search for across indexed symbol names.")],
+    limit: Annotated[int, Field(description="Maximum number of matching symbols to return.")] = 50,
+    repo: RepoScope = None,
+) -> dict:
+    """Fuzzy/substring-search symbol names across the repo or a polyrepo sub-repo via `repo` (ctags index or text-search fallback)."""
+    return _structural_result(workspace_symbols, settings, query, repo=repo, limit=limit)

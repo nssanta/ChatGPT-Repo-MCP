@@ -38,10 +38,30 @@ def test_scan_new_policy_violations_catches_added_any(tmp_path: Path) -> None:
     init_repo(tmp_path)
     (tmp_path / "src" / "a.ts").write_text("const a: any = 1;\n", encoding="utf-8")
 
-    result = scan_new_policy_violations(make_settings(tmp_path), base_ref="HEAD", paths=["src"])
+    # no_new_colon_any is a TypeScript-only rule, not enabled by the neutral
+    # default rule set, so request it explicitly.
+    result = scan_new_policy_violations(
+        make_settings(tmp_path), base_ref="HEAD", paths=["src"], rules=["no_new_colon_any"]
+    )
 
     assert result["ok"] is False
     assert result["violations"][0]["rule"] == "no_new_colon_any"
+
+
+def test_scan_new_policy_violations_rule_is_scoped_by_extension(tmp_path: Path) -> None:
+    """A Python `: Any` type annotation must never trip the TS-only colon-any rule."""
+    init_repo(tmp_path)
+    (tmp_path / "src" / "b.py").write_text("def f(x):\n    return None\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add py file"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "src" / "b.py").write_text("def f(x: Any) -> None:\n    return None\n", encoding="utf-8")
+
+    result = scan_new_policy_violations(
+        make_settings(tmp_path), base_ref="HEAD", paths=["src"], rules=["no_new_colon_any"]
+    )
+
+    assert result["ok"] is True
+    assert result["violations"] == []
 
 
 def test_run_quality_gate_blocks_required_failure(tmp_path: Path) -> None:

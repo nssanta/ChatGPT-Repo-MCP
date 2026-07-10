@@ -1,3 +1,4 @@
+import dataclasses
 from pathlib import Path
 
 from chatrepo_mcp.config import Settings
@@ -5,6 +6,8 @@ from chatrepo_mcp.edit_tools import (
     PatchApplyError,
     StaleWriteError,
     WritePolicyError,
+    _allows_everything,
+    _is_writable_relative,
     apply_change_set,
     append_to_file,
     apply_patch_diff,
@@ -81,6 +84,45 @@ def make_settings(tmp_path: Path, *, writable_globs: tuple[str, ...] | None = No
         mcp_bearer_token=None,
         command_policy_mode="allowlist",
         command_jobs_dir=tmp_path / "jobs",
+        workspace_roots=(),
+        filesystem_unrestricted=False,
+        workspace_scan_depth=2,
+        denied_words=("sudo", "su"),
+        destructive_words=(
+            "rm -rf",
+            "rmdir",
+            "git push --force",
+            "git reset --hard",
+            "git clean",
+            "docker system prune",
+            "chmod -R",
+            "chown -R",
+            "mkfs",
+            "dd",
+        ),
+        command_shell_prelude="",
+        git_network_timeout=60,
+        protected_branches=("main", "master"),
+        allow_force_push=False,
+        gh_timeout=60,
+        github_tools_enabled=True,
+        secret_globs=(".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "**/.git/**"),
+        binary_globs=(
+            "**/.venv/**",
+            "**/node_modules/**",
+            "**/*.db",
+            "**/*.sqlite",
+            "**/*.sqlite3",
+            "**/*.bin",
+            "**/*.png",
+            "**/*.jpg",
+            "**/*.jpeg",
+            "**/*.webp",
+            "**/*.pdf",
+            "**/*.zip",
+            "**/*.tar",
+            "**/*.gz",
+        ),
     )
 
 
@@ -187,7 +229,10 @@ def test_blocked_writable_and_traversal_reject(tmp_path: Path) -> None:
     try:
         write_text_file(".env", "x", settings, expected_sha256=sha256_text("SECRET=value\n"))
         assert False, "expected blocked path"
-    except WritePolicyError:
+    except SecurityError:
+        # .env matches secret_globs, which is a hard perimeter block (always on,
+        # even under filesystem_unrestricted) -- distinct from the softer
+        # writable_globs policy, hence SecurityError rather than WritePolicyError.
         assert True
 
     try:
@@ -217,6 +262,58 @@ def test_star_requires_dangerous_flag(tmp_path: Path) -> None:
     result = write_text_file("src/main.py", "new\n", dangerous, expected_sha256=old_hash, dry_run=False)
     assert result["changed"] is True
     assert path.read_text(encoding="utf-8") == "new\n"
+
+
+def test_allows_everything_recognizes_all_catchall_spellings() -> None:
+    assert _allows_everything(("*",)) is True
+    assert _allows_everything(("**",)) is True
+    assert _allows_everything(("**/*",)) is True
+    assert _allows_everything((".claude/**", "docs/**")) is False
+    assert _allows_everything(()) is False
+
+
+def test_interlock_regression_default_writable_globs_blocks_without_dangerous_flag(tmp_path: Path) -> None:
+    # Regression test for the interlock bug: the *default* WRITABLE_GLOBS is
+    # ("**/*",), not the literal "*". The old buggy check only special-cased
+    # the literal "*" string, so with the real default value the interlock
+    # never engaged and dangerously_allow_all_writes was silently ignored
+    # (writes to anywhere succeeded even with the flag left at its default
+    # False). This must now be blocked.
+    settings = make_settings(tmp_path, writable_globs=("**/*",), dangerous=False)
+    write_allowed_file(tmp_path, "src/main.py", "old\n")
+
+    assert _is_writable_relative("src/main.py", settings) is False
+    try:
+        write_text_file("src/main.py", "new\n", settings, expected_sha256=sha256_text("old\n"))
+        assert False, "expected the write-everywhere interlock to reject this write"
+    except WritePolicyError:
+        assert True
+
+
+def test_interlock_allows_everything_once_dangerous_flag_is_set(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, writable_globs=("**/*",), dangerous=True)
+    path, old_hash = write_allowed_file(tmp_path, "src/main.py", "old\n")
+
+    assert _is_writable_relative("src/main.py", settings) is True
+    result = write_text_file("src/main.py", "new\n", settings, expected_sha256=old_hash, dry_run=False)
+
+    assert result["changed"] is True
+    assert path.read_text(encoding="utf-8") == "new\n"
+
+
+def test_interlock_secret_globs_always_blocked_even_with_dangerous_flag(tmp_path: Path) -> None:
+    # Secrets are never writable, even in "god mode" (dangerously_allow_all_writes
+    # + a catch-all writable_globs) -- defense in depth on top of the SecurityError
+    # already raised earlier in resolve_write_path/_resolve_write_target.
+    settings = make_settings(tmp_path, writable_globs=("**/*",), dangerous=True)
+    (tmp_path / ".env").write_text("SECRET=value\n", encoding="utf-8")
+
+    assert _is_writable_relative(".env", settings) is False
+    try:
+        write_text_file(".env", "SECRET=nope\n", settings, expected_sha256=sha256_text("SECRET=value\n"))
+        assert False, "expected .env to be blocked"
+    except SecurityError:
+        assert True
 
 
 def test_create_move_delete_and_ensure_directory(tmp_path: Path) -> None:
@@ -491,7 +588,8 @@ def test_apply_patch_dry_run_apply_and_rejects_blocked_path(tmp_path: Path) -> N
     try:
         apply_patch_diff(blocked_patch, settings, dry_run=True)
         assert False, "expected blocked path"
-    except WritePolicyError:
+    except SecurityError:
+        # .env matches secret_globs, a hard perimeter block raised as SecurityError.
         assert True
 
 
@@ -584,3 +682,58 @@ def test_invalid_patch_format_returns_valid_example(tmp_path: Path) -> None:
 
     assert error["error_kind"] == "invalid_patch_format"
     assert "diff --git" in error["valid_example"]
+
+
+def test_external_workspace_edit_targets_the_external_file(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    external = tmp_path / "external"
+    project.mkdir()
+    external.mkdir()
+    (project / "same.txt").write_text("project\n", encoding="utf-8")
+    external_file = external / "same.txt"
+    external_file.write_text("external\n", encoding="utf-8")
+    settings = dataclasses.replace(
+        make_settings(project, writable_globs=("**/*",), dangerous=True),
+        workspace_roots=(str(external),),
+        require_expected_hash_for_writes=False,
+    )
+
+    result = replace_text_in_file(
+        str(external_file),
+        "external",
+        "changed",
+        settings,
+        dry_run=False,
+    )
+
+    assert result["path"] == str(external_file)
+    assert external_file.read_text(encoding="utf-8") == "changed\n"
+    assert (project / "same.txt").read_text(encoding="utf-8") == "project\n"
+
+
+def test_atomic_batch_rolls_back_external_workspace_file(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    external = tmp_path / "external"
+    project.mkdir()
+    external.mkdir()
+    external_file = external / "same.txt"
+    external_file.write_text("before\n", encoding="utf-8")
+    settings = dataclasses.replace(
+        make_settings(project, writable_globs=("**/*",), dangerous=True),
+        workspace_roots=(str(external),),
+        require_expected_hash_for_writes=False,
+    )
+
+    result = batch_edit_files(
+        [
+            {"op": "replace", "path": str(external_file), "find": "before", "replace": "after"},
+            {"op": "replace", "path": str(external_file), "find": "missing", "replace": "x"},
+        ],
+        settings,
+        atomic=True,
+        dry_run=False,
+    )
+
+    assert result["ok"] is False
+    assert result["rollback_performed"] is True
+    assert external_file.read_text(encoding="utf-8") == "before\n"

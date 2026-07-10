@@ -8,8 +8,20 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from . import git_tools
 from .config import Settings
-from .security import SecurityError, matches_any_glob, normalize_rel_path, rel_posix, resolve_repo_path
+from .profile import load_repo_profile
+from .security import (
+    SecurityError,
+    display_path,
+    find_containing_root,
+    is_blocked_relative,
+    is_secret_relative,
+    matches_any_glob,
+    normalize_rel_path,
+    rel_posix,
+)
+from .workspace import is_within_roots, resolve_roots
 
 
 class WritePolicyError(ValueError):
@@ -96,20 +108,64 @@ def _validate_new_text(path: str, text: str, settings: Settings) -> None:
         )
 
 
+def _allows_everything(globs: tuple[str, ...]) -> bool:
+    """True if ``globs`` contains a catch-all pattern (``*``, ``**``, or ``**/*``).
+
+    Used to detect when ``writable_globs`` is configured (or left at its
+    permissive default) to allow writes anywhere, so that
+    ``dangerously_allow_all_writes`` can act as a real interlock rather than
+    only catching the single literal string ``"*"``.
+    """
+    return any(glob in {"*", "**", "**/*"} for glob in globs)
+
+
 def _is_writable_relative(rel_path: str, settings: Settings) -> bool:
     rel_path = normalize_rel_path(rel_path)
-    if matches_any_glob(rel_path, settings.blocked_globs):
+    if is_blocked_relative(rel_path, settings):
         return False
-    if "*" in settings.writable_globs and not settings.dangerously_allow_all_writes:
+    if is_secret_relative(rel_path, settings):
+        # Defense in depth: structured secret writes require the explicit
+        # full-mode ALLOW_SECRET_ACCESS switch.
         return False
-    return settings.dangerously_allow_all_writes and "*" in settings.writable_globs or matches_any_glob(
-        rel_path, settings.writable_globs
-    )
+    allows_everything = _allows_everything(settings.writable_globs)
+    if allows_everything and not settings.dangerously_allow_all_writes:
+        # Interlock: a catch-all writable_globs pattern (including the
+        # permissive default "**/*") is inert unless the operator explicitly
+        # opted in via dangerously_allow_all_writes.
+        return False
+    if settings.dangerously_allow_all_writes and allows_everything:
+        return True
+    return matches_any_glob(rel_path, settings.writable_globs)
 
 
 def _ensure_move_delete_allowed(settings: Settings) -> None:
     if not settings.allow_move_delete_operations:
         raise WritePolicyError("move/delete operations are disabled by policy")
+
+
+def _resolve_write_target(path: str, settings: Settings) -> tuple[Path, Path, str]:
+    """Resolve ``path`` (absolute or project_root-relative) within allowed roots.
+
+    Returns ``(target, root, rel)`` where ``root`` is the allowed root the
+    target falls under and ``rel`` is the path relative to that root. Raises
+    ``SecurityError`` if the path escapes all allowed roots or matches a
+    secret glob (``.env``, keys, ``.git`` internals, ...) -- the latter check
+    applies unless full mode explicitly enables structured secret access.
+    """
+    roots = resolve_roots(settings)
+    path_obj = Path(path)
+    target = path_obj.resolve() if path_obj.is_absolute() else (settings.project_root.resolve() / path).resolve()
+
+    if not is_within_roots(target, roots):
+        raise SecurityError(f"path escapes allowed roots: {path}")
+
+    root = find_containing_root(target, roots)
+    rel = rel_posix(root, target)
+
+    if is_secret_relative(rel, settings):
+        raise SecurityError(f"path is blocked by security policy: {rel}")
+
+    return target, root, rel
 
 
 def resolve_write_path(
@@ -118,14 +174,7 @@ def resolve_write_path(
     *,
     create_if_missing: bool = False,
 ) -> tuple[Path, str]:
-    root = settings.project_root.resolve()
-    target = (root / path).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError as exc:
-        raise SecurityError(f"path escapes repository root: {path}") from exc
-
-    rel = rel_posix(root, target) if target.exists() else normalize_rel_path(path)
+    target, root, rel = _resolve_write_target(path, settings)
     if not rel or rel == ".":
         raise WritePolicyError("path must point to a repo file")
     if target.exists() and not target.is_file():
@@ -142,17 +191,11 @@ def resolve_write_path(
         parent_rel = rel_posix(root, target.parent) if target.parent.exists() else normalize_rel_path(str(Path(rel).parent))
         if not _is_writable_relative(f"{parent_rel}/placeholder", settings):
             raise WritePolicyError(f"parent path is not writable by policy: {parent_rel}")
-    return target, rel
+    return target, display_path(target, settings)
 
 
 def resolve_write_dir_path(path: str, settings: Settings, *, create_if_missing: bool = True) -> tuple[Path, str]:
-    root = settings.project_root.resolve()
-    target = (root / path).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError as exc:
-        raise SecurityError(f"path escapes repository root: {path}") from exc
-    rel = rel_posix(root, target) if target.exists() else normalize_rel_path(path)
+    target, _root, rel = _resolve_write_target(path, settings)
     if not rel or rel == ".":
         raise WritePolicyError("directory path must not be repository root")
     if target.exists() and not target.is_dir():
@@ -161,7 +204,7 @@ def resolve_write_dir_path(path: str, settings: Settings, *, create_if_missing: 
         raise FileNotFoundError(f"directory does not exist: {rel}")
     if not _is_writable_relative(f"{rel}/placeholder", settings):
         raise WritePolicyError(f"directory is not writable by policy: {rel}")
-    return target, rel
+    return target, display_path(target, settings)
 
 
 def _check_expected_hash(old_sha: str | None, expected_sha256: str | None, settings: Settings, path: str) -> None:
@@ -324,7 +367,7 @@ def replace_text_in_file(
     if find not in old_text:
         raise ValueError(f"text fragment not found in {rel}")
     new_text = old_text.replace(find, replace) if replace_all else old_text.replace(find, replace, 1)
-    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+    return _apply_text_change(path, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
 
 
 def insert_text_in_file(
@@ -347,7 +390,7 @@ def insert_text_in_file(
         raise ValueError(f"anchor not found in {rel}")
     insert_at = idx if position == "before" else idx + len(anchor)
     new_text = old_text[:insert_at] + content + old_text[insert_at:]
-    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+    return _apply_text_change(path, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
 
 
 def delete_text_in_file(
@@ -377,7 +420,7 @@ def delete_text_in_file(
             raise ValueError("invalid line range")
         del lines[start_line - 1 : end_line]
         new_text = "".join(lines)
-    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+    return _apply_text_change(path, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
 
 
 def _replace_lines_text(old_text: str, start_line: int, end_line: int, replacement: str) -> str:
@@ -404,7 +447,7 @@ def replace_lines(
     old_text = _read_existing_text(target, settings)
     _check_expected_hash(sha256_text(old_text), expected_sha256, settings, rel)
     new_text = _replace_lines_text(old_text, start_line, end_line, replacement)
-    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+    return _apply_text_change(path, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
 
 
 def _insert_at_line_text(old_text: str, line: int, content: str, *, after: bool) -> str:
@@ -431,7 +474,7 @@ def insert_before_line(
     old_text = _read_existing_text(target, settings)
     _check_expected_hash(sha256_text(old_text), expected_sha256, settings, rel)
     new_text = _insert_at_line_text(old_text, line, content, after=False)
-    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+    return _apply_text_change(path, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
 
 
 def insert_after_line(
@@ -447,7 +490,7 @@ def insert_after_line(
     old_text = _read_existing_text(target, settings)
     _check_expected_hash(sha256_text(old_text), expected_sha256, settings, rel)
     new_text = _insert_at_line_text(old_text, line, content, after=True)
-    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+    return _apply_text_change(path, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
 
 
 def _heading_line(old_text: str, heading: str) -> int:
@@ -472,7 +515,7 @@ def insert_before_heading(
     _check_expected_hash(sha256_text(old_text), expected_sha256, settings, rel)
     line = _heading_line(old_text, heading)
     new_text = _insert_at_line_text(old_text, line, content, after=False)
-    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+    return _apply_text_change(path, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
 
 
 def insert_after_heading(
@@ -489,7 +532,7 @@ def insert_after_heading(
     _check_expected_hash(sha256_text(old_text), expected_sha256, settings, rel)
     line = _heading_line(old_text, heading)
     new_text = _insert_at_line_text(old_text, line, content, after=True)
-    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+    return _apply_text_change(path, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
 
 
 def append_to_file(
@@ -507,7 +550,7 @@ def append_to_file(
     new_text = old_text + separator + content
     if new_text and not new_text.endswith("\n"):
         new_text += "\n"
-    return _apply_text_change(rel, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
+    return _apply_text_change(path, settings, new_text, create_if_missing=False, expected_sha256=expected_sha256, dry_run=dry_run)
 
 
 def update_current_mission(
@@ -520,7 +563,13 @@ def update_current_mission(
     chunks: list[str] | None = None,
     dry_run: bool = True,
 ) -> dict[str, Any]:
-    path = "missions/CURRENT.md"
+    """Insert a mission section before ``## Goal`` in the repo's configured mission file.
+
+    The target path is not hardcoded: it comes from ``profile.mission["current"]``
+    (as loaded from ``.chatrepo/mcp.yml``, falling back to the project-neutral
+    default ``missions/CURRENT.md`` when the repo has no profile override).
+    """
+    path = load_repo_profile(settings).mission.get("current") or "missions/CURRENT.md"
     target, _ = resolve_write_path(path, settings)
     old_text = _read_existing_text(target, settings)
     if position != "before_goal":
@@ -741,22 +790,23 @@ def _snapshot_paths(operations: list[dict[str, Any]], settings: Settings) -> dic
             value = operation.get(key)
             if not value:
                 continue
-            root = settings.project_root.resolve()
-            target = (root / value).resolve()
             try:
-                target.relative_to(root)
-            except ValueError:
+                target, _root, _rel = _resolve_write_target(value, settings)
+            except (SecurityError, ValueError):
                 continue
-            rel = rel_posix(root, target) if target.exists() else normalize_rel_path(value)
-            if rel not in snapshot:
-                snapshot[rel] = _read_optional_text(target, settings) if target.exists() and target.is_file() else None
+            absolute = str(target)
+            if absolute not in snapshot:
+                snapshot[absolute] = (
+                    _read_optional_text(target, settings)
+                    if target.exists() and target.is_file()
+                    else None
+                )
     return snapshot
 
 
 def _restore_snapshot(snapshot: dict[str, str | None], settings: Settings) -> None:
-    root = settings.project_root.resolve()
-    for rel, text in snapshot.items():
-        target = (root / rel).resolve()
+    for absolute, text in snapshot.items():
+        target = Path(absolute)
         if text is None:
             if target.exists() and target.is_file():
                 target.unlink()
@@ -892,13 +942,19 @@ def _extract_patch_paths(patch: str) -> list[str]:
     return paths
 
 
-def _run_git_apply(settings: Settings, patch: str, *, check: bool) -> subprocess.CompletedProcess[str]:
+def _run_git_apply(
+    settings: Settings,
+    patch: str,
+    *,
+    check: bool,
+    cwd: Path,
+) -> subprocess.CompletedProcess[str]:
     args = ["git", "apply"]
     if check:
         args.append("--check")
     return subprocess.run(
         args,
-        cwd=str(settings.project_root),
+        cwd=str(cwd),
         input=patch,
         text=True,
         capture_output=True,
@@ -907,10 +963,10 @@ def _run_git_apply(settings: Settings, patch: str, *, check: bool) -> subprocess
     )
 
 
-def _git_head(settings: Settings) -> str:
+def _git_head(settings: Settings, *, cwd: Path) -> str:
     proc = subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        cwd=str(settings.project_root),
+        cwd=str(cwd),
         text=True,
         capture_output=True,
         check=False,
@@ -927,22 +983,24 @@ def apply_patch_diff(
     *,
     dry_run: bool = True,
     expected_base_sha: str | None = None,
+    repo: str | None = None,
 ) -> dict[str, Any]:
     if len(patch.encode("utf-8")) > settings.max_patch_bytes:
         raise WritePolicyError("patch exceeds MAX_PATCH_BYTES")
-    base_sha = _git_head(settings)
+    cwd = git_tools._resolve_repo_toplevel(repo, settings)
+    base_sha = _git_head(settings, cwd=cwd)
     if expected_base_sha and expected_base_sha != base_sha:
         raise StaleWriteError(f"stale base sha: expected {expected_base_sha}, current {base_sha}")
     changed_files = _extract_patch_paths(patch)
     if not changed_files:
         raise PatchApplyError("patch does not contain git-style file paths")
     for path in changed_files:
-        resolve_write_path(path, settings, create_if_missing=True)
-    check = _run_git_apply(settings, patch, check=True)
+        resolve_write_path(str(cwd / path), settings, create_if_missing=True)
+    check = _run_git_apply(settings, patch, check=True, cwd=cwd)
     if check.returncode != 0:
         raise PatchApplyError(check.stderr.strip() or check.stdout.strip() or "git apply --check failed")
     if not dry_run:
-        apply = _run_git_apply(settings, patch, check=False)
+        apply = _run_git_apply(settings, patch, check=False, cwd=cwd)
         if apply.returncode != 0:
             raise PatchApplyError(apply.stderr.strip() or apply.stdout.strip() or "git apply failed")
     return {
@@ -951,6 +1009,7 @@ def apply_patch_diff(
         "dry_run": dry_run,
         "applied": not dry_run,
         "base_sha": base_sha,
+        "repo": git_tools._repo_rel(cwd, settings),
         "changed_files": changed_files,
         "diff_unified": patch,
     }

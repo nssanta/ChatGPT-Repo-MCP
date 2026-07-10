@@ -46,6 +46,45 @@ def make_settings(tmp_path: Path, allow_hidden_default: bool = False) -> Setting
         mcp_bearer_token=None,
         command_policy_mode="allowlist",
         command_jobs_dir=tmp_path / "jobs",
+        workspace_roots=(),
+        filesystem_unrestricted=False,
+        workspace_scan_depth=2,
+        denied_words=("sudo", "su"),
+        destructive_words=(
+            "rm -rf",
+            "rmdir",
+            "git push --force",
+            "git reset --hard",
+            "git clean",
+            "docker system prune",
+            "chmod -R",
+            "chown -R",
+            "mkfs",
+            "dd",
+        ),
+        command_shell_prelude="",
+        git_network_timeout=60,
+        protected_branches=("main", "master"),
+        allow_force_push=False,
+        gh_timeout=60,
+        github_tools_enabled=True,
+        secret_globs=(".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "**/.git/**"),
+        binary_globs=(
+            "**/.venv/**",
+            "**/node_modules/**",
+            "**/*.db",
+            "**/*.sqlite",
+            "**/*.sqlite3",
+            "**/*.bin",
+            "**/*.png",
+            "**/*.jpg",
+            "**/*.jpeg",
+            "**/*.webp",
+            "**/*.pdf",
+            "**/*.zip",
+            "**/*.tar",
+            "**/*.gz",
+        ),
     )
 
 
@@ -182,5 +221,49 @@ def test_settings_defaults_to_canonical_namespace(monkeypatch, tmp_path: Path) -
 
     settings = Settings.from_env()
 
-    assert settings.canonical_namespace == "/Eva_Ai"
+    assert settings.canonical_namespace == f"/{tmp_path.name}"
     assert settings.ephemeral_handles_supported is False
+
+
+def test_full_access_mode_sets_agent_defaults(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("ACCESS_MODE", "full")
+    monkeypatch.setenv("ALLOW_SECRET_ACCESS", "true")
+
+    settings = Settings.from_env()
+
+    assert settings.full_access is True
+    assert settings.filesystem_unrestricted is True
+    assert settings.command_policy_mode == "unrestricted"
+    assert settings.default_dry_run is False
+    assert settings.confirmation_granted(False) is True
+    assert settings.allow_secret_access is True
+
+
+def test_settings_reject_invalid_auth_and_missing_project_root(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("PROJECT_ROOT", raising=False)
+    try:
+        Settings.from_env()
+        raise AssertionError("expected missing PROJECT_ROOT failure")
+    except RuntimeError as exc:
+        assert "PROJECT_ROOT" in str(exc)
+
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("MCP_AUTH_MODE", "typo")
+    try:
+        Settings.from_env()
+        raise AssertionError("expected invalid auth mode failure")
+    except RuntimeError as exc:
+        assert "MCP_AUTH_MODE" in str(exc)
+
+
+def test_safe_mode_rejects_empty_secret_policy(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("ACCESS_MODE", "safe")
+    monkeypatch.setenv("SECRET_GLOBS", "")
+
+    try:
+        Settings.from_env()
+        raise AssertionError("expected empty secret policy failure")
+    except RuntimeError as exc:
+        assert "SECRET_GLOBS" in str(exc)

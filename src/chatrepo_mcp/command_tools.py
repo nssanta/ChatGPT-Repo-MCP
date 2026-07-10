@@ -6,16 +6,20 @@ import re
 import shlex
 import signal
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import profile as _profile_module
 from .config import Settings
+from .git_tools import _repo_rel, _resolve_repo_toplevel
 from .parsers import parse_command_output
-from .profile import load_repo_profile
+from .profile import DEFAULT_PRESETS, load_repo_profile, resolve_presets_for_dir
 from .security import SecurityError, is_blocked_relative, normalize_rel_path
+from .workspace import detect_stack, is_within_roots, resolve_roots
 
 
 class CommandPolicyError(ValueError):
@@ -36,6 +40,10 @@ class CommandRule:
     allow_suffix: bool = False
 
 
+# Generic, stack-agnostic allowlist for `command_policy_mode="allowlist"`.
+# Deliberately free of any project-specific paths/scripts: extend it per-repo
+# via the `allowed_commands` section of `.chatrepo/mcp.yml` (see
+# `_profile_command_overrides`).
 ALLOWED_COMMANDS = (
     CommandRule("git status --short"),
     CommandRule("git status --short --branch"),
@@ -46,32 +54,22 @@ ALLOWED_COMMANDS = (
     CommandRule("npm --version"),
     CommandRule("node --version"),
     CommandRule("npx --version"),
-    CommandRule("npm run build -w packages/agent"),
-    CommandRule("npm run build -w packages/gateway"),
-    CommandRule("npm run typecheck -w packages/agent"),
-    CommandRule("npm run typecheck -w packages/gateway"),
-    CommandRule("npm run test -w packages/agent -- --run"),
-    CommandRule("npm run test -w packages/gateway -- --run"),
-    CommandRule("npm run test:fast -w packages/integration"),
     CommandRule("npx vitest run", allow_suffix=True),
-    CommandRule("npx tsx tests/telegram/scenarios/d59-trust-mode-approval.test.ts"),
-    CommandRule("npx tsx tests/telegram/scenarios/d62-tool-confirmation-trust-modes.test.ts"),
-    CommandRule("npx tsx tests/telegram/scenarios/d64-approval-tts-no-record-voice.test.ts"),
-    CommandRule("npx tsx tests/telegram/scenarios/d67-tool-trace-visibility-modes.test.ts"),
 )
 
+# Generic destructive-but-common services that require explicit confirmation
+# in `command_policy_mode="allowlist"`, in addition to whatever
+# `_is_destructive` (settings.destructive_words) flags. Extend via the
+# `confirmation_commands` section of `.chatrepo/mcp.yml`.
 CONFIRMATION_COMMANDS = (
-    "bash scripts/start_local.sh",
-    "bash scripts/live-gate.sh --no-start",
     "docker compose",
     "systemctl",
-    "EVA_LIVE_TESTS=1 npx vitest run --config vitest.e2e.live.config.ts",
-    "npx vitest run --config vitest.e2e.live.config.ts",
 )
 
 SHELL_TOKENS = {"|", "||", "&&", ";", ">", ">>", "<", "$(", "`"}
-DENIED_WORDS = {"curl", "wget", "ssh", "scp", "rsync", "printenv", "sudo", "su"}
-DESTRUCTIVE_WORDS = {"rm", "rmdir", "unlink", "mv", "chmod", "chown", "git push"}
+_SHELL_SPLIT_RE = re.compile(r"\|\||&&|[;|]")
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+_WRAPPER_COMMANDS = {"sudo", "env"}
 SECRET_PATTERNS = (
     re.compile(r"(?i)(token|secret|password|api[_-]?key)=([^\s]+)"),
     re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
@@ -87,21 +85,152 @@ def _canonical(command: str) -> str:
     return " ".join(shlex.split(command))
 
 
-TEST_PRESETS = {
-    "agent_message_processor": "npx vitest run packages/agent/src/features/processing/message-processor.test.ts",
-    "gateway_adapter": "npm run test -w packages/gateway -- --run",
-    "tg_d59": "npx tsx tests/telegram/scenarios/d59-trust-mode-approval.test.ts",
-    "tg_d62": "npx tsx tests/telegram/scenarios/d62-tool-confirmation-trust-modes.test.ts",
-    "tg_d64": "npx tsx tests/telegram/scenarios/d64-approval-tts-no-record-voice.test.ts",
-    "tg_d67": "npx tsx tests/telegram/scenarios/d67-tool-trace-visibility-modes.test.ts",
-    "full_agent_tests": "npm run test -w packages/agent -- --run",
-    "full_gateway_tests": "npm run test -w packages/gateway -- --run",
-}
+# Back-compat module-level symbol: some call sites still `import TEST_PRESETS`
+# for display purposes (e.g. listing built-in preset names). The previous
+# project-specific hardcoded table has been removed; real preset resolution goes through
+# `load_repo_profile(settings).presets` (and, from Phase 3 onward,
+# `workspace.resolve_presets_for`). This mirrors the generic, stack-agnostic
+# defaults from `profile.DEFAULT_PRESETS` so the symbol stays non-empty and
+# import-safe without reintroducing project-specific commands.
+TEST_PRESETS: dict[str, str] = {name: str(cfg["command"]) for name, cfg in DEFAULT_PRESETS.items()}
 
 JOB_PROCS: dict[str, subprocess.Popen[str]] = {}
 
+_UNRESTRICTED_MODES = {"unrestricted", "full_repo"}
 
-def _split_command(command: str, *, allow_shell_operators: bool = False) -> list[str]:
+
+def _split_segments(command: str) -> list[str]:
+    """Split a shell command string into segments on ``; | && ||``."""
+    return [segment.strip() for segment in _SHELL_SPLIT_RE.split(command) if segment.strip()]
+
+
+def _segment_tokens(segment: str) -> list[str]:
+    try:
+        return shlex.split(segment)
+    except ValueError:
+        return segment.split()
+
+
+def _first_exec_token(segment: str) -> str | None:
+    """First real executable token of a segment, skipping leading ``VAR=val`` assignments."""
+    tokens = _segment_tokens(segment)
+    idx = 0
+    while idx < len(tokens) and _ENV_ASSIGN_RE.match(tokens[idx]):
+        idx += 1
+    if idx >= len(tokens):
+        return None
+    return tokens[idx]
+
+
+def _effective_tokens(segment: str) -> list[str]:
+    """Tokens of a segment with leading ``VAR=val`` and ``sudo``/``env`` wrappers stripped.
+
+    Used for destructive-pattern matching so ``sudo rm -rf /`` is recognized
+    as the ``rm -rf`` pattern rather than being hidden behind the wrapper.
+    """
+    tokens = _segment_tokens(segment)
+    idx = 0
+    while idx < len(tokens) and _ENV_ASSIGN_RE.match(tokens[idx]):
+        idx += 1
+    while idx < len(tokens) and tokens[idx] in _WRAPPER_COMMANDS:
+        idx += 1
+        while idx < len(tokens) and _ENV_ASSIGN_RE.match(tokens[idx]):
+            idx += 1
+        while idx < len(tokens) and tokens[idx].startswith("-"):
+            idx += 1
+    return tokens[idx:]
+
+
+#: First two effective tokens of a raw ``git push`` invocation. Matched after unwrapping
+#: ``sudo``/``env`` wrappers, same as ``_is_destructive``.
+_GIT_PUSH_TOKENS = ("git", "push")
+
+
+def _reject_raw_git_push(command: str) -> None:
+    """Block a raw ``git push`` segment when a safe-mode caller invokes this check.
+
+    Safe modes route pushing through ``git_push`` for audit and structural
+    checks. Full mode skips this check deliberately because it promises an
+    unrestricted shell.
+    """
+    for segment in _split_segments(command):
+        tokens = _effective_tokens(segment)
+        if len(tokens) >= 2 and tuple(tokens[:2]) == _GIT_PUSH_TOKENS:
+            raise CommandPolicyError(
+                "raw 'git push' is blocked by policy; use the git_push tool instead of run_command"
+            )
+
+
+def _deny_check(command: str, settings: Settings) -> None:
+    """Raise ``CommandPolicyError`` if any segment's first token is denied.
+
+    Matches only the first executable token of each ``;``/``|``/``&&``/``||``
+    segment (after skipping leading ``VAR=val`` assignments) -- not any word
+    anywhere in the command. This avoids false positives like
+    ``git log --grep curl`` being blocked just because "curl" appears as an
+    argument. An empty ``settings.denied_words`` denies nothing.
+    """
+    denied = {word.strip() for word in settings.denied_words if word.strip()}
+    if not denied:
+        return
+    for segment in _split_segments(command):
+        token = _first_exec_token(segment)
+        if token and token in denied:
+            raise CommandPolicyError(f"command uses a denied executable or token: {token}")
+
+
+def _is_destructive(command: str, settings: Settings) -> bool:
+    """True if any segment starts with one of ``settings.destructive_words``.
+
+    Patterns may be single words (``rmdir``, ``dd``, ``mkfs``) or multi-word
+    prefixes (``git push --force``, ``docker system prune``); they are
+    matched as an exact token-prefix of the segment (after unwrapping
+    ``sudo``/``env`` wrappers), not a substring search.
+    """
+    patterns = [_segment_tokens(pattern) for pattern in settings.destructive_words if pattern.strip()]
+    patterns = [tokens for tokens in patterns if tokens]
+    if not patterns:
+        return False
+    for segment in _split_segments(command):
+        tokens = _effective_tokens(segment)
+        if not tokens:
+            continue
+        for pattern_tokens in patterns:
+            if len(tokens) >= len(pattern_tokens) and tokens[: len(pattern_tokens)] == pattern_tokens:
+                return True
+    return False
+
+
+def _profile_command_overrides(settings: Settings) -> tuple[tuple[CommandRule, ...], tuple[str, ...]]:
+    """Read ``allowed_commands``/``confirmation_commands`` overrides from ``.chatrepo/mcp.yml``.
+
+    TODO(Phase 3): move this parsing into `profile.RepoProfile` once it grows
+    first-class support for these sections; for now this reads the repo
+    config file directly (via the shared simple-YAML parser) to avoid
+    touching `profile.py` in this pass. Any parse failure degrades to "no
+    overrides" rather than breaking command execution.
+    """
+    path = settings.project_root / ".chatrepo" / "mcp.yml"
+    if not path.exists():
+        return (), ()
+    try:
+        data = _profile_module._parse_simple_yaml(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return (), ()
+    allowed: list[CommandRule] = []
+    allowed_raw = data.get("allowed_commands")
+    if isinstance(allowed_raw, list):
+        for item in allowed_raw:
+            if isinstance(item, str) and item.strip():
+                allowed.append(CommandRule(item))
+            elif isinstance(item, dict) and item.get("command"):
+                allowed.append(CommandRule(str(item["command"]), allow_suffix=bool(item.get("allow_suffix", False))))
+    confirmation_raw = data.get("confirmation_commands")
+    confirmation = tuple(str(item) for item in confirmation_raw if str(item).strip()) if isinstance(confirmation_raw, list) else ()
+    return tuple(allowed), confirmation
+
+
+def _split_command(command: str, settings: Settings, *, allow_shell_operators: bool = False) -> list[str]:
     if not allow_shell_operators and any(token in command for token in SHELL_TOKENS):
         raise CommandPolicyError("shell operators are not allowed")
     try:
@@ -110,41 +239,86 @@ def _split_command(command: str, *, allow_shell_operators: bool = False) -> list
         raise CommandPolicyError(f"invalid command syntax: {exc}") from exc
     if not parts:
         raise CommandPolicyError("command must not be empty")
-    if any(part in DENIED_WORDS for part in parts):
-        raise CommandPolicyError("command contains a forbidden executable or token")
-    if any(is_blocked_relative(normalize_rel_path(part), _settings_for_block_check) for part in parts if "/" in part or part.startswith(".")):
+    if any(is_blocked_relative(normalize_rel_path(part), settings) for part in parts if "/" in part or part.startswith(".")):
         raise CommandPolicyError("command references a blocked path")
     return parts
 
 
-_settings_for_block_check: Settings
+def _check_command_policy(
+    command: str,
+    settings: Settings,
+    *,
+    confirmed: bool = False,
+    policy_exempt: bool = False,
+) -> str:
+    """Apply ``settings.command_policy_mode`` to ``command`` and return the normalized command.
 
+    Safe access checks `_reject_raw_git_push` before mode-specific handling;
+    full access skips it and exposes the shell as requested.
 
-def _check_command_policy(command: str, settings: Settings, *, confirmed: bool = False) -> str:
-    full_repo = settings.command_policy_mode == "full_repo"
-    globals()["_settings_for_block_check"] = settings
-    parts = _split_command(command, allow_shell_operators=full_repo)
-    normalized = " ".join(parts)
-    if full_repo:
+    Three modes:
+    - ``unrestricted`` (alias ``full_repo``): god-mode, returns ``command`` verbatim with
+      no further policy checks. The `cwd` perimeter (`_resolve_cwd`) still applies upstream.
+    - ``guarded``: shell operators allowed; `_deny_check` always applies;
+      `_is_destructive` commands require `confirmed=True` or raise `ConfirmationRequiredError`.
+    - ``allowlist``: shell operators forbidden; command must match `CONFIRMATION_COMMANDS`
+      (confirmed) or `ALLOWED_COMMANDS`, both extendable via `.chatrepo/mcp.yml`, or it is
+      rejected. `policy_exempt=True` (set by trusted internal callers such as
+      `run_test_preset`) skips the allowlist membership check but still runs `_deny_check`
+      and the destructive-confirmation gate.
+    """
+    if not settings.full_access:
+        _reject_raw_git_push(command)
+
+    mode = settings.command_policy_mode
+    if mode in _UNRESTRICTED_MODES:
         return command
-    for prefix in CONFIRMATION_COMMANDS:
-        if normalized == prefix or normalized.startswith(prefix + " "):
-            if not confirmed:
-                raise ConfirmationRequiredError("This command requires owner confirmation")
-    for rule in ALLOWED_COMMANDS:
-        allowed = _canonical(rule.command)
-        if normalized == allowed or (rule.allow_suffix and normalized.startswith(allowed + " ")):
+
+    if mode == "guarded":
+        parts = _split_command(command, settings, allow_shell_operators=True)
+        normalized = " ".join(parts)
+        _deny_check(command, settings)
+        if _is_destructive(command, settings) and not confirmed:
+            raise ConfirmationRequiredError(
+                "This command matches a destructive pattern (settings.destructive_words) "
+                "and requires confirmed=true after explicit owner confirmation."
+            )
+        return normalized
+
+    if mode == "allowlist":
+        parts = _split_command(command, settings, allow_shell_operators=False)
+        normalized = " ".join(parts)
+        _deny_check(command, settings)
+        if policy_exempt:
+            if _is_destructive(command, settings) and not confirmed:
+                raise ConfirmationRequiredError(
+                    "This preset command matches a destructive pattern and requires "
+                    "confirmed=true after explicit owner confirmation."
+                )
             return normalized
-    raise CommandPolicyError("command is not allowlisted")
+        allowed_overrides, confirmation_overrides = _profile_command_overrides(settings)
+        for prefix in (*CONFIRMATION_COMMANDS, *confirmation_overrides):
+            if normalized == prefix or normalized.startswith(prefix + " "):
+                if not confirmed:
+                    raise ConfirmationRequiredError("This command requires owner confirmation")
+        for rule in (*ALLOWED_COMMANDS, *allowed_overrides):
+            allowed = _canonical(rule.command)
+            if normalized == allowed or (rule.allow_suffix and normalized.startswith(allowed + " ")):
+                return normalized
+        raise CommandPolicyError("command is not allowlisted")
+
+    raise CommandPolicyError(f"unknown command_policy_mode: {mode}")
 
 
 def _resolve_cwd(cwd: str | None, settings: Settings) -> Path:
-    root = settings.project_root.resolve()
-    target = (root / cwd).resolve() if cwd else root
-    try:
-        target.relative_to(root)
-    except ValueError as exc:
-        raise SecurityError(f"cwd escapes repository root: {cwd}") from exc
+    roots = resolve_roots(settings)
+    if cwd:
+        cwd_path = Path(cwd)
+        target = cwd_path.resolve() if cwd_path.is_absolute() else (settings.project_root.resolve() / cwd).resolve()
+    else:
+        target = settings.project_root.resolve()
+    if not is_within_roots(target, roots):
+        raise SecurityError(f"cwd escapes repository root: {cwd}")
     if not target.exists() or not target.is_dir():
         raise CommandPolicyError(f"cwd is not a directory: {cwd}")
     return target
@@ -176,11 +350,32 @@ def _tail(text: str, tail_lines: int | None) -> str:
     return "\n".join(text.splitlines()[-tail_lines:])
 
 
-def _resolved_binaries(cwd: Path, env: dict[str, str]) -> dict[str, str | None]:
+# cwd (str) -> resolved binary map. Detection runs at most once per cwd per
+# process instead of spawning a subprocess per binary on every run_command call.
+_BINARY_RESOLUTION_CACHE: dict[str, dict[str, str | None]] = {}
+
+# Only probe for binaries that are actually relevant to the detected stack(s)
+# of the target cwd -- no more hardcoded node/npm/npx checks on every command.
+_STACK_BINARIES: dict[str, tuple[str, ...]] = {
+    "go": ("go",),
+    "python": ("python3", "pip"),
+    "node": ("node", "npm", "npx"),
+    "rust": ("cargo",),
+}
+
+
+def _resolved_binaries(cwd: Path, env: dict[str, str], settings: Settings) -> dict[str, str | None]:
+    cache_key = str(cwd)
+    cached = _BINARY_RESOLUTION_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    binaries: set[str] = set()
+    for stack in detect_stack(cwd):
+        binaries.update(_STACK_BINARIES.get(stack, ()))
     result: dict[str, str | None] = {}
-    for binary in ("node", "npm", "npx"):
+    for binary in sorted(binaries):
         proc = subprocess.run(
-            ["/bin/bash", "-lc", _bash_command(f"command -v {binary}")],
+            ["/bin/bash", "-lc", _bash_command(f"command -v {binary}", settings)],
             cwd=str(cwd),
             env=env,
             text=True,
@@ -189,21 +384,23 @@ def _resolved_binaries(cwd: Path, env: dict[str, str]) -> dict[str, str | None]:
             timeout=5,
         )
         result[binary] = proc.stdout.strip() or None
+    _BINARY_RESOLUTION_CACHE[cache_key] = result
     return result
 
 
-def _bash_command(command: str) -> str:
-    return "\n".join(
-        [
-            "export NVM_DIR=${NVM_DIR:-/root/.nvm}",
-            "[ -s /etc/profile ] && . /etc/profile",
-            "[ -s /root/.profile ] && . /root/.profile",
-            "[ -s /root/.bashrc ] && . /root/.bashrc",
-            "[ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\"",
-            "command -v npm >/dev/null 2>&1 || export PATH=/root/.nvm/versions/node/v22.22.0/bin:$PATH",
-            command,
-        ]
-    )
+def _bash_command(command: str, settings: Settings) -> str:
+    """Wrap ``command`` for ``bash -lc``, optionally prefixed with a user-configured prelude.
+
+    `bash -lc` already sources the invoking user's own shell profile, so no
+    project-specific toolchain path (e.g. a hardcoded nvm install) is
+    injected here. Repos that need extra environment setup (nvm, pyenv,
+    virtualenv activation, ...) configure it explicitly via
+    ``settings.command_shell_prelude`` (env `COMMAND_SHELL_PRELUDE`).
+    """
+    prelude = settings.command_shell_prelude.strip()
+    if not prelude:
+        return command
+    return f"{prelude}\n{command}"
 
 
 def _command_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -306,19 +503,27 @@ def run_command(
     tail_lines: int | None = 200,
     confirmed: bool = False,
     parse_kind: str | None = "auto",
+    policy_exempt: bool = False,
 ) -> dict[str, Any]:
-    normalized = _check_command_policy(command, settings, confirmed=confirmed)
+    """Run ``command`` through ``bash -lc`` under the repo's command policy.
+
+    ``policy_exempt=True`` is for trusted internal callers only (e.g.
+    `run_test_preset` resolving a preset from the repo profile / autodetect):
+    in `allowlist` mode it skips the allowlist-membership check while still
+    applying `_deny_check` and the destructive-confirmation gate. It has no
+    effect in `guarded`/`unrestricted` modes. Direct end-user calls should
+    always use the default `policy_exempt=False`.
+    """
+    normalized = _check_command_policy(command, settings, confirmed=confirmed, policy_exempt=policy_exempt)
     effective_timeout_ms = min(timeout_ms or settings.command_timeout_ms, settings.command_timeout_ms)
     output_limit = min(max_output_chars or settings.max_command_output_chars, settings.max_command_output_chars)
     run_cwd = _resolve_cwd(cwd, settings)
     run_env = _command_env(env)
-    if run_env.get("EVA_LIVE_TESTS") == "1" and settings.command_policy_mode != "full_repo":
-        raise ConfirmationRequiredError("Live E2E commands require owner confirmation")
     started = time.monotonic()
-    resolved = _resolved_binaries(run_cwd, run_env)
+    resolved = _resolved_binaries(run_cwd, run_env, settings)
     try:
         proc = subprocess.run(
-            ["/bin/bash", "-lc", _bash_command(normalized)],
+            ["/bin/bash", "-lc", _bash_command(normalized, settings)],
             cwd=str(run_cwd),
             env=run_env,
             text=True,
@@ -391,8 +596,10 @@ def run_command(
             "timed_out": result["timed_out"],
             "stdout_chars": len(result["stdout"]),
             "stderr_chars": len(result["stderr"]),
+            "policy_source": "preset" if policy_exempt else "direct",
         },
     )
+    result["policy_source"] = "preset" if policy_exempt else "direct"
     return result
 
 
@@ -432,6 +639,44 @@ def run_commands(
     }
 
 
+def _resolve_test_preset(preset: str, settings: Settings) -> tuple[str, dict[str, Any], str]:
+    """Resolve ``preset`` to ``(action, preset_config, resolved_cwd)``.
+
+    Two supported forms:
+    - A named preset key from the repo profile (built-in defaults or
+      ``.chatrepo/mcp.yml`` ``presets:`` section), used verbatim -- kept for
+      backward compatibility with pre-autodetect named presets (e.g.
+      ``git_diff_check``).
+    - ``"<action>"`` (``test``/``lint``/``typecheck``/``format``/``build``),
+      resolved for the workspace root, or ``"<service_path>:<action>"``,
+      resolved for a workspace sub-directory. Resolution merges
+      ``workspace.resolve_presets_for`` (stack autodetect / Makefile targets)
+      with any profile preset whose own ``cwd`` targets the same directory
+      (profile entries win on a name collision -- they are explicit
+      overrides).
+    """
+    profile = load_repo_profile(settings)
+    if preset in profile.presets:
+        cfg = profile.presets[preset]
+        return preset, cfg, str(cfg.get("cwd") or "").strip("/")
+
+    if ":" in preset:
+        service_dir, _, action = preset.partition(":")
+    else:
+        service_dir, action = "", preset
+    service_dir = service_dir.strip("/")
+    action = action.strip()
+
+    resolved = resolve_presets_for_dir(service_dir, settings)
+    if not action or action not in resolved:
+        available = ", ".join(sorted(resolved)) or "none detected"
+        location = service_dir or "workspace root"
+        raise CommandPolicyError(
+            f"unknown test preset '{preset}': no action '{action}' for {location}. Available actions: {available}"
+        )
+    return action, resolved[action], service_dir
+
+
 def run_test_preset(
     preset: str,
     settings: Settings,
@@ -440,22 +685,48 @@ def run_test_preset(
     tail_lines: int | None = 200,
     background: bool = False,
 ) -> dict[str, Any]:
-    profile = load_repo_profile(settings)
-    presets = {**{key: {"command": value, "parser": "auto"} for key, value in TEST_PRESETS.items()}, **profile.presets}
-    if preset not in presets:
-        raise CommandPolicyError(f"unknown test preset: {preset}")
-    preset_config = presets[preset]
+    """Run a preset resolved from stack autodetection, Makefile targets, and the repo profile.
+
+    ``preset`` accepts either a bare action name (``test``/``lint``/
+    ``typecheck``/``format``/``build``), resolved at the workspace root; a
+    composite ``"<service_path>:<action>"`` (e.g. ``"api-gateway:test"``),
+    resolved for that workspace sub-directory in a polyrepo; or a named
+    preset key from the repo profile / ``.chatrepo/mcp.yml`` (backward
+    compatible with the pre-autodetect named-preset behavior). See
+    `_resolve_test_preset` for the full resolution order. Presets resolved
+    here are treated as trusted (`policy_exempt=True`) regardless of
+    `command_policy_mode`.
+    """
+    action, preset_config, resolved_cwd = _resolve_test_preset(preset, settings)
     command = str(preset_config["command"])
-    effective_timeout = timeout_ms or (300_000 if preset.startswith("full_") else settings.command_timeout_ms)
+    preset_cwd = preset_config.get("cwd")
+    if preset_cwd is None:
+        preset_cwd = resolved_cwd
+    effective_timeout = timeout_ms or preset_config.get("timeout_ms") or settings.command_timeout_ms
+    parser = str(preset_config.get("parser", "auto"))
     if background:
-        return start_command_job(command, settings, timeout_ms=effective_timeout, tail_lines=tail_lines)
-    return run_command(
-        command,
-        settings,
-        timeout_ms=effective_timeout,
-        tail_lines=tail_lines,
-        parse_kind=str(preset_config.get("parser", "auto")),
-    )
+        result = start_command_job(
+            command,
+            settings,
+            timeout_ms=effective_timeout,
+            cwd=preset_cwd or None,
+            tail_lines=tail_lines,
+            policy_exempt=True,
+        )
+    else:
+        result = run_command(
+            command,
+            settings,
+            timeout_ms=effective_timeout,
+            cwd=preset_cwd or None,
+            tail_lines=tail_lines,
+            parse_kind=parser,
+            policy_exempt=True,
+        )
+    result["preset"] = preset
+    result["resolved_action"] = action
+    result["resolved_cwd"] = preset_cwd or ""
+    return result
 
 
 def _job_paths(settings: Settings, job_id: str) -> tuple[Path, Path, Path]:
@@ -487,6 +758,7 @@ def start_command_job(
     confirmed: bool = False,
     concurrency_key: str | None = None,
     on_conflict: str = "fail",
+    policy_exempt: bool = False,
 ) -> dict[str, Any]:
     if on_conflict not in {"fail", "attach", "wait"}:
         raise CommandPolicyError("on_conflict must be one of: fail, attach, wait")
@@ -506,18 +778,16 @@ def start_command_job(
                     return {"ok": False, "error_kind": "job_lock_conflict", "lock_status": "busy", **existing}
             else:
                 return {"ok": False, "error_kind": "job_lock_conflict", "lock_status": "busy", **existing}
-    normalized = _check_command_policy(command, settings, confirmed=confirmed)
+    normalized = _check_command_policy(command, settings, confirmed=confirmed, policy_exempt=policy_exempt)
     run_cwd = _resolve_cwd(cwd, settings)
     run_env = _command_env(env)
-    if run_env.get("EVA_LIVE_TESTS") == "1" and settings.command_policy_mode != "full_repo" and not confirmed:
-        raise ConfirmationRequiredError("Live E2E commands require owner confirmation")
     job_id = uuid.uuid4().hex
     meta_path, out_path, err_path = _job_paths(settings, job_id)
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     out_handle = out_path.open("w", encoding="utf-8")
     err_handle = err_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(
-        ["/bin/bash", "-lc", _bash_command(normalized)],
+        ["/bin/bash", "-lc", _bash_command(normalized, settings)],
         cwd=str(run_cwd),
         env=run_env,
         text=True,
@@ -538,10 +808,18 @@ def start_command_job(
         "tail_lines": tail_lines,
         "status": "running",
         "concurrency_key": concurrency_key,
+        "policy_source": "preset" if policy_exempt else "direct",
     }
     _write_job_meta(settings, job_id, meta)
     if concurrency_key:
         _write_lock(settings, concurrency_key, job_id)
+    watcher = threading.Thread(
+        target=_watch_job_timeout,
+        args=(job_id, settings, int(meta["timeout_ms"])),
+        daemon=True,
+        name=f"chatrepo-job-timeout-{job_id[:8]}",
+    )
+    watcher.start()
     return {
         "ok": True,
         "job_id": job_id,
@@ -550,6 +828,7 @@ def start_command_job(
         "pid": proc.pid,
         "command": _redact(normalized),
         "concurrency_key": concurrency_key,
+        "policy_source": "preset" if policy_exempt else "direct",
     }
 
 
@@ -579,6 +858,24 @@ def _terminate_process_group(pid: int, *, grace_seconds: float = 1.0) -> str:
     except ProcessLookupError:
         return "terminated"
     return "killed"
+
+
+def _watch_job_timeout(job_id: str, settings: Settings, timeout_ms: int) -> None:
+    """Enforce a background-job timeout even if no client polls the job."""
+    time.sleep(max(timeout_ms, 1) / 1000)
+    try:
+        meta = _read_job_meta(settings, job_id)
+        pid = int(meta["pid"])
+    except (OSError, KeyError, ValueError, json.JSONDecodeError):
+        return
+    if not _is_pid_running(pid):
+        return
+    kill_status = _terminate_process_group(pid)
+    meta["status"] = "timed_out"
+    meta["kill_status"] = kill_status
+    _write_job_meta(settings, job_id, meta)
+    _clear_lock(settings, meta.get("concurrency_key"), job_id)
+    JOB_PROCS.pop(job_id, None)
 
 
 def _write_lock(settings: Settings, concurrency_key: str, job_id: str) -> None:
@@ -645,13 +942,16 @@ def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None =
     if stderr != raw_stderr and err_path.exists():
         err_path.write_text(stderr, encoding="utf-8")
     duration_ms = int((time.time() - float(meta["started_at"])) * 1000)
-    timed_out = running and duration_ms > int(meta.get("timeout_ms", settings.command_timeout_ms))
-    if timed_out:
+    already_timed_out = meta.get("status") == "timed_out"
+    timed_out = already_timed_out or (
+        running and duration_ms > int(meta.get("timeout_ms", settings.command_timeout_ms))
+    )
+    if timed_out and running:
         kill_status = _terminate_process_group(pid)
         running = False
         meta["status"] = "timed_out"
         meta["kill_status"] = kill_status
-    else:
+    elif not timed_out:
         meta["status"] = "running" if running else "completed"
     if not running:
         _clear_lock(settings, meta.get("concurrency_key"), job_id)
@@ -730,6 +1030,8 @@ def summarize_command_log(log_id: str, settings: Settings, *, parser: str = "aut
 
 
 def command_policy_check(command: str, settings: Settings, *, confirmed: bool = False) -> dict[str, Any]:
+    """Dry-run `_check_command_policy` and explain the outcome (mode, allowed/denied/needs-confirmation)."""
+    mode = settings.command_policy_mode
     alternatives = []
     if "&&" in command:
         alternatives = [part.strip() for part in command.split("&&") if part.strip()]
@@ -739,7 +1041,13 @@ def command_policy_check(command: str, settings: Settings, *, confirmed: bool = 
         alternatives = [part.strip() for part in command.split("|") if part.strip()]
     try:
         normalized = _check_command_policy(command, settings, confirmed=confirmed)
-        result = {"ok": True, "allowed": True, "command": _redact(normalized)}
+        result = {
+            "ok": True,
+            "allowed": True,
+            "mode": mode,
+            "command": _redact(normalized),
+            "explanation": f"allowed under command_policy_mode={mode}",
+        }
         if alternatives:
             result["safe_split"] = alternatives
             result["safe_alternative"] = "Prefer run_commands with these split commands when possible."
@@ -748,16 +1056,20 @@ def command_policy_check(command: str, settings: Settings, *, confirmed: bool = 
         return {
             "ok": False,
             "allowed": False,
+            "mode": mode,
             "error_kind": "confirmation_required",
             "reason": str(exc),
+            "explanation": f"needs_confirmation under command_policy_mode={mode}: {exc}",
             "safe_alternative": "Use confirmed=true only after owner confirmation, or use a safer preset.",
         }
     except CommandPolicyError as exc:
         return {
             "ok": False,
             "allowed": False,
+            "mode": mode,
             "error_kind": "command_not_allowed",
             "reason": str(exc),
+            "explanation": f"denied under command_policy_mode={mode}: {exc}",
             "safe_split": alternatives,
         }
 
@@ -780,12 +1092,13 @@ def git_commit(
     settings: Settings,
     *,
     dry_run: bool = True,
+    repo: str | None = None,
 ) -> dict[str, Any]:
     if not message.strip():
         raise GitCommitError("commit message must not be empty")
     if not paths:
         raise GitCommitError("paths must not be empty")
-    root = settings.project_root.resolve()
+    root = _resolve_repo_toplevel(repo, settings)
     rel_paths = []
     for path in paths:
         rel = normalize_rel_path(path)
@@ -821,7 +1134,13 @@ def git_commit(
         timeout=settings.subprocess_timeout,
     )
     if dry_run:
-        return {"ok": True, "dry_run": True, "paths": rel_paths, "staged_diff": diff.stdout}
+        return {
+            "ok": True,
+            "repo": _repo_rel(root, settings),
+            "dry_run": True,
+            "paths": rel_paths,
+            "staged_diff": diff.stdout,
+        }
     proc = subprocess.run(
         ["git", "commit", "-m", message, "--", *rel_paths],
         cwd=str(root),
@@ -832,6 +1151,7 @@ def git_commit(
     )
     return {
         "ok": proc.returncode == 0,
+        "repo": _repo_rel(root, settings),
         "dry_run": False,
         "paths": rel_paths,
         "exit_code": proc.returncode,

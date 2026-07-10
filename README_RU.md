@@ -2,14 +2,13 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](#)
 [![MCP](https://img.shields.io/badge/MCP-Remote%20Server-black)](#)
-[![Safe Writes](https://img.shields.io/badge/Mode-Safe%20Writes-orange)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Для постоянного запуска на локальном Linux ПК через OpenAI Secure MCP Tunnel,
 подключения к ChatGPT и автозапуска после reboot есть
 [полный runbook на английском](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP сервер для ChatGPT, который даёт модели глубокий доступ к **одному Git-репозиторию** на вашем VPS и умеет безопасно редактировать текстовые файлы.
+MCP-сервер, который превращает **любую папку или репозиторий** в рабочую среду для автономного кодинг-агента внутри ChatGPT: чтение, поиск, редактирование, запуск тестов/сборки, полноценный git, работа с GitHub PR/CI и диагностика кода — всё через один коннектор, который вы наводите на свой собственный проект.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -17,177 +16,237 @@ MCP сервер для ChatGPT, который даёт модели глубо
 
 ## Скриншоты
 
-Добавьте русский скриншот в `docs/assets/`:
+Добавьте скриншот в `docs/assets/`:
 
-- `docs/assets/chatgpt-repo-mcp-overview-ru.png` — скрин ChatGPT на русском с подключённым ChatRepo MCP
+- `docs/assets/chatgpt-repo-mcp-overview-ru.png` — обзор ChatGPT с подключённым ChatRepo MCP
 
 После добавления файла эта ссылка отрендерится на GitHub:
 
-![Обзор ChatRepo MCP на русском](docs/assets/chatgpt-repo-mcp-overview-ru.png)
+![Обзор ChatRepo MCP](docs/assets/chatgpt-repo-mcp-overview-ru.png)
 
 * * *
 
 ## Что это
 
-Этот проект превращает одну локальную репу в **безопасное remote MCP-приложение** для ChatGPT.
-
-Он нужен для работы с кодовой базой прямо в чате:
-
-- смотреть структуру репозитория
-- читать файлы и сравнивать модули
-- искать код и текст
-- находить TODO / FIXME
-- смотреть недавние изменения файлов
-- анализировать Git-историю, diff, ветки, blame и grep
-
-Основной режим — чтение и анализ, плюс защищённый слой редактирования UTF-8 файлов:
-- запись текстовых файлов по policy
-- точечные replace / insert / delete
-- создание / перемещение / удаление файлов
-- atomic batch edits
-- diff preview и SHA-256 защита от stale writes
-- repo-local command runner с защищёнными policy modes
-- controlled local commit helper без push
-
-* * *
-
-## Набор инструментов
-
-### Репозиторий / файлы
-
-- `repo_info`
-- `list_dir`
-- `tree`
-- `read_text_file`
-- `read_multiple_files`
-- `file_metadata`
-- `find_files`
-- `search_text`
-- `symbol_search`
-- `recent_changes`
-- `todo_scan`
-- `dependency_map`
-
-### Git
-
-- `git_status`
-- `git_diff`
-- `git_log`
-- `git_show`
-- `git_branches`
-- `git_blame`
-- `git_grep`
-
-### Безопасное редактирование
-
-- `write_text_file`
-- `replace_text_in_file`
-- `insert_text_in_file`
-- `delete_text_in_file`
-- `create_text_file`
-- `move_path`
-- `delete_path`
-- `ensure_directory`
-- `batch_edit_files`
-- `apply_change_set`
-- `replace_lines`
-- `insert_before_line`
-- `insert_after_line`
-- `insert_before_heading`
-- `insert_after_heading`
-- `append_to_file`
-- `apply_patch`
-- `update_current_mission`
-- `run_commands`
-- `run_test_preset`
-- `list_test_presets`
-- `run_quality_gate`
-- `quality_gate_and_commit`
-- `scan_new_policy_violations`
-- `command_policy_check`
-- `start_command_job`
-- `get_command_job`
-- `get_job_status`
-- `get_command_log`
-- `summarize_command_log`
-- `cancel_command_job`
-- `git_worktree_guard`
-- `git_commit`
-
-### Безопасные команды
-
-- `run_command`
-
-* * *
-
-## Зачем это нужно
-
-ChatGPT гораздо лучше понимает проект, когда видит реальный контекст репозитория.
-
-Этот сервер даёт сильный набор возможностей для анализа кодовой базы в чате и при этом держит безопасные границы:
-
-- только одна репа
-- read-only тулзы плюс write tools для текстовых файлов
-- валидация пути на каждой файловой операции
-- блокировка секретов по шаблонам
-- лимиты на размер чтения и объём вывода
-- подробные MCP tool schemas с enum-аргументами там, где ChatGPT нужен фиксированный выбор
+ChatRepo MCP — это удалённый [MCP](https://modelcontextprotocol.io)-сервер, который вы один раз запускаете (локально, на VPS, или на своём домашнем ПК через туннель) и подключаете к Developer Mode коннектору ChatGPT. Он даёт модели практичный набор возможностей уровня современного кодинг-агента над рабочей областью по вашему выбору: просмотр и поиск по файлам, чтение git-истории, аккуратные текстовые правки с dry-run превью и проверкой хэша, запуск команд вашего проекта (тесты, линтеры, сборка) через bash, полный git-workflow (ветки, stash, fetch/pull/push, merge, worktree), создание и управление GitHub pull request'ами и CI-запусками через `gh`, а также одноразовую диагностику кода и символьный индекс для навигации. Сервер **не привязан ни к какому конкретному проекту, языку или стеку** — Go, Python, Node/TypeScript, Rust или их смесь в одной polyrepo-папке работают одинаково хорошо, потому что сервер автоматически определяет, с чем имеет дело, вместо того чтобы зашивать команды одного проекта в код.
 
 * * *
 
 ## Быстрый старт
 
+### 1. Внешние зависимости
+
+Обязательно нужны на машине, где запускается сервер:
+
+- **Python 3.11+**
+- **git**
+- **[ripgrep](https://github.com/BurntSushi/ripgrep)** (бинарь `rg`) — используется тулами поиска
+
+Опционально, включают дополнительные группы тулов (при отсутствии сервер не падает — тул вернёт `missing_tools`/`install_hint`; на запуск сервера это не влияет):
+
+- **[GitHub CLI](https://cli.github.com/) (`gh`)**, авторизованный (`gh auth login`) — для тулов `gh_*` (pull request'ы / CI)
+- **[universal-ctags](https://github.com/universal-ctags/ctags)** (`ctags`) — для точного `symbol_definition` / `document_symbols` / `workspace_symbols`; без него эти тулы работают через regex-эвристику
+- Диагностические тулы по вашему стеку, например `pyright` или `ruff` (Python), `go vet` (Go, идёт вместе с тулчейном Go), `tsc` через `npx` (TypeScript) — используются `code_diagnostics`
+
+### 2. Установка
+
 ```bash
-git clone <your-repo-with-this-project>.git
+git clone <url-этого-репозитория>.git chatrepo-mcp
 cd chatrepo-mcp
 
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -e .
+```
 
+### 3. Наведите сервер на свою папку
+
+```bash
 cp .env.example .env
-# укажите PROJECT_ROOT на репозиторий, который нужно анализировать
+```
 
+Откройте `.env` и укажите `PROJECT_ROOT` — абсолютный путь к тому, с чем должен работать агент:
+
+```env
+PROJECT_ROOT=/home/you/code/my-project
+```
+
+### 4. Запуск
+
+```bash
 python -m chatrepo_mcp
 ```
 
-По умолчанию MCP endpoint будет доступен по адресу:
+MCP endpoint теперь доступен по адресу:
 
 ```text
 http://127.0.0.1:8000/mcp
 ```
 
+Подключите ChatGPT — см. раздел [Подключение к ChatGPT](#подключение-к-chatgpt) ниже или подробный гайд [`docs/CONNECT_CHATGPT.md`](docs/CONNECT_CHATGPT.md).
+
 * * *
 
-## Конфигурация
+## Как навести сервер на свою папку
 
-Минимальный пример `.env`:
+`PROJECT_ROOT` — единственное, что обязательно нужно задать, и это может быть:
+
+- **Один репозиторий** — `PROJECT_ROOT=/home/you/code/my-api` (обычная git-репа, любой стек).
+- **Polyrepo-workspace** — родительская папка с несколькими независимыми git-репозиториями внутри, например:
+
+  ```text
+  /home/you/code/platform/
+  ├── billing-service/     (Go, свой .git)
+  ├── web-frontend/        (Node/TypeScript, свой .git)
+  ├── data-pipeline/       (Python, свой .git)
+  └── infra/               (без git, просто конфиги)
+  ```
+
+  Задайте `PROJECT_ROOT=/home/you/code/platform` и вызовите тул `list_repos` — он сканирует вниз на `WORKSPACE_SCAN_DEPTH` уровней (по умолчанию 2) и возвращает все найденные репозитории с их стеком, веткой, состоянием (dirty/clean) и таргетами Makefile, если есть. Все git-тулы и все командные/пресет-тулы принимают опциональный параметр `repo="billing-service"` (или `cwd`), чтобы указать конкретный под-репозиторий.
+- **Обычная папка без git** — тулы чтения/поиска/редактирования всё равно работают; git-специфичные тулы просто сообщат, что репозитория нет, вместо ошибки.
+
+`list_repos` — естественная первая команда агента в новом workspace: это точка входа для discovery.
+
+* * *
+
+## Периметр (и как выйти за его пределы)
+
+По умолчанию агент живёт строго внутри `PROJECT_ROOT`: может свободно `cd`/читать/писать/запускать команды в любой подпапке, но никогда выше или вне корня. За ширину периметра отвечают три настройки:
+
+| Настройка | По умолчанию | Эффект |
+|---|---|---|
+| `PROJECT_ROOT` | *(обязательна)* | Корень workspace. Все относительные пути агента резолвятся относительно него. |
+| `WORKSPACE_ROOTS` | *(пусто)* | Список через запятую **дополнительных** абсолютных папок, доступных наравне с `PROJECT_ROOT` — например, общая библиотека, которая лежит вне основного проекта. |
+| `FILESYSTEM_UNRESTRICTED` | `false` | Если `true` — периметр снимается полностью: агент может читать/писать/запускать команды где угодно на машине, куда дотягивается процесс сервера. |
+
+Структурные файловые/edit/index-тулы сохраняют блокировку `SECRET_GLOBS`, пока одновременно не заданы `ACCESS_MODE=full` и `ALLOW_SECRET_ACCESS=true`. Сырой shell в full-режиме намеренно не ограничен и может обращаться ко всему, что разрешено системному пользователю сервера.
+
+Пример: дать агенту доступ ещё к одной папке рядом с основным проектом:
 
 ```env
-APP_NAME=ChatRepo MCP
-HOST=127.0.0.1
-PORT=8000
-PROJECT_ROOT=/opt/myproject
-MAX_FILE_BYTES=200000
-MAX_READ_LINES=1200
-MAX_SEARCH_RESULTS=100
-BLOCKED_PATTERNS=.env,.env.*,*.pem,*.key,*.p12,*.pfx,**/.git/**,**/.venv/**,**/node_modules/**
-WRITABLE_GLOBS=**/*
-MAX_WRITE_FILE_BYTES=1000000
-MAX_BATCH_OPERATIONS=50
-MAX_COMBINED_DIFF_CHARS=300000
-REQUIRE_EXPECTED_HASH_FOR_WRITES=true
-DANGEROUSLY_ALLOW_ALL_WRITES=true
-ALLOW_MOVE_DELETE_OPERATIONS=true
+PROJECT_ROOT=/home/you/code/my-api
+WORKSPACE_ROOTS=/home/you/code/shared-protos
 ```
 
-Рекомендуемая схема размещения:
+* * *
 
-```text
-/opt/myproject        # целевая репа
-/opt/chatrepo-mcp     # этот MCP сервер
+## Режим доступа и политика команд
+
+`ACCESS_MODE=safe` — дефолт: ограниченный файловый периметр, allowlist команд, preview правок, stale-hash и внутренние подтверждения. `ACCESS_MODE=full` — явный режим доверенной машины: unrestricted shell/filesystem, реальные записи по умолчанию, move/delete и отсутствие внутренних запросов `confirmed`. `ALLOW_SECRET_ACCESS`, `ALLOW_FORCE_PUSH` и `ALLOW_HARD_RESET` остаются отдельными предохранителями структурных тулов.
+
+`run_command` (и всё, что на нём построено: `run_test_preset`, `run_quality_gate`, фоновые jobs) — это настоящий shell `bash -lc`, под контролем `COMMAND_POLICY_MODE`:
+
+| Режим | Поведение | Когда использовать |
+|---|---|---|
+| `allowlist` | Самый строгий. Разрешён только небольшой встроенный список безопасных команд (плюс то, что вы добавите через `.chatrepo/mcp.yml`). Shell-операторы (`&&`, `\|`, `;`, ...) отклоняются сразу. | Публичный/шаренный деплой, где нужен жёсткий потолок того, что может запуститься. |
+| `guarded` | Полноценный bash, но `DESTRUCTIVE_WORDS` требуют `confirmed=true`, а `DENIED_WORDS` блокируются. | Промежуточная политика safe-режима. |
+| `unrestricted` | Нет проверок command-policy; принудительно включается через `ACCESS_MODE=full`. | Полностью доверенная машина/учётка. |
+
+В safe-режиме сырой `git push` блокируется и направляется через аудируемый `git_push`. Full-режим намеренно даёт сырой bash, поэтому raw push и другие shell-операции доступны; реальной границей становятся права отдельного системного пользователя и права репозитория.
+
+**Важно:** четыре уровня разрешений действий в ChatGPT — отдельный клиентский слой. Чтобы веб не спрашивал, выберите **«Разрешить все действия»** для приложения. Сервер сохраняет честные MCP-аннотации; `ACCESS_MODE=full` убирает только серверные preview/confirmation gates.
+
+* * *
+
+## Автодетект стека и тестовые пресеты
+
+Вместо того чтобы зашивать `npm test` или `pytest` под один проект, сервер смотрит, что реально лежит в папке, и резолвит нужную команду:
+
+- `go.mod` → Go (`go test ./...`, `go vet ./...`, `go build ./...`, `gofmt -l .`)
+- `pyproject.toml` / `setup.py` / `requirements.txt` / `Pipfile` → Python (`pytest -x -q`, `ruff check .`, `mypy .`, `ruff format --check .`)
+- `package.json` (+ `tsconfig.json`) → Node/TypeScript (`npm test`, `npm run lint --if-present`, `npx tsc --noEmit`, `npm run build --if-present`)
+- `Cargo.toml` → Rust (`cargo test`, `cargo clippy`, `cargo build`, `cargo fmt --check`)
+- Таргет Makefile с подходящим именем (`test`, `lint`, `typecheck`, `format`, `build`) всегда побеждает дефолт по стеку, так как обычно инкапсулирует специфичные для проекта флаги.
+
+Вызовите `run_test_preset("test")` в корне workspace или `run_test_preset("test", cwd="billing-service")` (эквивалентно составной форме `run_test_preset("billing-service:test")`) для конкретного под-репозитория в polyrepo. Используйте `list_test_presets` (опционально с `path=`), чтобы увидеть доступные действия и в какую команду каждое резолвится, прежде чем запускать.
+
+* * *
+
+## Группы тулов
+
+Сервер регистрирует около 90 тулов; вызов `doctor` (или `smoke_all`) вернёт точное актуальное число для вашей сборки и матрицу возможностей (какие опциональные бинари — `gh`, `ctags`, `pyright`, `go`, ... — установлены). Группы:
+
+- **Чтение / поиск** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`.
+- **Git (только чтение)** — `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_blame`, `git_grep` — все принимают опциональный `repo=` для polyrepo-workspace.
+- **Редактирование** — `write_text_file`, `replace_text_in_file`, `insert_text_in_file`, `delete_text_in_file`, `create_text_file`, `move_path`, `delete_path`, `ensure_directory`, `batch_edit_files`, `apply_change_set`, `replace_lines`, `insert_before_line` / `insert_after_line`, `insert_before_heading` / `insert_after_heading`, `append_to_file`, `apply_patch`. Если `dry_run` не передан, safe делает preview, а full применяет; явный `dry_run=true` всегда оставляет preview.
+- **Команды / тесты / jobs** — `run_command`, `run_commands`, `run_test_preset`, `list_test_presets`, `run_quality_gate`, `quality_gate_and_commit`, `scan_new_policy_violations`, `command_policy_check`, `start_command_job` / `get_command_job` / `get_job_status` / `get_command_log` / `summarize_command_log` / `cancel_command_job`, `git_worktree_guard`, `git_commit`.
+- **Git-workflow** — `git_switch_branch`, `git_create_branch`, `git_add`, `git_restore`, `git_stash`, `git_fetch`, `git_pull`, `git_push`, `git_merge`, `git_revert`, `git_reset`, `git_worktree_add` / `git_worktree_list` / `git_worktree_remove`. Safe делает preview/confirmation, full выполняет без внутренних вопросов. Структурные force push и hard reset всё равно требуют `ALLOW_FORCE_PUSH=true` / `ALLOW_HARD_RESET=true`.
+- **GitHub** (нужен установленный и авторизованный `gh`) — `gh_status`, `gh_pr_create`, `gh_pr_list`, `gh_pr_view`, `gh_pr_comment`, `gh_pr_merge`, `gh_checks`, `gh_run_view`, `gh_run_rerun`, `gh_issue_list`, `gh_issue_view`.
+- **Диагностика и символы** — `code_diagnostics` (запускает `go vet` / `pyright` (или `ruff`) / `tsc --noEmit` в зависимости от определённого стека), `symbol_definition`, `document_symbols`, `workspace_symbols` (через `ctags`, если установлен, иначе regex-эвристика — всегда с пометкой `engine`).
+- **Самопроверка** — `doctor`, `smoke_all`, `context_bootstrap`, `batch_call`.
+
+* * *
+
+## Настройка под свой стек через `.chatrepo/mcp.yml`
+
+Положите файл `.chatrepo/mcp.yml` в корень целевой папки (или любого под-репо в polyrepo), чтобы расширить дефолты без изменения самого сервера:
+
+```yaml
+presets:
+  # Именованный пресет с явной командой; подхватывается run_test_preset("integration")
+  integration:
+    command: "make integration-test"
+    parser: auto
+    cwd: services/api          # опционально: привязать пресет к конкретному под-репо
+
+quality_rules:
+  - no_secret_like_literals
+  - no_new_console_log
+
+mission:
+  current: docs/CURRENT_TASK.md
+
+allowed_commands:
+  # Учитывается только в COMMAND_POLICY_MODE=allowlist
+  - "make lint"
+  - command: "npx vitest run"
+    allow_suffix: true
+
+confirmation_commands:
+  - "docker compose"
 ```
+
+- `presets` — именованные команды, резолвятся через `run_test_preset`/`list_test_presets`; для одного и того же имени действия они побеждают автодетект/Makefile-пресеты.
+- `quality_rules` — id правил, используемые `scan_new_policy_violations`/`run_quality_gate` при сканировании только новых строк diff'а (secret-like литералы, `console.log`, `: any`, `print(...)` и т.д. — полный список см. в `workflows.RULE_PATTERNS`).
+- `mission` — опциональные контекстные файлы, которые ищут `context_bootstrap`/`doctor` (все опциональны; отсутствующие файлы просто помечаются, а не считаются ошибкой).
+- `allowed_commands` / `confirmation_commands` — расширяют встроенный список команд режима `allowlist`.
+- Полный вложенный YAML требует `pip install pyyaml` (опциональная зависимость); без неё встроенный минимальный парсер понимает простые двухуровневые структуры вроде примера выше.
+- `COMMAND_SHELL_PRELUDE` (например, чтобы подключить `nvm`/`pyenv`/virtualenv перед запуском команд) — это **переменная окружения** сервера, а не ключ `mcp.yml`; задаётся в `.env`.
+
+* * *
+
+## Подключение к ChatGPT
+
+1. Для локального/приватного сервера создайте [OpenAI Secure MCP Tunnel](https://platform.openai.com/settings/organization/tunnels), выпустите runtime key на [странице API keys](https://platform.openai.com/settings/organization/api-keys) и запустите `tunnel-client` локально.
+2. Откройте <https://chatgpt.com/plugins>, нажмите **+**, выберите **Tunnel** и свой туннель. При loopback-only MCP за туннелем используйте **No Authentication**.
+3. Для публичного URL выберите **Server URL** и настройте OAuth или другой поддерживаемый ChatGPT способ аутентификации; не выставляйте full-agent анонимно.
+4. Чтобы ChatGPT не спрашивал, выберите **«Разрешить все действия»**; независимо от этого на сервере задайте `ACCESS_MODE=full`.
+
+Подробный гайд, включая первые промпты для проверки: [`docs/CONNECT_CHATGPT.md`](docs/CONNECT_CHATGPT.md).
+
+* * *
+
+## Безопасность
+
+- **Доступ к секретам включается явно.** Для структурных тулов нужны `ACCESS_MODE=full` и `ALLOW_SECRET_ACCESS=true`; raw shell в full подчиняется правам ОС.
+- **Вывод команд редактируется.** Токены, пароли, API-ключи, bearer-заголовки, приватные ключи и URL с учётными данными вырезаются из stdout/stderr команд перед возвратом и записью в лог.
+- **Каждая команда аудируется.** `run_command`/`run_commands`/фоновые jobs/`git_push` дописывают структурированную JSON-строку (секреты вырезаны) в `COMMAND_AUDIT_LOG_PATH` (по умолчанию `~/.local/state/chatrepo-mcp/commands.log`).
+- **Записи зависят от режима.** Safe сохраняет glob/hash/dry-run защиту; full применяет изменения сразу, если вызывающий явно не запросил preview.
+- **Full означает настоящий shell.** Safe направляет push через структурный тул; full допускает raw shell и ограничен правами системного пользователя, под которым запущен сервис.
+- **Аутентификация зависит от транспорта.** Secure MCP Tunnel использует отдельный runtime API key внутри `tunnel-client`, а loopback MCP может оставаться с `MCP_AUTH_MODE=none`. Публичному URL нужен OAuth или другой поддерживаемый ChatGPT слой. Static bearer предназначен для клиентов, умеющих отправлять заголовок напрямую.
+
+* * *
+
+## Где это полезно
+
+Работает одинаково независимо от того, что лежит в папке:
+
+- Онбординг в незнакомой кодовой базе — как в одном репо, так и в polyrepo
+- Расследование багов между сервисами на разных языках
+- Небольшой фикс от начала до конца: ветка → правка → тесты → commit → push → PR → проверка CI
+- Ревью pull request'а и ответы на review-комментарии
+- Обзор архитектуры/зависимостей и поиск TODO/FIXME
 
 * * *
 
@@ -196,231 +255,42 @@ ALLOW_MOVE_DELETE_OPERATIONS=true
 ```text
 chatrepo-mcp/
 ├── README.md
-├── README_PUBLIC_EN.md
-├── README_PUBLIC_RU.md
+├── README_RU.md
+├── .env.example
 ├── pyproject.toml
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── DEPLOY_VPS.md
 │   ├── CONNECT_CHATGPT.md
-│   └── EXPOSE_LOCAL_PC.md
+│   ├── EXPOSE_LOCAL_PC.md
+│   └── VPS_LOCAL_RUNBOOK.md
 ├── deploy/
 │   ├── caddy/
 │   ├── nginx/
 │   └── systemd/
 ├── scripts/
 │   ├── install_ubuntu.sh
+│   ├── check_tools.py
 │   └── smoke_test.sh
 ├── src/chatrepo_mcp/
 │   ├── __main__.py
 │   ├── config.py
+│   ├── server.py
 │   ├── fs_tools.py
+│   ├── edit_tools.py
+│   ├── command_tools.py
 │   ├── git_tools.py
-│   ├── security.py
-│   └── server.py
+│   ├── git_workflow_tools.py
+│   ├── github_tools.py
+│   ├── lsp_tools.py
+│   ├── index_tools.py
+│   ├── workspace.py
+│   ├── profile.py
+│   ├── workflows.py
+│   ├── parsers.py
+│   └── security.py
 └── tests/
 ```
-
-* * *
-
-## Модель безопасности
-
-Этот сервер предназначен для доступа к контексту репозитория, а не к секретам.
-
-Защита по умолчанию:
-
-- работа только внутри одного корня репозитория
-- блокировка типовых секретов и ключей
-- запрет прямого чтения `.git`
-- проверка каждого пути перед доступом
-- лимиты на размер файлов и вывода
-- `BLOCKED_GLOBS` сильнее write allowlist
-- бинарные и non-UTF-8 файлы не редактируются
-- write tools по умолчанию делают `dry_run=true`
-- batch edits могут выполняться атомарно с rollback
-- `apply_change_set` даёт agent-friendly multi-file edit wrapper со structured examples для invalid requests
-- line/heading edit tools уменьшают payload для markdown/code правок
-- `apply_patch` принимает unified diff и проверяет его через `git apply --check`
-- `run_command` запускает allowlisted проверки через `/bin/bash -lc`, чтобы нормально резолвились Node/NPM toolchains
-- `run_commands` запускает несколько allowlisted проверок и возвращает exit code, summary, parsed output и log id по каждой команде
-- `run_quality_gate` запускает preset/command/policy checks как структурированный agent gate
-- `quality_gate_and_commit` коммитит только явно перечисленные paths после зелёных required gates, без push
-- background jobs поддерживают `concurrency_key` locks, conflict attach/fail/wait, status polling, cancel и timeout cleanup process group
-- `scan_new_policy_violations` сканирует только новые строки diff на новые `as any`, `: any`, `@ts-ignore`, `eslint-disable`, `console.log` и secret-like literals
-- repo-local `.chatrepo/mcp.yml` задаёт presets, quality rules и mission paths без зашивания конкретного проекта в MCP сервер
-- `git_commit` может сделать commit только явно перечисленных путей, без push
-- input schemas содержат описания параметров и enum'ы для типовых выборов, чтобы ChatGPT Developer Mode надёжнее выбирал нужный tool
-
-Важно: если ChatGPT заблокировал tool call до отправки на MCP, сервер не может вернуть structured error. Повторите меньшим line/heading edit или через `apply_patch`.
-
-Важно про подтверждения: MCP сервер может помечать command/test/edit tools как non-destructive там, где это честно, но ChatGPT всё равно может спросить подтверждение на raw bash, restart сервисов, delete/move, commit или действия, где всплывают sensitive данные проекта. Это внешний safety layer ChatGPT, а не настройка внутри этого сервера.
-
-Пример вставки перед заголовком:
-
-```json
-{
-  "path": "missions/CURRENT.md",
-  "heading": "## Goal",
-  "content": "## P0 Addendum\n\nDo this next.\n\n",
-  "expected_sha256": "<current file sha256>",
-  "dry_run": true
-}
-```
-
-Пример allowlisted команды:
-
-```json
-{
-  "command": "git diff --check",
-  "timeout_ms": 120000
-}
-```
-
-Пример change-set preview:
-
-```json
-{
-  "name": "two-file-doc-edit",
-  "operations": [
-    {
-      "op": "replace",
-      "path": "docs/a.md",
-      "find": "old",
-      "replace": "new",
-      "expected_sha256": "<sha256>"
-    },
-    {
-      "op": "insert_before_heading",
-      "path": "docs/b.md",
-      "heading": "## Notes",
-      "content": "New note\n",
-      "expected_sha256": "<sha256>"
-    }
-  ],
-  "atomic": true,
-  "dry_run": true
-}
-```
-
-Пример quality gate:
-
-```json
-{
-  "checks": [
-    {"id": "diff", "preset": "git_diff_check", "required": true},
-    {
-      "id": "policy",
-      "preset": "scan_new_policy_violations",
-      "base_ref": "HEAD",
-      "paths": ["packages/integration/test"],
-      "required": true
-    }
-  ]
-}
-```
-
-Пример gate and commit:
-
-```json
-{
-  "checks": [{"preset": "git_diff_check", "required": true}],
-  "commit": {
-    "message": "fix(integration): type scenario helper",
-    "paths": ["packages/integration/test/helpers/scenario-runner.ts"]
-  }
-}
-```
-
-Пример multi-path search:
-
-```json
-{
-  "query": "traceMsg.messageId",
-  "paths": ["tests/telegram/scenarios", "packages/integration/test"],
-  "limit": 100
-}
-```
-
-Пример mission preset без большого payload:
-
-```json
-{
-  "preset": "mandatory_system_tool_log",
-  "position": "before_goal",
-  "dry_run": true
-}
-```
-
-В режиме `COMMAND_POLICY_MODE=full_repo` `run_command` может выполнять repo-local bash через `/bin/bash -lc`. Он всё равно ограничен `PROJECT_ROOT`, редактирует секреты в выводе и требует подтверждение для destructive/service команд.
-
-Долгие E2E лучше запускать background job:
-
-```json
-{
-  "command": "npm run test -w packages/agent -- --run",
-  "timeout_ms": 300000
-}
-```
-
-Старт через `start_command_job`, потом polling через `get_command_job` или `get_job_status`.
-
-Для live suites используйте lock:
-
-```json
-{
-  "command": "npm run test:live -w packages/integration",
-  "concurrency_key": "telegram-live-e2e",
-  "on_conflict": "attach",
-  "timeout_ms": 300000
-}
-```
-
-Команды делятся так:
-
-- safe validation: выбранные `git`, `npm run build`, `npm run test`, `npx vitest` и scenario `npx tsx`
-- confirmation required: service/live команды вроде `bash scripts/start_local.sh`, `docker compose`, `systemctl`
-- forbidden: destructive команды, чтение секретов, произвольная сеть и повышение прав
-
-* * *
-
-## Подключение к ChatGPT
-
-После деплоя за публичным HTTPS создайте кастомное MCP-приложение в ChatGPT и укажите:
-
-```text
-https://YOUR_DOMAIN/mcp
-```
-
-Рекомендуемые настройки приложения:
-
-- **Название:** Repo Reader
-- **Описание:** Repository and git analysis with safe text edits for one project
-- **Аутентификация:** Без авторизации для v1
-
-Подробные инструкции:
-- `docs/DEPLOY_VPS.md`
-- `docs/CONNECT_CHATGPT.md`
-- `docs/EXPOSE_LOCAL_PC.md` — запуск на домашнем ПК с одним стабильным адресом (сравнение туннелей)
-
-* * *
-
-## Где это полезно
-
-- онбординг в чужой кодовой базе
-- обзор архитектуры проекта
-- расследование багов
-- анализ влияния изменений
-- ревью репозитория
-- изучение Git-истории в чате
-
-* * *
-
-## Дальше можно добавить
-
-- GitHub слой для PR и issues
-- безопасный запуск тестов
-- более умный symbol indexing
-- optional UI для дерева и diff
 
 * * *
 
