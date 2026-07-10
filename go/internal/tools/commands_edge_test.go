@@ -81,7 +81,7 @@ func TestRunCommandsAndJobLifecycle(t *testing.T) {
 	if conflict["ok"] != false {
 		t.Fatalf("expected conflict rejection: %#v", conflict)
 	}
-	if conflict["error_kind"].(string) != "job_conflict" {
+	if conflict["error_kind"].(string) != "job_lock_conflict" {
 		t.Fatalf("unexpected conflict kind: %#v", conflict)
 	}
 

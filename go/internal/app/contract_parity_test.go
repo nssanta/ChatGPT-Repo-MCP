@@ -20,7 +20,10 @@ import (
 )
 
 func TestMCPContractParityForAllTools(t *testing.T) {
-	application, err := New(appSettings(t.TempDir()))
+	settings := appSettings(t.TempDir())
+	settings.AccessMode = "full"
+	settings.EnablePTY = true
+	application, err := New(settings)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +145,7 @@ func TestStreamableHTTPHealthReadyAndAuthLifecycle(t *testing.T) {
 	client := &http.Client{}
 	request(t, client, http.MethodGet, baseURL+"/healthz", "", nil, "")
 	ready := requestJSON[any](t, client, http.MethodGet, baseURL+"/readyz", "", nil, "")
-	if got, want := int(ready["tools"].(float64)), len(application.Contract.Tools); got != want {
+	if got, want := int(ready["tools"].(float64)), len(application.Engine.ToolNames()); got != want {
 		t.Fatalf("ready tools mismatch: got=%d want=%d", got, want)
 	}
 

@@ -830,6 +830,56 @@ def git_worktree_add(
     }
 
 
+def prepare_task_worktree(
+    settings: Settings,
+    *,
+    branch: str,
+    task_name: str,
+    repo: str | None = None,
+    base: str = "HEAD",
+    dry_run: bool = True,
+    confirmed: bool = False,
+) -> dict[str, Any]:
+    """Resolve an exact base and prepare an isolated task branch/worktree."""
+    if not branch.strip() or not task_name.strip():
+        raise GitToolError("branch and task_name are required")
+    if not settings.confirmation_granted(confirmed) and not dry_run:
+        raise ConfirmationRequiredError("prepare_task_worktree creates a branch and worktree; pass confirmed=true")
+    toplevel = _resolve_repo_toplevel(repo, settings)
+    repo_rel = _repo_rel(toplevel, settings)
+    _run_git(["check-ref-format", "--branch", branch], settings, cwd=toplevel)
+    base_sha = _run_git(["rev-parse", "--verify", f"{base}^{{commit}}"], settings, cwd=toplevel).strip()
+    status = _run_git(["status", "--porcelain"], settings, cwd=toplevel)
+    parent_dirty = bool(status.strip())
+    safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "-", task_name).strip("-._")
+    if not safe_task:
+        raise GitToolError("task_name has no usable characters")
+    worktree_path = (settings.project_root / ".chatrepo-worktrees" / safe_task).resolve()
+    if worktree_path.exists():
+        raise GitToolError(f"worktree path already exists: {worktree_path}")
+    branch_exists = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=str(toplevel), timeout=settings.subprocess_timeout, check=False,
+    ).returncode == 0
+    if branch_exists:
+        raise GitToolError(f"branch already exists: {branch}")
+    warnings = ["parent worktree is dirty; uncommitted changes are not copied"] if parent_dirty else []
+    result = {
+        "ok": True, "dry_run": dry_run, "applied": not dry_run, "repo": repo_rel,
+        "branch": branch, "base": base, "base_sha": base_sha,
+        "worktree_path": str(worktree_path), "parent_dirty": parent_dirty, "warnings": warnings,
+    }
+    if dry_run:
+        return result
+    worktree_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _run_git(["worktree", "add", "-b", branch, str(worktree_path), base_sha], settings, cwd=toplevel)
+    except Exception:
+        subprocess.run(["git", "branch", "-D", branch], cwd=str(toplevel), timeout=settings.subprocess_timeout, check=False, capture_output=True)
+        raise
+    return result
+
+
 def git_worktree_list(settings: Settings, *, repo: str | None = None) -> dict[str, Any]:
     """List worktrees registered against the repo, parsed from `git worktree list --porcelain`."""
     toplevel = _resolve_repo_toplevel(repo, settings)

@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -107,6 +108,8 @@ func (e *Engine) executeGitTool(ctx context.Context, name string, args map[strin
 		return e.gitWorktreeList(ctx, repo)
 	case "git_worktree_remove":
 		return e.gitWorktreeRemove(ctx, repo, args)
+	case "prepare_task_worktree":
+		return e.prepareTaskWorktree(ctx, repo, args)
 	default:
 		return failure("unknown_git_tool", name)
 	}
@@ -499,6 +502,55 @@ func (e *Engine) gitWorktreeAdd(ctx context.Context, repo string, args map[strin
 		return withError("worktree_add_failed", err)
 	}
 	return map[string]any{"ok": true, "path": e.perimeter.Display(directory), "branch": branch, "output": strings.TrimSpace(output)}
+}
+
+func (e *Engine) prepareTaskWorktree(ctx context.Context, repo string, args map[string]any) map[string]any {
+	branch, taskName := stringArg(args, "branch", ""), stringArg(args, "task_name", "")
+	if branch == "" || taskName == "" {
+		return failure("worktree_rejected", "branch and task_name are required")
+	}
+	dryRun := e.settings.EffectiveDryRun(optionalBool(args, "dry_run"))
+	if !dryRun && !e.settings.ConfirmationGranted(boolArg(args, "confirmed", false)) {
+		return failure("confirmation_required", "prepare_task_worktree requires confirmed=true")
+	}
+	if output, err := e.runGit(ctx, repo, e.settings.SubprocessTimeout, "check-ref-format", "--branch", branch); err != nil {
+		return map[string]any{"ok": false, "error_kind": "invalid_branch", "error": strings.TrimSpace(output)}
+	}
+	base := stringArg(args, "base", "HEAD")
+	baseSHAOutput, err := e.runGit(ctx, repo, e.settings.SubprocessTimeout, "rev-parse", "--verify", base+"^{commit}")
+	if err != nil {
+		return withError("invalid_base", err)
+	}
+	baseSHA := strings.TrimSpace(baseSHAOutput)
+	status, _ := e.runGit(ctx, repo, e.settings.SubprocessTimeout, "status", "--porcelain")
+	parentDirty := strings.TrimSpace(status) != ""
+	safeTask := sanitizeBranch(taskName)
+	if safeTask == "" {
+		return failure("invalid_task_name", "task_name has no usable characters")
+	}
+	directory := filepath.Join(e.settings.ProjectRoot, ".chatrepo-worktrees", safeTask)
+	if _, err := os.Stat(directory); err == nil {
+		return failure("worktree_exists", "worktree path already exists")
+	}
+	if _, err := e.runGit(ctx, repo, e.settings.SubprocessTimeout, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
+		return failure("branch_exists", "branch already exists")
+	}
+	warnings := []string{}
+	if parentDirty {
+		warnings = append(warnings, "parent worktree is dirty; uncommitted changes are not copied")
+	}
+	result := map[string]any{"ok": true, "dry_run": dryRun, "applied": !dryRun, "repo": e.perimeter.Display(repo), "branch": branch, "base": base, "base_sha": baseSHA, "worktree_path": e.perimeter.Display(directory), "parent_dirty": parentDirty, "warnings": warnings}
+	if dryRun {
+		return result
+	}
+	if err := os.MkdirAll(filepath.Dir(directory), 0755); err != nil {
+		return withError("worktree_create_failed", err)
+	}
+	if _, err := e.runGit(ctx, repo, e.settings.SubprocessTimeout, "worktree", "add", "-b", branch, directory, baseSHA); err != nil {
+		_, _ = e.runGit(ctx, repo, e.settings.SubprocessTimeout, "branch", "-D", branch)
+		return withError("worktree_create_failed", err)
+	}
+	return result
 }
 
 func (e *Engine) gitWorktreeList(ctx context.Context, repo string) map[string]any {

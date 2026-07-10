@@ -62,7 +62,7 @@ async def inspect(url: str) -> dict[str, Any]:
 async def verify(python_url: str, go_url: str, fixture: Path) -> None:
     python_meta, go_meta = await asyncio.gather(inspect(python_url), inspect(go_url))
     assert python_meta["tools"] == go_meta["tools"]
-    assert len(python_meta["tools"]) == 87
+    assert len(python_meta["tools"]) == 89
 
     for name, arguments in (
         ("list_dir", {"path": ".", "include_hidden": False}),
@@ -141,7 +141,7 @@ def main() -> None:
                     fixture,
                 )
             )
-    print("dual-server acceptance ok: 87 tools and core behavior")
+    print("dual-server acceptance ok: 89 default tools and core behavior")
 
 
 if __name__ == "__main__":

@@ -16,12 +16,12 @@ help:
 
 ## Regenerate the canonical contract from Python schemas and sync the Go embed.
 contracts:
-	PROJECT_ROOT=$(CURDIR) PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) contracts/acceptance/export_python_contract.py
+	PROJECT_ROOT=$(CURDIR) ACCESS_MODE=full ENABLE_PTY=true PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) contracts/acceptance/export_python_contract.py
 	cp contracts/tool-schemas/tools.json $(GO_DIR)/internal/contracts/tools.json
 
 ## Verify contract copies, versions, and live Python schema without changing files.
 contracts-check:
-	PROJECT_ROOT=$(CURDIR) PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) scripts/check_contracts.py
+	PROJECT_ROOT=$(CURDIR) ACCESS_MODE=full ENABLE_PTY=true PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) scripts/check_contracts.py
 
 acceptance: build
 	$(PYTHON_ENV) contracts/acceptance/run_dual_server.py

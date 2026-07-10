@@ -18,11 +18,13 @@ import (
 
 // Engine dispatches contract tools to focused implementations.
 type Engine struct {
-	settings  config.Settings
-	perimeter *security.Perimeter
-	toolNames []string
-	jobsMu    sync.RWMutex
-	jobs      map[string]*job
+	settings    config.Settings
+	perimeter   *security.Perimeter
+	toolNames   []string
+	jobsMu      sync.RWMutex
+	jobs        map[string]*job
+	terminalsMu sync.RWMutex
+	terminals   map[string]*terminalSession
 }
 
 // New creates a tool engine. toolNames is used by doctor and smoke_all.
@@ -34,6 +36,43 @@ func New(settings config.Settings, toolNames []string) *Engine {
 		perimeter: security.New(settings),
 		toolNames: names,
 		jobs:      make(map[string]*job),
+		terminals: make(map[string]*terminalSession),
+	}
+}
+
+// ToolNames returns the registered runtime tool catalog for readiness output.
+func (e *Engine) ToolNames() []string { return append([]string(nil), e.toolNames...) }
+
+// Shutdown terminates every process group owned by this engine.
+func (e *Engine) Shutdown() {
+	e.jobsMu.RLock()
+	jobIDs := make([]string, 0, len(e.jobs))
+	for id := range e.jobs {
+		jobIDs = append(jobIDs, id)
+	}
+	e.jobsMu.RUnlock()
+	for _, id := range jobIDs {
+		e.jobsMu.RLock()
+		entry := e.jobs[id]
+		e.jobsMu.RUnlock()
+		if entry == nil {
+			continue
+		}
+		entry.mu.RLock()
+		running := entry.Status == "running" || entry.Status == "terminating" || entry.Status == "queued"
+		entry.mu.RUnlock()
+		if running {
+			_ = e.cancelJob(id)
+		}
+	}
+	e.terminalsMu.RLock()
+	terminalIDs := make([]string, 0, len(e.terminals))
+	for id := range e.terminals {
+		terminalIDs = append(terminalIDs, id)
+	}
+	e.terminalsMu.RUnlock()
+	for _, id := range terminalIDs {
+		_ = e.closeTerminal(id, "SIGTERM", e.settings.KillGrace, false)
 	}
 }
 
@@ -57,17 +96,21 @@ func (e *Engine) Execute(ctx context.Context, name string, args map[string]any) 
 		"run_quality_gate", "quality_gate_and_commit", "scan_new_policy_violations",
 		"command_policy_check", "get_command_log", "summarize_command_log",
 		"git_worktree_guard", "start_command_job", "get_command_job", "get_job_status",
-		"cancel_command_job", "git_commit":
+		"list_command_jobs", "cancel_command_job", "git_commit":
 		result = e.executeCommandTool(ctx, name, args)
 	case "git_status", "git_diff", "git_log", "git_show", "git_branches", "git_blame",
 		"git_grep", "git_switch_branch", "git_create_branch", "git_add", "git_restore",
 		"git_stash", "git_fetch", "git_pull", "git_push", "git_merge", "git_revert",
 		"git_reset", "git_worktree_add", "git_worktree_list", "git_worktree_remove":
 		result = e.executeGitTool(ctx, name, args)
+	case "prepare_task_worktree":
+		result = e.executeGitTool(ctx, name, args)
 	case "gh_status", "gh_pr_create", "gh_pr_list", "gh_pr_view", "gh_pr_comment",
 		"gh_pr_merge", "gh_checks", "gh_run_view", "gh_run_rerun", "gh_issue_list",
 		"gh_issue_view":
 		result = e.executeGitHubTool(ctx, name, args)
+	case "start_terminal_session", "read_terminal_session", "write_terminal_session", "resize_terminal_session", "close_terminal_session", "list_terminal_sessions":
+		result = e.executeTerminalTool(ctx, name, args)
 	default:
 		result = failure("unknown_tool", fmt.Sprintf("unknown tool: %s", name))
 	}
@@ -182,6 +225,9 @@ func mapsArg(args map[string]any, key string) []map[string]any {
 	value, ok := args[key]
 	if !ok || value == nil {
 		return nil
+	}
+	if mapped, ok := value.([]map[string]any); ok {
+		return mapped
 	}
 	items, ok := value.([]any)
 	if !ok {

@@ -20,9 +20,13 @@ def test_python_server_matches_shared_tool_contract() -> None:
         tool.model_dump(by_alias=True, exclude_none=True)
         for tool in sorted(tools, key=lambda item: item.name)
     ]
-
-    assert actual == contract["tools"]
-    assert len(actual) == contract["server"]["toolCount"]
+    pty_names = {
+        "start_terminal_session", "read_terminal_session", "write_terminal_session",
+        "resize_terminal_session", "close_terminal_session", "list_terminal_sessions",
+    }
+    expected = [tool for tool in contract["tools"] if tool["name"] not in pty_names]
+    assert actual == expected
+    assert len(actual) == contract["server"]["toolCount"] - len(pty_names)
 
 
 def test_python_version_matches_shared_release_version() -> None:

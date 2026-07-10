@@ -12,9 +12,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -54,7 +56,7 @@ func (e *Engine) executeReadTool(ctx context.Context, name string, args map[stri
 	case "context_bootstrap":
 		return e.contextBootstrap(ctx)
 	case "batch_call":
-		return e.batchCall(ctx, mapsArg(args, "calls"))
+		return e.batchCall(ctx, args)
 	case "code_diagnostics":
 		return e.codeDiagnostics(ctx, args)
 	case "symbol_definition":
@@ -516,16 +518,32 @@ func (e *Engine) dependencyMap(path string) map[string]any {
 }
 
 func (e *Engine) doctor(ctx context.Context) map[string]any {
-	capabilities := map[string]any{
-		"git": binaryStatus("git"), "rg": binaryStatus("rg"), "gh": binaryStatus("gh"),
-		"ctags": binaryStatus("ctags"), "bash": map[string]any{"available": bashBinary() != "", "path": bashBinary()},
-		"go": binaryStatus("go"), "python": binaryStatus("python3"), "node": binaryStatus("node"),
-		"ruff": binaryStatus("ruff"), "mypy": binaryStatus("mypy"), "pyright": binaryStatus("pyright"),
+	capabilities := map[string]any{}
+	for _, name := range []string{"git", "rg", "gh", "ctags", "bash", "go", "python3", "node", "ruff", "mypy", "pyright"} {
+		capabilities[name] = e.toolStatus(name)
 	}
+	entries, warnings := e.effectivePath()
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, entry.Path)
+	}
+	ptyAvailable := runtime.GOOS != "windows"
+	capabilities["pty"] = map[string]any{
+		"available": ptyAvailable, "enabled": ptyAvailable && e.settings.FullAccess() && e.settings.EnablePTY,
+		"reason": func() any {
+			if ptyAvailable {
+				return nil
+			}
+			return "POSIX PTY is unavailable on this platform"
+		}(),
+	}
+	capabilities["subagents"] = map[string]any{"available": false, "enabled": false, "reason": "No executor configured in V1"}
 	return map[string]any{
 		"ok": true, "implementation": "go", "tool_count": len(e.toolNames), "tools": e.toolNames,
 		"namespace": e.settings.CanonicalNamespace, "access_mode": e.settings.AccessMode,
-		"capabilities": capabilities, "repos": e.workspaceEntries(ctx),
+		"capabilities": capabilities, "effective_path": paths, "path_warnings": warnings,
+		"toolchains": []any{capabilities["go"], capabilities["python3"], capabilities["node"]},
+		"repos":      e.workspaceEntries(ctx),
 	}
 }
 
@@ -553,14 +571,60 @@ func (e *Engine) contextBootstrap(ctx context.Context) map[string]any {
 	return result
 }
 
-func (e *Engine) batchCall(ctx context.Context, calls []map[string]any) map[string]any {
-	results := make([]map[string]any, 0, len(calls))
-	for _, call := range calls {
+func (e *Engine) batchCall(ctx context.Context, args map[string]any) map[string]any {
+	calls := mapsArg(args, "calls")
+	if len(calls) > 10 {
+		return failure("too_many_calls", "batch_call accepts at most 10 calls")
+	}
+	results := make([]map[string]any, len(calls))
+	invoke := func(index int, call map[string]any) {
 		name := stringArg(call, "tool", "")
 		arguments := mapArg(call, "args")
-		results = append(results, map[string]any{"tool": name, "result": e.Execute(ctx, name, arguments)})
+		allowed := map[string]bool{"repo_info": true, "list_dir": true, "tree": true, "read_text_file": true, "read_multiple_files": true, "file_metadata": true, "find_files": true, "search_text": true, "symbol_search": true, "recent_changes": true, "todo_scan": true, "dependency_map": true, "git_status": true, "git_diff": true, "git_log": true, "git_show": true, "git_branches": true, "git_blame": true, "git_grep": true}
+		if !allowed[name] {
+			preview := map[string]bool{"replace_text_in_file": true, "replace_lines": true, "insert_before_heading": true, "batch_edit_files": true}
+			if !preview[name] || !boolArg(arguments, "dry_run", false) {
+				results[index] = map[string]any{"index": index, "tool": name, "ok": false, "error": "tool is not allowed for batch_call"}
+				return
+			}
+		}
+		value := e.Execute(ctx, name, arguments)
+		ok := value["ok"] != false
+		results[index] = map[string]any{"index": index, "tool": name, "ok": ok, "result": value}
 	}
-	return map[string]any{"ok": true, "results": results, "count": len(results)}
+	execution := stringArg(args, "execution", "parallel")
+	maximum := intArg(args, "max_concurrency", 4)
+	if maximum < 1 {
+		maximum = 1
+	}
+	if maximum > 10 {
+		maximum = 10
+	}
+	if execution == "sequential" {
+		for index, call := range calls {
+			invoke(index, call)
+		}
+	} else {
+		semaphore := make(chan struct{}, maximum)
+		var wait sync.WaitGroup
+		for index, call := range calls {
+			wait.Add(1)
+			go func(index int, call map[string]any) {
+				defer wait.Done()
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
+				invoke(index, call)
+			}(index, call)
+		}
+		wait.Wait()
+	}
+	ok := true
+	for _, result := range results {
+		if result["ok"] == false {
+			ok = false
+		}
+	}
+	return map[string]any{"ok": ok, "execution": execution, "max_concurrency": maximum, "results": results, "count": len(results)}
 }
 
 func (e *Engine) codeDiagnostics(ctx context.Context, args map[string]any) map[string]any {

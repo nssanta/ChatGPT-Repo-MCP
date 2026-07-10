@@ -332,7 +332,7 @@ func TestFilesystemDiagnosticsAndSearch(t *testing.T) {
 		{"tool": "read_text_file", "args": map[string]any{"path": "notes.txt", "with_line_numbers": false}},
 		{"tool": "file_metadata", "args": map[string]any{"path": "notes.txt", "include_stat": true}},
 	}
-	batch := engine.batchCall(context.Background(), calls)
+	batch := engine.batchCall(context.Background(), map[string]any{"calls": calls})
 	if batch["ok"] != true || batch["count"].(int) != 2 {
 		t.Fatalf("batch call should succeed: %#v", batch)
 	}

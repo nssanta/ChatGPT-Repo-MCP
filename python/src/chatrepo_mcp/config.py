@@ -82,6 +82,10 @@ class Settings:
     access_mode: str = "safe"
     allow_secret_access: bool = False
     allow_hard_reset: bool = False
+    mcp_extra_path: tuple[str, ...] = ()
+    kill_grace_ms: int = 5_000
+    enable_pty: bool = False
+    max_terminal_sessions: int = 4
 
     @property
     def full_access(self) -> bool:
@@ -201,6 +205,14 @@ class Settings:
                 "docker system prune,chmod -R,chown -R,mkfs,dd",
             ),
             command_shell_prelude=os.getenv("COMMAND_SHELL_PRELUDE", ""),
+            mcp_extra_path=tuple(
+                part.strip()
+                for part in os.getenv("MCP_EXTRA_PATH", "").split(os.pathsep)
+                if part.strip()
+            ),
+            kill_grace_ms=_env_int("KILL_GRACE_MS", 5_000),
+            enable_pty=_env_bool("ENABLE_PTY", False),
+            max_terminal_sessions=_env_int("MAX_TERMINAL_SESSIONS", 4),
             git_network_timeout=_env_int("GIT_NETWORK_TIMEOUT", 60),
             protected_branches=_env_csv("PROTECTED_BRANCHES", "main,master"),
             allow_force_push=_env_bool("ALLOW_FORCE_PUSH", False),

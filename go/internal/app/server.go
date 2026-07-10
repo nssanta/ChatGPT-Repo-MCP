@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -43,10 +44,16 @@ func New(settings config.Settings) (*Application, error) {
 	server := mcp.NewServer(&mcp.Implementation{Name: document.Server.Name + "-go", Version: version}, nil)
 	names := make([]string, 0, len(document.Tools))
 	for _, contractTool := range document.Tools {
+		if isPTYTool(contractTool.Name) && !(settings.FullAccess() && settings.EnablePTY && runtime.GOOS != "windows") {
+			continue
+		}
 		names = append(names, contractTool.Name)
 	}
 	engine := tools.New(settings, names)
 	for _, contractTool := range document.Tools {
+		if isPTYTool(contractTool.Name) && !(settings.FullAccess() && settings.EnablePTY && runtime.GOOS != "windows") {
+			continue
+		}
 		definition := contractTool
 		annotation := &mcp.ToolAnnotations{Title: definition.Annotations.Title}
 		if definition.Annotations.ReadOnlyHint != nil {
@@ -85,8 +92,18 @@ func New(settings config.Settings) (*Application, error) {
 	return &Application{Settings: settings, Contract: document, Server: server, Engine: engine}, nil
 }
 
+func isPTYTool(name string) bool {
+	switch name {
+	case "start_terminal_session", "read_terminal_session", "write_terminal_session", "resize_terminal_session", "close_terminal_session", "list_terminal_sessions":
+		return true
+	default:
+		return false
+	}
+}
+
 // Run serves either stdio or Streamable HTTP until ctx is cancelled.
 func (a *Application) Run(ctx context.Context) error {
+	defer a.Engine.Shutdown()
 	if a.Settings.Transport == "stdio" {
 		return a.Server.Run(ctx, &mcp.StdioTransport{})
 	}
@@ -104,7 +121,7 @@ func (a *Application) runHTTP(ctx context.Context) error {
 		writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "implementation": "go"})
 	})
 	mux.HandleFunc("/readyz", func(writer http.ResponseWriter, _ *http.Request) {
-		writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "tools": a.Contract.Server.ToolCount})
+		writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "tools": len(a.Engine.ToolNames()), "catalog_tools": a.Contract.Server.ToolCount})
 	})
 
 	address := net.JoinHostPort(a.Settings.Host, fmt.Sprint(a.Settings.Port))

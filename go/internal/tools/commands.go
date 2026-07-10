@@ -3,7 +3,7 @@ package tools
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -17,22 +17,26 @@ import (
 )
 
 type job struct {
-	mu             sync.RWMutex
-	ID             string
-	LogID          string
-	Command        string
-	CWD            string
-	Status         string
-	StartedAt      time.Time
-	FinishedAt     time.Time
-	ExitCode       int
-	Stdout         string
-	Stderr         string
-	TimedOut       bool
-	ConcurrencyKey string
-	cancel         context.CancelFunc
-	pid            int
-	done           chan struct{}
+	mu                  sync.RWMutex
+	ID                  string
+	LogID               string
+	Command             string
+	CWD                 string
+	Status              string
+	StartedAt           time.Time
+	FinishedAt          time.Time
+	ExitCode            int
+	Stdout              string
+	Stderr              string
+	TimedOut            bool
+	ConcurrencyKey      string
+	cancel              context.CancelFunc
+	pid                 int
+	pgid                int
+	TerminationReason   string
+	CancelRequested     bool
+	ProcessGroupCleaned bool
+	done                chan struct{}
 }
 
 type commandRequest struct {
@@ -101,6 +105,8 @@ func (e *Engine) executeCommandTool(ctx context.Context, name string, args map[s
 		return e.getJob(stringArg(args, "job_id", ""), intArg(args, "tail_lines", 200), false)
 	case "get_job_status":
 		return e.getJob(stringArg(args, "job_id", ""), 0, true)
+	case "list_command_jobs":
+		return e.listJobs(args)
 	case "cancel_command_job":
 		return e.cancelJob(stringArg(args, "job_id", ""))
 	case "get_command_log":
@@ -192,9 +198,9 @@ func (e *Engine) runShell(parent context.Context, command, directory string, tim
 	if strings.TrimSpace(e.settings.CommandShellPrelude) != "" {
 		commandText = e.settings.CommandShellPrelude + "\n" + command
 	}
-	process := exec.CommandContext(ctx, bash, "-lc", commandText)
+	process := exec.Command(bash, "-lc", commandText)
 	process.Dir = directory
-	process.Env = os.Environ()
+	process.Env = e.commandEnvironment(nil)
 	for key, value := range overrides {
 		if !environmentName.MatchString(key) {
 			return processResult{ExitCode: -1, Stderr: fmt.Sprintf("invalid environment variable name: %s", key)}
@@ -205,7 +211,18 @@ func (e *Engine) runShell(parent context.Context, command, directory string, tim
 	var stderr strings.Builder
 	process.Stdout = &stdout
 	process.Stderr = &stderr
-	err := process.Run()
+	configureProcessGroup(process)
+	err := process.Start()
+	if err == nil {
+		done := make(chan error, 1)
+		go func() { done <- process.Wait() }()
+		select {
+		case err = <-done:
+		case <-ctx.Done():
+			_, _ = terminateProcessGroup(process.Process.Pid, e.settings.KillGrace)
+			err = <-done
+		}
+	}
 	exitCode := 0
 	if err != nil {
 		exitCode = -1
@@ -336,6 +353,10 @@ func (e *Engine) runTestPreset(ctx context.Context, args map[string]any) map[str
 	requestArgs["command"] = command
 	requestArgs["cwd"] = cwd
 	if boolArg(args, "background", false) {
+		directory, _ := e.resolveCommandCWD(cwd)
+		fingerprint := sha256.Sum256([]byte(directory + "\x00" + preset + "\x00" + strings.Join(strings.Fields(command), " ")))
+		requestArgs["concurrency_key"] = "preset:" + fmt.Sprintf("%x", fingerprint[:])
+		requestArgs["on_conflict"] = "attach"
 		return e.startJob(ctx, requestArgs)
 	}
 	request := e.commandRequestFromArgs(requestArgs, true)
@@ -364,17 +385,29 @@ func (e *Engine) startJob(parent context.Context, args map[string]any) map[strin
 		return withError("invalid_cwd", err)
 	}
 	onConflict := stringArg(args, "on_conflict", "fail")
+	if onConflict != "attach" && onConflict != "fail" && onConflict != "wait" {
+		return failure("invalid_on_conflict", "on_conflict must be attach, fail, or wait")
+	}
 	if request.ConcurrencyKey != "" {
 		if existing := e.findRunningByKey(request.ConcurrencyKey); existing != nil {
-			if onConflict == "attach" || onConflict == "wait" {
+			if onConflict == "attach" {
 				return e.jobResult(existing, request.TailLines, false)
 			}
-			return map[string]any{"ok": false, "error_kind": "job_conflict", "job_id": existing.ID, "concurrency_key": request.ConcurrencyKey}
+			if onConflict == "wait" {
+				select {
+				case <-existing.done:
+				case <-time.After(min(request.Timeout, 30*time.Second)):
+					return map[string]any{"ok": false, "error_kind": "job_lock_conflict", "job_id": existing.ID, "concurrency_key": request.ConcurrencyKey}
+				}
+			}
+			if onConflict == "fail" {
+				return map[string]any{"ok": false, "error_kind": "job_lock_conflict", "job_id": existing.ID, "concurrency_key": request.ConcurrencyKey}
+			}
 		}
 	}
 	id := randomID()
 	jobContext, cancel := context.WithTimeout(context.Background(), request.Timeout)
-	entry := &job{ID: id, LogID: id, Command: normalized, CWD: directory, Status: "running", StartedAt: time.Now().UTC(), ExitCode: -1, ConcurrencyKey: request.ConcurrencyKey, cancel: cancel, done: make(chan struct{})}
+	entry := &job{ID: id, LogID: randomID(), Command: normalized, CWD: directory, Status: "running", StartedAt: time.Now().UTC(), ExitCode: -1, ConcurrencyKey: request.ConcurrencyKey, cancel: cancel, done: make(chan struct{})}
 	e.jobsMu.Lock()
 	e.jobs[id] = entry
 	e.jobsMu.Unlock()
@@ -395,9 +428,9 @@ func (e *Engine) runJob(ctx context.Context, entry *job, request commandRequest)
 	if strings.TrimSpace(e.settings.CommandShellPrelude) != "" {
 		commandText = e.settings.CommandShellPrelude + "\n" + commandText
 	}
-	process := exec.CommandContext(ctx, bash, "-lc", commandText)
+	process := exec.Command(bash, "-lc", commandText)
 	process.Dir = entry.CWD
-	process.Env = os.Environ()
+	process.Env = e.commandEnvironment(nil)
 	for key, value := range request.Env {
 		if environmentName.MatchString(key) {
 			process.Env = append(process.Env, key+"="+value)
@@ -411,8 +444,19 @@ func (e *Engine) runJob(ctx context.Context, entry *job, request commandRequest)
 	if err == nil {
 		entry.mu.Lock()
 		entry.pid = process.Process.Pid
+		entry.pgid = process.Process.Pid
 		entry.mu.Unlock()
-		err = process.Wait()
+		wait := make(chan error, 1)
+		go func() { wait <- process.Wait() }()
+		select {
+		case err = <-wait:
+		case <-ctx.Done():
+			entry.mu.Lock()
+			entry.Status = "terminating"
+			entry.mu.Unlock()
+			_, _ = terminateProcessGroup(process.Process.Pid, e.settings.KillGrace)
+			err = <-wait
+		}
 	}
 	exitCode := 0
 	if err != nil {
@@ -431,6 +475,7 @@ func (e *Engine) runJob(ctx context.Context, entry *job, request commandRequest)
 	entry.mu.Lock()
 	entry.Stdout, entry.Stderr = stdoutText, stderrText
 	entry.ExitCode, entry.TimedOut = exitCode, timedOut
+	entry.ProcessGroupCleaned = entry.pgid == 0 || !processGroupAlive(entry.pgid)
 	entry.mu.Unlock()
 	e.writeCommandLogs(entry.LogID, entry.Command, entry.CWD, stdoutText, stderrText, exitCode)
 
@@ -439,10 +484,15 @@ func (e *Engine) runJob(ctx context.Context, entry *job, request commandRequest)
 	entry.Status = "completed"
 	if ctx.Err() == context.Canceled {
 		entry.Status = "cancelled"
+		entry.TerminationReason = "user_cancel"
 	} else if timedOut {
 		entry.Status = "timed_out"
+		entry.TerminationReason = "timeout"
 	} else if exitCode != 0 {
 		entry.Status = "failed"
+		entry.TerminationReason = "nonzero_exit"
+	} else {
+		entry.TerminationReason = "completed"
 	}
 	entry.mu.Unlock()
 }
@@ -480,7 +530,21 @@ func (e *Engine) jobResult(entry *job, tailLines int, concise bool) map[string]a
 		"cwd": e.perimeter.Display(entry.CWD), "exit_code": entry.ExitCode,
 		"started_at": entry.StartedAt.Format(time.RFC3339Nano), "timed_out": entry.TimedOut,
 		"concurrency_key": entry.ConcurrencyKey,
+		"pid":             entry.pid, "pgid": entry.pgid, "command_redacted": entry.Command,
+		"termination_reason": entry.TerminationReason, "cancel_requested": entry.CancelRequested,
+		"process_group_cleaned": entry.ProcessGroupCleaned,
+		"lock_owner_job_id": func() any {
+			if entry.ConcurrencyKey != "" {
+				return entry.ID
+			}
+			return nil
+		}(),
 	}
+	result["last_output_at"] = entry.StartedAt.Format(time.RFC3339Nano)
+	result["term_signal"] = nil
+	result["stdout_bytes"] = len(entry.Stdout)
+	result["stderr_bytes"] = len(entry.Stderr)
+	result["output_truncated"] = false
 	if !entry.FinishedAt.IsZero() {
 		result["finished_at"] = entry.FinishedAt.Format(time.RFC3339Nano)
 	}
@@ -489,6 +553,54 @@ func (e *Engine) jobResult(entry *job, tailLines int, concise bool) map[string]a
 		result["stderr"] = tailText(entry.Stderr, tailLines)
 	}
 	return result
+}
+
+func (e *Engine) listJobs(args map[string]any) map[string]any {
+	wanted := map[string]bool{}
+	for _, value := range stringSliceArg(args, "status") {
+		wanted[value] = true
+	}
+	cwd := stringArg(args, "cwd", "")
+	if cwd != "" {
+		if resolved, err := e.resolveCommandCWD(cwd); err == nil {
+			cwd = resolved
+		}
+	}
+	includeFinished := boolArg(args, "include_finished", true)
+	limit := intArg(args, "limit", 100)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	e.jobsMu.RLock()
+	entries := make([]*job, 0, len(e.jobs))
+	for _, entry := range e.jobs {
+		entries = append(entries, entry)
+	}
+	e.jobsMu.RUnlock()
+	sort.Slice(entries, func(i, j int) bool { return entries[i].StartedAt.After(entries[j].StartedAt) })
+	results := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		entry.mu.RLock()
+		status, directory := entry.Status, entry.CWD
+		entry.mu.RUnlock()
+		if len(wanted) > 0 && !wanted[status] {
+			continue
+		}
+		if !includeFinished && status != "queued" && status != "running" && status != "terminating" {
+			continue
+		}
+		if cwd != "" && cwd != directory {
+			continue
+		}
+		results = append(results, e.jobResult(entry, 0, true))
+		if len(results) == limit {
+			break
+		}
+	}
+	return map[string]any{"ok": true, "jobs": results, "count": len(results)}
 }
 
 func (e *Engine) cancelJob(id string) map[string]any {
@@ -505,8 +617,9 @@ func (e *Engine) cancelJob(id string) map[string]any {
 		return map[string]any{"ok": true, "job_id": id, "status": status, "cancelled": false}
 	}
 	entry.cancel()
+	entry.CancelRequested = true
 	if entry.pid > 0 {
-		_ = terminateProcessGroup(entry.pid)
+		_, _ = terminateProcessGroup(entry.pid, e.settings.KillGrace)
 	}
 	entry.mu.Unlock()
 	select {
@@ -539,10 +652,14 @@ func (e *Engine) writeCommandLogs(id, command, cwd, stdout, stderr string, exitC
 func (e *Engine) getCommandLog(args map[string]any) map[string]any {
 	id := stringArg(args, "log_id", "")
 	stream := stringArg(args, "stream", "stdout")
-	if stream != "stdout" && stream != "stderr" {
-		return failure("invalid_stream", "stream must be stdout or stderr")
+	if stream != "stdout" && stream != "stderr" && stream != "combined" {
+		return failure("invalid_stream", "stream must be stdout, stderr, or combined")
 	}
-	data, err := os.ReadFile(filepath.Join(e.settings.CommandJobsDir, id+"."+stream))
+	path := filepath.Join(e.settings.CommandJobsDir, id+"."+stream)
+	if stream == "combined" {
+		path = filepath.Join(e.settings.CommandJobsDir, "logs", id+".combined")
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return withError("command_log_error", err)
 	}
@@ -774,11 +891,13 @@ func tailText(text string, lines int) string {
 }
 
 func randomID() string {
-	buffer := make([]byte, 12)
+	buffer := make([]byte, 16)
 	if _, err := rand.Read(buffer); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
+		return fmt.Sprintf("00000000-0000-4000-8000-%012x", time.Now().UnixNano()&0xffffffffffff)
 	}
-	return hex.EncodeToString(buffer)
+	buffer[6] = (buffer[6] & 0x0f) | 0x40
+	buffer[8] = (buffer[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", buffer[0:4], buffer[4:6], buffer[6:8], buffer[8:10], buffer[10:16])
 }
 
 func parseCommandSummary(command, stdout, stderr, kind string) map[string]any {

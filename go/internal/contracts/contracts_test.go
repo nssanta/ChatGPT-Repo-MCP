@@ -7,10 +7,10 @@ func TestLoadCanonicalContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if document.Server.Name != "chatrepo-mcp" || document.Server.Version != "0.2.0" {
+	if document.Server.Name != "chatrepo-mcp" || document.Server.Version != "0.3.0" {
 		t.Fatalf("unexpected server metadata: %+v", document.Server)
 	}
-	if got, want := len(document.Tools), 87; got != want {
+	if got, want := len(document.Tools), 95; got != want {
 		t.Fatalf("tool count = %d, want %d", got, want)
 	}
 	for index, tool := range document.Tools {

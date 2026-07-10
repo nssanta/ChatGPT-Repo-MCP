@@ -242,7 +242,7 @@ def test_guarded_mode_is_unrestricted_when_denied_words_is_empty(tmp_path: Path)
 
 def test_full_repo_mode_does_not_require_confirmation(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
-    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo"})
+    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo", "kill_grace_ms": 25})
     (tmp_path / "scripts").mkdir()
     (tmp_path / "scripts" / "start_local.sh").write_text("#!/usr/bin/env bash\necho started\n", encoding="utf-8")
 
@@ -400,13 +400,16 @@ def test_background_job_lock_fail_attach_and_cancel(tmp_path: Path) -> None:
 
 def test_get_job_status_and_timeout_kill_process_group(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
-    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo"})
+    settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo", "kill_grace_ms": 25})
 
     started = start_command_job("bash -lc 'sleep 10 & wait'", settings, timeout_ms=50)
     import time
 
-    time.sleep(0.15)
+    deadline = time.time() + 3
     status = get_job_status(started["job_id"], settings)
+    while status["status"] in {"running", "terminating"} and time.time() < deadline:
+        time.sleep(0.05)
+        status = get_job_status(started["job_id"], settings)
 
     assert status["status"] == "timed_out"
     assert status["timed_out"] is True

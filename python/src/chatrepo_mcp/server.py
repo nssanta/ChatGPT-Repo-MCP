@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-import shutil
+import os
+import atexit
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Annotated, Any, Literal
 
 from mcp.server.auth.provider import AccessToken
@@ -20,12 +22,14 @@ from .command_tools import (
     get_command_log,
     get_command_job,
     get_job_status,
+    list_command_jobs,
     git_commit,
     run_command,
     run_commands,
     run_test_preset,
     summarize_command_log,
     start_command_job,
+    shutdown_command_jobs,
 )
 from .config import Settings
 from .edit_tools import (
@@ -91,6 +95,7 @@ from .git_workflow_tools import (
     git_worktree_add,
     git_worktree_list,
     git_worktree_remove,
+    prepare_task_worktree,
 )
 from .github_tools import (
     gh_checks,
@@ -108,6 +113,16 @@ from .github_tools import (
 from .index_tools import document_symbols, symbol_definition, workspace_symbols
 from .lsp_tools import code_diagnostics
 from .profile import load_repo_profile, list_test_presets
+from .runtime_env import effective_path, tool_status
+from .terminal_tools import (
+    close_terminal_session,
+    list_terminal_sessions,
+    read_terminal_session,
+    resize_terminal_session,
+    start_terminal_session,
+    write_terminal_session,
+    shutdown_terminal_sessions,
+)
 from .workflows import (
     git_worktree_guard,
     quality_gate_and_commit,
@@ -117,6 +132,8 @@ from .workflows import (
 from .workspace import list_workspace_repos
 
 settings = Settings.from_env()
+atexit.register(shutdown_terminal_sessions, settings)
+atexit.register(shutdown_command_jobs, settings)
 
 
 class StaticBearerVerifier(TokenVerifier):
@@ -735,9 +752,9 @@ def _search_probe_token() -> str:
 
 
 def _capability_matrix() -> dict[str, dict[str, Any]]:
-    """Report which external CLI binaries are available on PATH."""
+    """Report external binaries through the server's effective PATH."""
     binaries = ["git", "rg", "gh", "ctags", "go", "python3", "node", "docker"]
-    return {name: {"found": (path := shutil.which(name)) is not None, "path": path} for name in binaries}
+    return {name: tool_status(name, settings) for name in binaries}
 
 
 @_tool(
@@ -797,12 +814,30 @@ def doctor_tool() -> dict:
     checks["capabilities"] = {"ok": True, "result": _capability_matrix()}
 
     tools = _tool_names()
+    path_entries, _, path_warnings = effective_path(settings)
+    matrix = _capability_matrix()
     return {
         "project_root": str(settings.project_root),
         **_namespace_info(),
         **_write_config_info(),
         "tools": tools,
         "tool_count": len(tools),
+        "effective_path": path_entries,
+        "path_warnings": path_warnings,
+        "toolchains": [matrix.get(name, {"name": name, "available": False, "source": "not_found"}) for name in ("go", "python3", "node")],
+        "capabilities": {
+            **matrix,
+            "pty": {
+                "available": os.name == "posix",
+                "enabled": bool(settings.full_access and settings.enable_pty and os.name == "posix"),
+                "reason": None if os.name == "posix" else "POSIX PTY is unavailable on this platform",
+            },
+            "subagents": {
+                "available": False,
+                "enabled": False,
+                "reason": "No executor configured in V1",
+            },
+        },
         "checks": checks,
     }
 
@@ -967,22 +1002,34 @@ def batch_call_tool(
             max_length=10,
         ),
     ],
+    execution: Literal["parallel", "sequential"] = "parallel",
+    max_concurrency: Annotated[int, Field(ge=1, le=10)] = 4,
 ) -> dict:
-    """Use this to run up to 10 read-only repo inspection calls, or write tools only when their dry_run is true."""
+    """Run up to 10 safe inspection/preview calls, in parallel by default."""
     if len(calls) > 10:
         raise ValueError("too many calls; max is 10")
-    results = []
-    for call in calls:
+    def invoke(index: int, call: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         tool = call.get("tool")
         args = call.get("args") or {}
         if not isinstance(tool, str) or not isinstance(args, dict):
-            results.append({"tool": tool, "ok": False, "error": "call must contain string tool and object args"})
-            continue
+            return index, {"index": index, "tool": tool, "ok": False, "error": "call must contain string tool and object args"}
         try:
-            results.append({"tool": tool, "ok": True, "result": _batch_dispatch(tool, args)})
+            return index, {"index": index, "tool": tool, "ok": True, "result": _batch_dispatch(tool, args)}
         except Exception as exc:  # noqa: BLE001
-            results.append({"tool": tool, "ok": False, "error": str(exc)})
-    return {"results": results, "count": len(results)}
+            return index, {"index": index, "tool": tool, "ok": False, "error": str(exc)}
+
+    ordered: list[dict[str, Any] | None] = [None] * len(calls)
+    if execution == "sequential":
+        for index, call in enumerate(calls):
+            _, ordered[index] = invoke(index, call)
+    else:
+        with ThreadPoolExecutor(max_workers=min(max_concurrency, max(len(calls), 1))) as pool:
+            futures = [pool.submit(invoke, index, call) for index, call in enumerate(calls)]
+            for future in as_completed(futures):
+                index, result = future.result()
+                ordered[index] = result
+    results = [item for item in ordered if item is not None]
+    return {"ok": all(item["ok"] for item in results), "execution": execution, "max_concurrency": max_concurrency, "results": results, "count": len(results)}
 
 
 @_tool(
@@ -1603,7 +1650,7 @@ def command_policy_check_tool(command: Annotated[str, Field(description="Command
 )
 def get_command_log_tool(
     log_id: Annotated[str, Field(description="Log id returned by run_command or run_commands.")],
-    stream: Annotated[Literal["stdout", "stderr"], Field(description="Which stream to read.")] = "stdout",
+    stream: Annotated[Literal["stdout", "stderr", "combined"], Field(description="Which stream to read; PTY logs use combined.")] = "stdout",
     start_line: Annotated[int | None, Field(description="Optional first 1-based line to return.")] = None,
     end_line: Annotated[int | None, Field(description="Optional last 1-based line to return.")] = None,
     grep: Annotated[str | None, Field(description="Optional regular expression to filter lines.")] = None,
@@ -1728,6 +1775,23 @@ def get_job_status_tool(job_id: Annotated[str, Field(description="Background com
 
 
 @_tool(
+    name="list_command_jobs",
+    annotations={**READ_ONLY, "title": "List Command Jobs"},
+)
+def list_command_jobs_tool(
+    status: list[Literal["queued", "running", "terminating", "completed", "failed", "cancelled", "timed_out"]] | None = None,
+    cwd: OptionalRepoPath = None,
+    limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    include_finished: bool = True,
+) -> dict:
+    """List background command jobs with optional lifecycle and cwd filters."""
+    try:
+        return list_command_jobs(settings, status=list(status) if status else None, cwd=cwd, limit=limit, include_finished=include_finished)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "job_error", "error": str(exc)}
+
+
+@_tool(
     name="cancel_command_job",
     annotations={**WRITE_ACTION, "title": "Cancel Command Job"},
 )
@@ -1737,6 +1801,61 @@ def cancel_command_job_tool(job_id: str) -> dict:
         return cancel_command_job(job_id=job_id, settings=settings)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error_kind": "job_error", "error": str(exc), "job_id": job_id}
+
+
+if settings.full_access and settings.enable_pty and os.name == "posix":
+
+    @_tool(name="start_terminal_session", annotations={**COMMAND_ACTION, "title": "Start Terminal Session"})
+    def start_terminal_session_tool(
+        cwd: OptionalRepoPath = None,
+        shell: str | None = None,
+        command: str | None = None,
+        cols: Annotated[int, Field(ge=1, le=1000)] = 120,
+        rows: Annotated[int, Field(ge=1, le=1000)] = 40,
+        env: dict[str, str] | None = None,
+        idle_timeout_ms: Annotated[int, Field(ge=1000, le=86_400_000)] = 1_800_000,
+    ) -> dict:
+        """Start a persistent interactive POSIX terminal session."""
+        return start_terminal_session(settings, cwd=cwd, shell=shell, command=command, cols=cols, rows=rows, env=env, idle_timeout_ms=idle_timeout_ms)
+
+    @_tool(name="read_terminal_session", annotations={**READ_ONLY, "title": "Read Terminal Session"})
+    def read_terminal_session_tool(
+        session_id: str,
+        cursor: Annotated[int, Field(ge=0)] = 0,
+        max_bytes: Annotated[int, Field(ge=1, le=65536)] = 65536,
+        wait_ms: Annotated[int, Field(ge=0, le=30000)] = 1000,
+    ) -> dict:
+        """Read new terminal output from a byte cursor, optionally waiting for data."""
+        return read_terminal_session(session_id, settings, cursor=cursor, max_bytes=max_bytes, wait_ms=wait_ms)
+
+    @_tool(name="write_terminal_session", annotations={**COMMAND_ACTION, "title": "Write Terminal Session"})
+    def write_terminal_session_tool(session_id: str, data: str, encoding: Literal["utf8", "base64"] = "utf8") -> dict:
+        """Write UTF-8 or base64-decoded control bytes to a terminal session."""
+        return write_terminal_session(session_id, data=data, encoding=encoding)
+
+    @_tool(name="resize_terminal_session", annotations={**COMMAND_ACTION, "title": "Resize Terminal Session"})
+    def resize_terminal_session_tool(
+        session_id: str,
+        cols: Annotated[int, Field(ge=1, le=1000)],
+        rows: Annotated[int, Field(ge=1, le=1000)],
+    ) -> dict:
+        """Resize a running terminal session."""
+        return resize_terminal_session(session_id, cols=cols, rows=rows)
+
+    @_tool(name="close_terminal_session", annotations={**WRITE_ACTION, "title": "Close Terminal Session"})
+    def close_terminal_session_tool(
+        session_id: str,
+        signal: Literal["SIGTERM", "SIGINT", "SIGHUP", "SIGKILL"] = "SIGTERM",
+        grace_ms: Annotated[int, Field(ge=0, le=30000)] = 5000,
+        force: bool = False,
+    ) -> dict:
+        """Close a terminal and its process group, escalating to SIGKILL when needed."""
+        return close_terminal_session(session_id, settings, signal_name=signal, grace_ms=grace_ms, force=force)
+
+    @_tool(name="list_terminal_sessions", annotations={**READ_ONLY, "title": "List Terminal Sessions"})
+    def list_terminal_sessions_tool(include_finished: bool = True) -> dict:
+        """List persistent terminal sessions owned by this server process."""
+        return list_terminal_sessions(include_finished=include_finished)
 
 
 @_tool(
@@ -2026,6 +2145,25 @@ def git_worktree_add_tool(
 ) -> dict:
     """Add a worktree under `.chatrepo-worktrees/` for a branch (or a polyrepo sub-repo via `repo`)."""
     return _structural_result(git_worktree_add, settings, branch, repo=repo, base=base, create_branch=create_branch)
+
+
+@_tool(
+    name="prepare_task_worktree",
+    annotations={**SAFE_EDIT_ACTION, "title": "Prepare Task Worktree"},
+)
+def prepare_task_worktree_tool(
+    branch: Annotated[str, Field(description="New task branch to create.")],
+    task_name: Annotated[str, Field(description="Stable task name used for the worktree directory.")],
+    base: Annotated[str, Field(description="Base revision resolved to an exact commit before creation.")] = "HEAD",
+    dry_run: DryRun = None,
+    confirmed: Confirmed = False,
+    repo: RepoScope = None,
+) -> dict:
+    """Prepare an isolated branch/worktree from an exact committed base without copying parent changes."""
+    return _structural_result(
+        prepare_task_worktree, settings, branch=branch, task_name=task_name, base=base,
+        dry_run=settings.effective_dry_run(dry_run), confirmed=confirmed, repo=repo,
+    )
 
 
 @_tool(

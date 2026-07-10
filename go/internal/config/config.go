@@ -61,6 +61,10 @@ type Settings struct {
 	DeniedWords                  []string
 	DestructiveWords             []string
 	CommandShellPrelude          string
+	MCPExtraPath                 []string
+	KillGrace                    time.Duration
+	EnablePTY                    bool
+	MaxTerminalSessions          int
 	ProtectedBranches            []string
 	AllowForcePush               bool
 	GitHubToolsEnabled           bool
@@ -173,6 +177,10 @@ func Load() (Settings, error) {
 		DeniedWords:                  csvEnv("DENIED_WORDS", "sudo,su"),
 		DestructiveWords:             csvEnv("DESTRUCTIVE_WORDS", "rm -rf,rmdir,git push --force,git reset --hard,git clean,docker system prune,chmod -R,chown -R,mkfs,dd"),
 		CommandShellPrelude:          os.Getenv("COMMAND_SHELL_PRELUDE"),
+		MCPExtraPath:                 pathListEnv("MCP_EXTRA_PATH"),
+		KillGrace:                    time.Duration(intEnv("KILL_GRACE_MS", 5_000)) * time.Millisecond,
+		EnablePTY:                    boolEnv("ENABLE_PTY", false),
+		MaxTerminalSessions:          intEnv("MAX_TERMINAL_SESSIONS", 4),
 		ProtectedBranches:            csvEnv("PROTECTED_BRANCHES", "main,master"),
 		AllowForcePush:               boolEnv("ALLOW_FORCE_PUSH", false),
 		GitHubToolsEnabled:           boolEnv("GITHUB_TOOLS_ENABLED", true),
@@ -190,6 +198,20 @@ func Load() (Settings, error) {
 		return Settings{}, errors.New("TRANSPORT must be one of: streamable-http, stdio")
 	}
 	return settings, nil
+}
+
+func pathListEnv(name string) []string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil
+	}
+	var values []string
+	for _, value := range filepath.SplitList(raw) {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 // FullAccess reports whether trusted-machine defaults are enabled.

@@ -2,8 +2,12 @@
 
 package tools
 
-import "os/exec"
+import (
+	"os/exec"
+	"time"
+)
 
 func configureProcessGroup(_ *exec.Cmd) {}
 
-func terminateProcessGroup(_ int) error { return nil }
+func processGroupAlive(_ int) bool                                 { return false }
+func terminateProcessGroup(_ int, _ time.Duration) (string, error) { return "unsupported", nil }

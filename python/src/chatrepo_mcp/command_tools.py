@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shlex
@@ -18,6 +19,7 @@ from .config import Settings
 from .git_tools import _repo_rel, _resolve_repo_toplevel
 from .parsers import parse_command_output
 from .profile import DEFAULT_PRESETS, load_repo_profile, resolve_presets_for_dir
+from .runtime_env import command_environment
 from .security import SecurityError, is_blocked_relative, normalize_rel_path
 from .workspace import detect_stack, is_within_roots, resolve_roots
 
@@ -95,6 +97,7 @@ def _canonical(command: str) -> str:
 TEST_PRESETS: dict[str, str] = {name: str(cfg["command"]) for name, cfg in DEFAULT_PRESETS.items()}
 
 JOB_PROCS: dict[str, subprocess.Popen[str]] = {}
+JOB_LOCK = threading.RLock()
 
 _UNRESTRICTED_MODES = {"unrestricted", "full_repo"}
 
@@ -344,6 +347,12 @@ def _safe_key(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)[:120]
 
 
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _tail(text: str, tail_lines: int | None) -> str:
     if not tail_lines:
         return ""
@@ -403,14 +412,18 @@ def _bash_command(command: str, settings: Settings) -> str:
     return f"{prelude}\n{command}"
 
 
-def _command_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
-    env = os.environ.copy()
-    if extra_env:
-        for key, value in extra_env.items():
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
-                raise CommandPolicyError(f"invalid env key: {key}")
-            env[key] = value
-    return env
+def _command_env(extra_env: dict[str, str] | None = None, settings: Settings | None = None) -> dict[str, str]:
+    try:
+        if settings is None:
+            env = os.environ.copy()
+            for key, value in (extra_env or {}).items():
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                    raise ValueError(f"invalid env key: {key}")
+                env[key] = value
+            return env
+        return command_environment(settings, extra_env)
+    except ValueError as exc:
+        raise CommandPolicyError(str(exc)) from exc
 
 
 def _audit(settings: Settings, payload: dict[str, Any]) -> None:
@@ -441,7 +454,7 @@ def _write_command_log(
     stderr: str,
     result: dict[str, Any],
 ) -> str | None:
-    log_id = uuid.uuid4().hex
+    log_id = str(uuid.uuid4())
     meta_path, out_path, err_path = _command_log_paths(settings, log_id)
     try:
         meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -518,36 +531,45 @@ def run_command(
     effective_timeout_ms = min(timeout_ms or settings.command_timeout_ms, settings.command_timeout_ms)
     output_limit = min(max_output_chars or settings.max_command_output_chars, settings.max_command_output_chars)
     run_cwd = _resolve_cwd(cwd, settings)
-    run_env = _command_env(env)
+    run_env = _command_env(env, settings)
     started = time.monotonic()
     resolved = _resolved_binaries(run_cwd, run_env, settings)
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             ["/bin/bash", "-lc", _bash_command(normalized, settings)],
             cwd=str(run_cwd),
             env=run_env,
             text=True,
-            capture_output=True,
-            check=False,
-            timeout=effective_timeout_ms / 1000,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
-        stdout = _redact(proc.stdout)
-        stderr = _redact(proc.stderr)
+        try:
+            raw_stdout, raw_stderr = proc.communicate(timeout=effective_timeout_ms / 1000)
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(proc.pid, grace_seconds=settings.kill_grace_ms / 1000)
+            raw_stdout, raw_stderr = proc.communicate()
+            timed_out = True
+        stdout = _redact(raw_stdout)
+        stderr = _redact(raw_stderr)
         duration_ms = int((time.monotonic() - started) * 1000)
         result = {
-            "ok": proc.returncode == 0,
+            "ok": proc.returncode == 0 and not timed_out,
             "command": _redact(normalized),
-            "exit_code": proc.returncode,
+            "exit_code": None if timed_out else proc.returncode,
             "stdout": stdout[:output_limit],
             "stderr": stderr[:output_limit],
             "stdout_tail": _tail(stdout, tail_lines),
             "stderr_tail": _tail(stderr, tail_lines),
             "full_output_truncated": len(stdout) > output_limit or len(stderr) > output_limit,
             "duration_ms": duration_ms,
-            "timed_out": False,
+            "timed_out": timed_out,
             "cwd": str(run_cwd),
             "resolved_binaries": resolved,
         }
+        if timed_out:
+            result["error_kind"] = "command_timeout"
         result = _attach_parse_and_log(
             result,
             settings,
@@ -557,34 +579,19 @@ def run_command(
             stderr=stderr,
             parse_kind=parse_kind,
         )
-    except subprocess.TimeoutExpired as exc:
-        stdout = _redact(exc.stdout)
-        stderr = _redact(exc.stderr)
+    except OSError as exc:
         duration_ms = int((time.monotonic() - started) * 1000)
         result = {
             "ok": False,
-            "error_kind": "command_timeout",
+            "error_kind": "command_spawn_error",
             "command": _redact(normalized),
             "exit_code": None,
-            "stdout": stdout[:output_limit],
-            "stderr": stderr[:output_limit],
-            "stdout_tail": _tail(stdout, tail_lines),
-            "stderr_tail": _tail(stderr, tail_lines),
-            "full_output_truncated": len(stdout) > output_limit or len(stderr) > output_limit,
+            "stdout": "",
+            "stderr": str(exc),
             "duration_ms": duration_ms,
-            "timed_out": True,
+            "timed_out": False,
             "cwd": str(run_cwd),
-            "resolved_binaries": resolved,
         }
-        result = _attach_parse_and_log(
-            result,
-            settings,
-            command=normalized,
-            cwd=str(run_cwd),
-            stdout=stdout,
-            stderr=stderr,
-            parse_kind=parse_kind,
-        )
     _audit(
         settings,
         {
@@ -705,6 +712,9 @@ def run_test_preset(
     effective_timeout = timeout_ms or preset_config.get("timeout_ms") or settings.command_timeout_ms
     parser = str(preset_config.get("parser", "auto"))
     if background:
+        fingerprint = hashlib.sha256(
+            "\0".join((str(Path(settings.project_root, str(preset_cwd or "")).resolve()), preset, _canonical(command))).encode()
+        ).hexdigest()
         result = start_command_job(
             command,
             settings,
@@ -712,6 +722,8 @@ def run_test_preset(
             cwd=preset_cwd or None,
             tail_lines=tail_lines,
             policy_exempt=True,
+            concurrency_key=f"preset:{fingerprint}",
+            on_conflict="attach",
         )
     else:
         result = run_command(
@@ -780,8 +792,8 @@ def start_command_job(
                 return {"ok": False, "error_kind": "job_lock_conflict", "lock_status": "busy", **existing}
     normalized = _check_command_policy(command, settings, confirmed=confirmed, policy_exempt=policy_exempt)
     run_cwd = _resolve_cwd(cwd, settings)
-    run_env = _command_env(env)
-    job_id = uuid.uuid4().hex
+    run_env = _command_env(env, settings)
+    job_id = str(uuid.uuid4())
     meta_path, out_path, err_path = _job_paths(settings, job_id)
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     out_handle = out_path.open("w", encoding="utf-8")
@@ -797,16 +809,33 @@ def start_command_job(
     )
     out_handle.close()
     err_handle.close()
-    JOB_PROCS[job_id] = proc
+    with JOB_LOCK:
+        JOB_PROCS[job_id] = proc
+    now = _utc_now()
     meta = {
         "job_id": job_id,
         "command": _redact(normalized),
         "cwd": str(run_cwd),
         "pid": proc.pid,
+        "pgid": proc.pid,
         "started_at": time.time(),
+        "started_at_rfc3339": now,
+        "finished_at": None,
+        "last_output_at": now,
         "timeout_ms": timeout_ms or settings.command_timeout_ms,
         "tail_lines": tail_lines,
         "status": "running",
+        "exit_code": None,
+        "term_signal": None,
+        "termination_reason": None,
+        "timed_out": False,
+        "cancel_requested": False,
+        "process_group_cleaned": False,
+        "lock_owner_job_id": job_id if concurrency_key else None,
+        "log_id": job_id,
+        "stdout_bytes": 0,
+        "stderr_bytes": 0,
+        "output_truncated": False,
         "concurrency_key": concurrency_key,
         "policy_source": "preset" if policy_exempt else "direct",
     }
@@ -826,6 +855,8 @@ def start_command_job(
         "status": "running",
         "lock_status": "acquired" if concurrency_key else "none",
         "pid": proc.pid,
+        "pgid": proc.pid,
+        "log_id": job_id,
         "command": _redact(normalized),
         "concurrency_key": concurrency_key,
         "policy_source": "preset" if policy_exempt else "direct",
@@ -843,6 +874,16 @@ def _is_pid_running(pid: int) -> bool:
     return True
 
 
+def _is_process_group_running(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return _is_pid_running(pgid)
+    except PermissionError:
+        return True
+
+
 def _terminate_process_group(pid: int, *, grace_seconds: float = 1.0) -> str:
     try:
         os.killpg(pid, signal.SIGTERM)
@@ -850,14 +891,28 @@ def _terminate_process_group(pid: int, *, grace_seconds: float = 1.0) -> str:
         return "not_running"
     deadline = time.time() + grace_seconds
     while time.time() < deadline:
-        if not _is_pid_running(pid):
+        if not _is_process_group_running(pid):
             return "terminated"
         time.sleep(0.05)
     try:
         os.killpg(pid, signal.SIGKILL)
     except ProcessLookupError:
         return "terminated"
-    return "killed"
+    deadline = time.time() + grace_seconds
+    while time.time() < deadline:
+        if not _is_process_group_running(pid):
+            return "killed"
+        time.sleep(0.05)
+    return "kill_sent"
+
+
+def _wait_process_group_cleaned(pgid: int, timeout: float = 1.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _is_process_group_running(pgid):
+            return True
+        time.sleep(0.025)
+    return not _is_process_group_running(pgid)
 
 
 def _watch_job_timeout(job_id: str, settings: Settings, timeout_ms: int) -> None:
@@ -868,14 +923,26 @@ def _watch_job_timeout(job_id: str, settings: Settings, timeout_ms: int) -> None
         pid = int(meta["pid"])
     except (OSError, KeyError, ValueError, json.JSONDecodeError):
         return
-    if not _is_pid_running(pid):
+    if not _is_process_group_running(pid):
         return
-    kill_status = _terminate_process_group(pid)
+    meta["status"] = "terminating"
+    _write_job_meta(settings, job_id, meta)
+    kill_status = _terminate_process_group(pid, grace_seconds=settings.kill_grace_ms / 1000)
+    with JOB_LOCK:
+        proc = JOB_PROCS.pop(job_id, None)
+    if proc is not None:
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
     meta["status"] = "timed_out"
     meta["kill_status"] = kill_status
+    meta["timed_out"] = True
+    meta["termination_reason"] = "timeout"
+    meta["finished_at"] = _utc_now()
+    meta["process_group_cleaned"] = _wait_process_group_cleaned(pid)
     _write_job_meta(settings, job_id, meta)
     _clear_lock(settings, meta.get("concurrency_key"), job_id)
-    JOB_PROCS.pop(job_id, None)
 
 
 def _write_lock(settings: Settings, concurrency_key: str, job_id: str) -> None:
@@ -927,16 +994,22 @@ def _active_lock_job(settings: Settings, concurrency_key: str) -> dict[str, Any]
 def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None = 200) -> dict[str, Any]:
     meta = _read_job_meta(settings, job_id)
     pid = int(meta["pid"])
-    proc = JOB_PROCS.get(job_id)
+    with JOB_LOCK:
+        proc = JOB_PROCS.get(job_id)
     return_code = proc.poll() if proc is not None else None
     if proc is not None and return_code is not None:
-        JOB_PROCS.pop(job_id, None)
-    running = return_code is None and _is_pid_running(pid)
+        with JOB_LOCK:
+            JOB_PROCS.pop(job_id, None)
+    running = return_code is None and _is_process_group_running(int(meta.get("pgid", pid)))
     _, out_path, err_path = _job_paths(settings, job_id)
     raw_stdout = out_path.read_text(encoding="utf-8", errors="replace") if out_path.exists() else ""
     raw_stderr = err_path.read_text(encoding="utf-8", errors="replace") if err_path.exists() else ""
     stdout = _redact(raw_stdout)
     stderr = _redact(raw_stderr)
+    meta["stdout_bytes"] = len(raw_stdout.encode("utf-8"))
+    meta["stderr_bytes"] = len(raw_stderr.encode("utf-8"))
+    if stdout or stderr:
+        meta["last_output_at"] = _utc_now()
     if stdout != raw_stdout and out_path.exists():
         out_path.write_text(stdout, encoding="utf-8")
     if stderr != raw_stderr and err_path.exists():
@@ -944,31 +1017,56 @@ def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None =
     duration_ms = int((time.time() - float(meta["started_at"])) * 1000)
     already_timed_out = meta.get("status") == "timed_out"
     timed_out = already_timed_out or (
-        running and duration_ms > int(meta.get("timeout_ms", settings.command_timeout_ms))
+        meta.get("status") in {"running", "terminating"}
+        and duration_ms > int(meta.get("timeout_ms", settings.command_timeout_ms))
     )
     if timed_out and running:
-        kill_status = _terminate_process_group(pid)
+        try:
+            kill_status = _terminate_process_group(pid, grace_seconds=settings.kill_grace_ms / 1000)
+        except TypeError:  # compatibility for injected/simple test doubles
+            kill_status = _terminate_process_group(pid)
         running = False
         meta["status"] = "timed_out"
         meta["kill_status"] = kill_status
     elif not timed_out:
         meta["status"] = "running" if running else "completed"
+        if not running:
+            meta["exit_code"] = return_code
+            meta["finished_at"] = meta.get("finished_at") or _utc_now()
+            meta["termination_reason"] = "completed" if return_code in {0, None} else "nonzero_exit"
+            if return_code not in {0, None}:
+                meta["status"] = "failed"
+            meta["process_group_cleaned"] = not _is_process_group_running(int(meta.get("pgid", pid)))
     if not running:
         _clear_lock(settings, meta.get("concurrency_key"), job_id)
     _write_job_meta(settings, job_id, meta)
     return {
-        "ok": not timed_out and not running,
+        "ok": meta["status"] in {"running", "completed"},
         "job_id": job_id,
         "status": meta["status"],
         "running": running,
-        "exit_code": return_code,
+        "exit_code": meta.get("exit_code", return_code),
         "timed_out": timed_out,
         "duration_ms": duration_ms,
         "command": _redact(meta["command"]),
         "pid": pid,
+        "pgid": int(meta.get("pgid", pid)),
         "kill_status": meta.get("kill_status"),
         "concurrency_key": meta.get("concurrency_key"),
         "process_alive": _is_pid_running(pid),
+        "command_redacted": _redact(meta["command"]),
+        "started_at": meta.get("started_at_rfc3339"),
+        "finished_at": meta.get("finished_at"),
+        "last_output_at": meta.get("last_output_at"),
+        "term_signal": meta.get("term_signal"),
+        "termination_reason": meta.get("termination_reason"),
+        "cancel_requested": meta.get("cancel_requested", False),
+        "process_group_cleaned": meta.get("process_group_cleaned", False),
+        "lock_owner_job_id": meta.get("lock_owner_job_id"),
+        "log_id": meta.get("log_id", job_id),
+        "stdout_bytes": meta.get("stdout_bytes", 0),
+        "stderr_bytes": meta.get("stderr_bytes", 0),
+        "output_truncated": meta.get("output_truncated", False),
         "stdout_tail": _tail(stdout, tail_lines),
         "stderr_tail": _tail(stderr, tail_lines),
     }
@@ -989,8 +1087,13 @@ def get_command_log(
 ) -> dict[str, Any]:
     meta_path, out_path, err_path = _command_log_paths(settings, log_id)
     if not meta_path.exists():
+        meta_path, out_path, err_path = _job_paths(settings, log_id)
+    if not meta_path.exists():
         raise FileNotFoundError(f"log not found: {log_id}")
-    path = err_path if stream == "stderr" else out_path
+    if stream == "combined":
+        path = settings.command_jobs_dir / "logs" / f"{log_id}.combined"
+    else:
+        path = err_path if stream == "stderr" else out_path
     text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
     lines = text.splitlines()
     selected = list(enumerate(lines, start=1))
@@ -1077,13 +1180,74 @@ def command_policy_check(command: str, settings: Settings, *, confirmed: bool = 
 def cancel_command_job(job_id: str, settings: Settings) -> dict[str, Any]:
     meta = _read_job_meta(settings, job_id)
     pid = int(meta["pid"])
-    kill_status = _terminate_process_group(pid)
-    status = "cancelled" if kill_status in {"terminated", "killed"} else "completed"
+    if meta.get("status") in {"completed", "failed", "cancelled", "timed_out"}:
+        return {"ok": True, "job_id": job_id, "status": meta["status"], "cancelled": False}
+    meta["cancel_requested"] = True
+    meta["status"] = "terminating"
+    _write_job_meta(settings, job_id, meta)
+    kill_status = _terminate_process_group(pid, grace_seconds=settings.kill_grace_ms / 1000)
+    status = "cancelled"
     meta["status"] = status
     meta["kill_status"] = kill_status
+    meta["termination_reason"] = "user_cancel"
+    meta["finished_at"] = _utc_now()
+    with JOB_LOCK:
+        proc = JOB_PROCS.pop(job_id, None)
+    if proc is not None:
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+    meta["process_group_cleaned"] = _wait_process_group_cleaned(int(meta.get("pgid", pid)))
     _clear_lock(settings, meta.get("concurrency_key"), job_id)
     _write_job_meta(settings, job_id, meta)
-    return {"ok": True, "job_id": job_id, "status": status, "kill_status": kill_status, "process_alive": _is_pid_running(pid)}
+    return {"ok": True, "job_id": job_id, "status": status, "cancelled": True, "kill_status": kill_status, "process_alive": _is_pid_running(pid), "process_group_cleaned": meta["process_group_cleaned"]}
+
+
+def list_command_jobs(
+    settings: Settings,
+    *,
+    status: list[str] | None = None,
+    cwd: str | None = None,
+    limit: int = 100,
+    include_finished: bool = True,
+) -> dict[str, Any]:
+    wanted = set(status or [])
+    terminal = {"completed", "failed", "cancelled", "timed_out"}
+    jobs: list[dict[str, Any]] = []
+    settings.command_jobs_dir.mkdir(parents=True, exist_ok=True)
+    for path in settings.command_jobs_dir.glob("*.json"):
+        try:
+            meta = json.loads(path.read_text(encoding="utf-8"))
+            job_id = str(meta["job_id"])
+        except (OSError, KeyError, json.JSONDecodeError):
+            continue
+        if wanted and meta.get("status") not in wanted:
+            continue
+        if not include_finished and meta.get("status") in terminal:
+            continue
+        if cwd and str(meta.get("cwd")) != str(_resolve_cwd(cwd, settings)):
+            continue
+        jobs.append(get_job_status(job_id, settings))
+    jobs.sort(key=lambda item: str(item.get("started_at") or ""), reverse=True)
+    jobs = jobs[: max(1, min(limit, 1000))]
+    return {"ok": True, "jobs": jobs, "count": len(jobs)}
+
+
+def shutdown_command_jobs(settings: Settings) -> None:
+    with JOB_LOCK:
+        job_ids = list(JOB_PROCS)
+    for job_id in job_ids:
+        try:
+            meta = _read_job_meta(settings, job_id)
+            if meta.get("status") in {"running", "terminating", "queued"}:
+                pid = int(meta["pid"])
+                _terminate_process_group(pid, grace_seconds=settings.kill_grace_ms / 1000)
+                meta.update(status="cancelled", termination_reason="server_shutdown", finished_at=_utc_now(), process_group_cleaned=not _is_process_group_running(pid))
+                _clear_lock(settings, meta.get("concurrency_key"), job_id)
+                _write_job_meta(settings, job_id, meta)
+        except Exception:
+            continue
 
 
 def git_commit(

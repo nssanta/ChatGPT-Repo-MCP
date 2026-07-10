@@ -48,7 +48,7 @@ func TestServerListsCanonicalToolsAndCallsOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 87 {
+	if len(listed.Tools) != 89 {
 		t.Fatalf("tools = %d", len(listed.Tools))
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_repos", Arguments: map[string]any{}})

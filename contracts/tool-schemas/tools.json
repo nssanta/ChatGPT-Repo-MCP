@@ -3,8 +3,8 @@
   "contractVersion": 1,
   "server": {
     "name": "chatrepo-mcp",
-    "version": "0.2.0",
-    "toolCount": 87
+    "version": "0.3.0",
+    "toolCount": 95
   },
   "tools": [
     {
@@ -188,7 +188,7 @@
     },
     {
       "name": "batch_call",
-      "description": "Use this to run up to 10 read-only repo inspection calls, or write tools only when their dry_run is true.",
+      "description": "Run up to 10 safe inspection/preview calls, in parallel by default.",
       "inputSchema": {
         "properties": {
           "calls": {
@@ -200,6 +200,22 @@
             "maxItems": 10,
             "title": "Calls",
             "type": "array"
+          },
+          "execution": {
+            "default": "parallel",
+            "enum": [
+              "parallel",
+              "sequential"
+            ],
+            "title": "Execution",
+            "type": "string"
+          },
+          "max_concurrency": {
+            "default": 4,
+            "maximum": 10,
+            "minimum": 1,
+            "title": "Max Concurrency",
+            "type": "integer"
           }
         },
         "required": [
@@ -280,6 +296,52 @@
       },
       "annotations": {
         "title": "Cancel Command Job",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "close_terminal_session",
+      "description": "Close a terminal and its process group, escalating to SIGKILL when needed.",
+      "inputSchema": {
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "signal": {
+            "default": "SIGTERM",
+            "enum": [
+              "SIGTERM",
+              "SIGINT",
+              "SIGHUP",
+              "SIGKILL"
+            ],
+            "title": "Signal",
+            "type": "string"
+          },
+          "grace_ms": {
+            "default": 5000,
+            "maximum": 30000,
+            "minimum": 0,
+            "title": "Grace Ms",
+            "type": "integer"
+          },
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "close_terminal_session_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Close Terminal Session",
         "readOnlyHint": false,
         "destructiveHint": true,
         "openWorldHint": false
@@ -810,10 +872,11 @@
           },
           "stream": {
             "default": "stdout",
-            "description": "Which stream to read.",
+            "description": "Which stream to read; PTY logs use combined.",
             "enum": [
               "stdout",
-              "stderr"
+              "stderr",
+              "combined"
             ],
             "title": "Stream",
             "type": "string"
@@ -3053,6 +3116,71 @@
       }
     },
     {
+      "name": "list_command_jobs",
+      "description": "List background command jobs with optional lifecycle and cwd filters.",
+      "inputSchema": {
+        "properties": {
+          "status": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "terminating",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "timed_out"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional repository-relative working directory. Defaults to the repository root.",
+            "title": "Cwd"
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 1000,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "include_finished": {
+            "default": true,
+            "title": "Include Finished",
+            "type": "boolean"
+          }
+        },
+        "title": "list_command_jobs_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "List Command Jobs",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "list_dir",
       "description": "List files and directories under a repo-relative path.",
       "inputSchema": {
@@ -3093,6 +3221,27 @@
       },
       "annotations": {
         "title": "List Repos",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_terminal_sessions",
+      "description": "List persistent terminal sessions owned by this server process.",
+      "inputSchema": {
+        "properties": {
+          "include_finished": {
+            "default": true,
+            "title": "Include Finished",
+            "type": "boolean"
+          }
+        },
+        "title": "list_terminal_sessions_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "List Terminal Sessions",
         "readOnlyHint": true,
         "destructiveHint": false,
         "openWorldHint": false
@@ -3190,6 +3339,74 @@
       }
     },
     {
+      "name": "prepare_task_worktree",
+      "description": "Prepare an isolated branch/worktree from an exact committed base without copying parent changes.",
+      "inputSchema": {
+        "properties": {
+          "branch": {
+            "description": "New task branch to create.",
+            "title": "Branch",
+            "type": "string"
+          },
+          "task_name": {
+            "description": "Stable task name used for the worktree directory.",
+            "title": "Task Name",
+            "type": "string"
+          },
+          "base": {
+            "default": "HEAD",
+            "description": "Base revision resolved to an exact commit before creation.",
+            "title": "Base",
+            "type": "string"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Set true only after the owner explicitly confirms this action; otherwise a confirmation_required error is returned.",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional path to a sub-repository in a polyrepo workspace (as returned by list_repos). Defaults to the workspace root's own git repository, if any.",
+            "title": "Repo"
+          }
+        },
+        "required": [
+          "branch",
+          "task_name"
+        ],
+        "title": "prepare_task_worktree_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Prepare Task Worktree",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "quality_gate_and_commit",
       "description": "Use this to run quality gates and commit exactly listed files only if all required gates pass.",
       "inputSchema": {
@@ -3277,6 +3494,49 @@
       },
       "annotations": {
         "title": "Read Multiple Files",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "read_terminal_session",
+      "description": "Read new terminal output from a byte cursor, optionally waiting for data.",
+      "inputSchema": {
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "cursor": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "max_bytes": {
+            "default": 65536,
+            "maximum": 65536,
+            "minimum": 1,
+            "title": "Max Bytes",
+            "type": "integer"
+          },
+          "wait_ms": {
+            "default": 1000,
+            "maximum": 30000,
+            "minimum": 0,
+            "title": "Wait Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "read_terminal_session_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Read Terminal Session",
         "readOnlyHint": true,
         "destructiveHint": false,
         "openWorldHint": false
@@ -3531,6 +3791,43 @@
         "readOnlyHint": true,
         "destructiveHint": false,
         "openWorldHint": false
+      }
+    },
+    {
+      "name": "resize_terminal_session",
+      "description": "Resize a running terminal session.",
+      "inputSchema": {
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "cols": {
+            "maximum": 1000,
+            "minimum": 1,
+            "title": "Cols",
+            "type": "integer"
+          },
+          "rows": {
+            "maximum": 1000,
+            "minimum": 1,
+            "title": "Rows",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "cols",
+          "rows"
+        ],
+        "title": "resize_terminal_session_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Resize Terminal Session",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
       }
     },
     {
@@ -4118,6 +4415,95 @@
       }
     },
     {
+      "name": "start_terminal_session",
+      "description": "Start a persistent interactive POSIX terminal session.",
+      "inputSchema": {
+        "properties": {
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional repository-relative working directory. Defaults to the repository root.",
+            "title": "Cwd"
+          },
+          "shell": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Shell"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Command"
+          },
+          "cols": {
+            "default": 120,
+            "maximum": 1000,
+            "minimum": 1,
+            "title": "Cols",
+            "type": "integer"
+          },
+          "rows": {
+            "default": 40,
+            "maximum": 1000,
+            "minimum": 1,
+            "title": "Rows",
+            "type": "integer"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Env"
+          },
+          "idle_timeout_ms": {
+            "default": 1800000,
+            "maximum": 86400000,
+            "minimum": 1000,
+            "title": "Idle Timeout Ms",
+            "type": "integer"
+          }
+        },
+        "title": "start_terminal_session_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Start Terminal Session",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
       "name": "summarize_command_log",
       "description": "Use this to parse and summarize a saved command log.",
       "inputSchema": {
@@ -4471,6 +4857,43 @@
         "readOnlyHint": true,
         "destructiveHint": false,
         "openWorldHint": false
+      }
+    },
+    {
+      "name": "write_terminal_session",
+      "description": "Write UTF-8 or base64-decoded control bytes to a terminal session.",
+      "inputSchema": {
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "data": {
+            "title": "Data",
+            "type": "string"
+          },
+          "encoding": {
+            "default": "utf8",
+            "enum": [
+              "utf8",
+              "base64"
+            ],
+            "title": "Encoding",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "data"
+        ],
+        "title": "write_terminal_session_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Write Terminal Session",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
       }
     },
     {
