@@ -49,6 +49,7 @@ def test_from_env_rejects_invalid_command_policy_mode(tmp_path: Path, monkeypatc
 def test_from_env_full_access_enables_full_mode_defaults(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("ACCESS_MODE", "full")
+    monkeypatch.delenv("ENABLE_PTY", raising=False)
     settings = config.Settings.from_env()
 
     assert settings.full_access is True
@@ -57,6 +58,7 @@ def test_from_env_full_access_enables_full_mode_defaults(tmp_path: Path, monkeyp
     assert settings.allow_move_delete_operations is True
     assert settings.filesystem_unrestricted is True
     assert settings.confirmation_granted(None) is True
+    assert settings.enable_pty is True
 
 
 def test_from_env_rejects_empty_secret_globs_in_safe_mode(tmp_path: Path, monkeypatch) -> None:

@@ -10,7 +10,7 @@
 подключения к ChatGPT и автозапуска после reboot есть
 [полный runbook на английском](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP-сервер, который превращает **любую папку или репозиторий** в рабочую среду для автономного кодинг-агента внутри ChatGPT. Пользователь выбирает Python-пакет или самостоятельный Go-бинарник; обе версии используют единый каталог из 95 инструментов, конфигурацию и режимы доступа. Шесть PTY-инструментов регистрируются только на POSIX при `ACCESS_MODE=full` и `ENABLE_PTY=true`; обычный runtime публикует 89 инструментов.
+MCP-сервер, который превращает **любую папку или репозиторий** в рабочую среду для автономного кодинг-агента внутри ChatGPT. Пользователь выбирает Python-пакет или самостоятельный Go-бинарник; обе версии используют единый каталог из 95 инструментов. `ENABLE_PTY=true` теперь является дефолтом: на POSIX достаточно включить `ACCESS_MODE=full`, чтобы получить все 95 инструментов; safe-режим по-прежнему публикует 89 без PTY.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -186,7 +186,7 @@ WORKSPACE_ROOTS=/home/you/code/shared-protos
 
 ## Группы тулов
 
-Обе реализации используют каталог из 95 тулов и по умолчанию регистрируют 89; шесть инструментов persistent terminal включаются условно. `doctor` показывает реальное число, effective PATH, версии toolchain и feature capabilities.
+Обе реализации используют каталог из 95 тулов. Safe-режим регистрирует 89, а full-режим на Linux/macOS — все 95, поскольку PTY включён по умолчанию. `doctor` показывает реальное число, effective PATH, версии toolchain и feature capabilities.
 
 - **Чтение / поиск** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`.
 - **Git (только чтение)** — `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_blame`, `git_grep` — все принимают опциональный `repo=` для polyrepo-workspace.
@@ -198,7 +198,7 @@ WORKSPACE_ROOTS=/home/you/code/shared-protos
 - **Диагностика и символы** — `code_diagnostics` (запускает `go vet` / `pyright` (или `ruff`) / `tsc --noEmit` в зависимости от определённого стека), `symbol_definition`, `document_symbols`, `workspace_symbols` (через `ctags`, если установлен, иначе regex-эвристика — всегда с пометкой `engine`).
 - **Самопроверка** — `doctor`, `smoke_all`, `context_bootstrap`, `batch_call`.
 
-`batch_call` по умолчанию параллельно выполняет безопасные read/preview-вызовы (`max_concurrency=4`) и сохраняет порядок результатов; при необходимости задайте `execution="sequential"`. Одинаковые фоновые test presets автоматически подключаются к уже запущенному job. PTY — сырой shell доверенной машины, поэтому его инструменты полностью отсутствуют без одновременных `ACCESS_MODE=full` и `ENABLE_PTY=true`.
+`batch_call` по умолчанию параллельно выполняет безопасные read/preview-вызовы (`max_concurrency=4`) и сохраняет порядок результатов; при необходимости задайте `execution="sequential"`. Одинаковые фоновые test presets автоматически подключаются к уже запущенному job. PTY — сырой shell доверенной машины: он появляется только в full-режиме и при необходимости явно отключается через `ENABLE_PTY=false`.
 
 * * *
 

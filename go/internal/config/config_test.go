@@ -14,6 +14,7 @@ func cleanEnvironment(t *testing.T, root string) {
 		"PROJECT_ROOT", "ACCESS_MODE", "MCP_AUTH_MODE", "MCP_BEARER_TOKEN",
 		"COMMAND_POLICY_MODE", "SECRET_GLOBS", "ALLOW_SECRET_ACCESS",
 		"CANONICAL_NAMESPACE", "TRANSPORT", "WORKSPACE_ROOTS",
+		"ENABLE_PTY",
 	} {
 		t.Setenv(name, "")
 		_ = os.Unsetenv(name)
@@ -43,6 +44,9 @@ func TestLoadSafeAndFullModes(t *testing.T) {
 	}
 	if settings.FullAccess() || !settings.EffectiveDryRun(nil) || settings.ConfirmationGranted(false) {
 		t.Fatalf("unexpected safe defaults: %+v", settings)
+	}
+	if !settings.EnablePTY {
+		t.Fatal("PTY should default to enabled while remaining gated by access mode")
 	}
 	if settings.CanonicalNamespace != "/"+filepath.Base(root) {
 		t.Fatalf("namespace = %q", settings.CanonicalNamespace)

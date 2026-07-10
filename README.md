@@ -9,7 +9,7 @@
 Run it from a private Linux PC through OpenAI Secure MCP Tunnel, including
 ChatGPT connection and reboot-safe systemd services: [full runbook](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT. Choose the Python package or the standalone Go binary; both share the same 95-tool capability catalog, configuration, and access semantics. Six PTY tools are registered only on POSIX with `ACCESS_MODE=full` and `ENABLE_PTY=true`; the default runtime exposes 89 tools.
+MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT. Choose the Python package or the standalone Go binary; both share the same 95-tool capability catalog, configuration, and access semantics. `ENABLE_PTY=true` is the default, so trusted POSIX deployments expose all 95 tools as soon as `ACCESS_MODE=full`; safe mode still exposes 89 tools without PTY.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -185,7 +185,7 @@ Call `run_test_preset("test")` at the workspace root, or `run_test_preset("test"
 
 ## Tool Groups
 
-Both implementations share a 95-tool catalog and register 89 tools by default; the six persistent-terminal tools are conditionally registered. Call `doctor` (or `smoke_all`) for the registered count, effective PATH, tool versions, and feature capabilities. Groups:
+Both implementations share a 95-tool catalog. Safe mode registers 89 tools; full mode registers all 95 on Linux/macOS because PTY is enabled by default. Call `doctor` (or `smoke_all`) for the registered count, effective PATH, tool versions, and feature capabilities. Groups:
 
 - **Read / search** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`.
 - **Git (read-only)** — `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_blame`, `git_grep` — all accept an optional `repo=` for polyrepo workspaces.
@@ -197,7 +197,7 @@ Both implementations share a 95-tool catalog and register 89 tools by default; t
 - **Diagnostics & symbols** — `code_diagnostics` (runs `go vet` / `pyright` (or `ruff`) / `tsc --noEmit` depending on the detected stack), `symbol_definition`, `document_symbols`, `workspace_symbols` (via `ctags` when installed, otherwise a regex heuristic, always labeled with `engine`).
 - **Self-check** — `doctor`, `smoke_all`, `context_bootstrap`, `batch_call`.
 
-`batch_call` executes safe reads/previews in parallel by default (`max_concurrency=4`) while preserving result order; use `execution="sequential"` when ordering matters. Test presets automatically attach to an identical running background job instead of duplicating it. Persistent terminals are raw trusted-machine shells: their tools are absent unless both full access and PTY are explicitly enabled.
+`batch_call` executes safe reads/previews in parallel by default (`max_concurrency=4`) while preserving result order; use `execution="sequential"` when ordering matters. Test presets automatically attach to an identical running background job instead of duplicating it. Persistent terminals are raw trusted-machine shells: they appear only in full mode, and can be removed explicitly with `ENABLE_PTY=false`.
 
 * * *
 

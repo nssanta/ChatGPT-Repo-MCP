@@ -84,7 +84,7 @@ class Settings:
     allow_hard_reset: bool = False
     mcp_extra_path: tuple[str, ...] = ()
     kill_grace_ms: int = 5_000
-    enable_pty: bool = False
+    enable_pty: bool = True
     max_terminal_sessions: int = 4
 
     @property
@@ -211,7 +211,7 @@ class Settings:
                 if part.strip()
             ),
             kill_grace_ms=_env_int("KILL_GRACE_MS", 5_000),
-            enable_pty=_env_bool("ENABLE_PTY", False),
+            enable_pty=_env_bool("ENABLE_PTY", True),
             max_terminal_sessions=_env_int("MAX_TERMINAL_SESSIONS", 4),
             git_network_timeout=_env_int("GIT_NETWORK_TIMEOUT", 60),
             protected_branches=_env_csv("PROTECTED_BRANCHES", "main,master"),

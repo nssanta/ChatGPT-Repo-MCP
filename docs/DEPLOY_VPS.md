@@ -1,6 +1,6 @@
 # Deploy on Ubuntu 24
 
-For trusted interactive terminal access, explicitly set both `ACCESS_MODE=full` and `ENABLE_PTY=true`. Keep PTY disabled for shared/public deployments. Use `MCP_EXTRA_PATH` for toolchains outside the service user's inherited PATH and verify resolution with `doctor` after restart.
+Persistent PTY is enabled by default but appears only with `ACCESS_MODE=full`. For shared/public deployments keep safe mode, or explicitly set `ENABLE_PTY=false`. Use `MCP_EXTRA_PATH` for toolchains outside the service user's inherited PATH and verify resolution with `doctor` after restart.
 
 ## Requirements
 

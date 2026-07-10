@@ -179,7 +179,7 @@ func Load() (Settings, error) {
 		CommandShellPrelude:          os.Getenv("COMMAND_SHELL_PRELUDE"),
 		MCPExtraPath:                 pathListEnv("MCP_EXTRA_PATH"),
 		KillGrace:                    time.Duration(intEnv("KILL_GRACE_MS", 5_000)) * time.Millisecond,
-		EnablePTY:                    boolEnv("ENABLE_PTY", false),
+		EnablePTY:                    boolEnv("ENABLE_PTY", true),
 		MaxTerminalSessions:          intEnv("MAX_TERMINAL_SESSIONS", 4),
 		ProtectedBranches:            csvEnv("PROTECTED_BRANCHES", "main,master"),
 		AllowForcePush:               boolEnv("ALLOW_FORCE_PUSH", false),

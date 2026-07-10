@@ -4,7 +4,7 @@
 
 Both implementations derive one effective executable PATH from `MCP_EXTRA_PATH`, inherited PATH, an active virtualenv, and existing standard toolchain directories. Doctor and every command/PTY child use that same environment.
 
-Command jobs and POSIX terminal sessions are UUID-owned resources with shared logs. Each process receives its own process group; cancel, timeout, idle timeout, and orderly shutdown terminate the group with TERM followed by KILL. Preset locks prevent duplicate tests. PTY tools are filtered out unless trusted full access and `ENABLE_PTY=true` are both active.
+Command jobs and POSIX terminal sessions are UUID-owned resources with shared logs. Each process receives its own process group; cancel, timeout, idle timeout, and orderly shutdown terminate the group with TERM followed by KILL. Preset locks prevent duplicate tests. PTY defaults on but remains gated by full access; `ENABLE_PTY=false` explicitly removes its tools.
 
 The canonical contract describes the full catalog. Runtime registration can expose the smaller non-PTY subset; readiness and doctor report the active capabilities.
 
