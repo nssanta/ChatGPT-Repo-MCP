@@ -1,5 +1,7 @@
 # Deploy on Ubuntu 24
 
+For trusted interactive terminal access, explicitly set both `ACCESS_MODE=full` and `ENABLE_PTY=true`. Keep PTY disabled for shared/public deployments. Use `MCP_EXTRA_PATH` for toolchains outside the service user's inherited PATH and verify resolution with `doctor` after restart.
+
 ## Requirements
 
 This runbook supports both implementations. Choose one executable during

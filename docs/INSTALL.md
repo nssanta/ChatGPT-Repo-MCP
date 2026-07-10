@@ -1,5 +1,7 @@
 # Installation
 
+The server preserves inherited PATH and probes existing standard toolchain directories, including `/usr/local/go/bin`. For service-only toolchains, set `MCP_EXTRA_PATH`. Persistent PTY is supported on Linux/macOS and requires `ACCESS_MODE=full` plus `ENABLE_PTY=true`; the Go Windows build omits those six tools.
+
 ChatRepo MCP ships two independent implementations from the same repository.
 Install one of them; do not run both on the same host and port.
 
@@ -33,9 +35,9 @@ Download the archive for your OS and architecture from GitHub Releases, then
 verify the adjacent checksum before extracting it:
 
 ```bash
-sha256sum -c chatrepo-mcp_0.2.0_linux_amd64.tar.gz.sha256
-tar -xzf chatrepo-mcp_0.2.0_linux_amd64.tar.gz
-cd chatrepo-mcp_0.2.0_linux_amd64
+sha256sum -c chatrepo-mcp_0.3.0_linux_amd64.tar.gz.sha256
+tar -xzf chatrepo-mcp_0.3.0_linux_amd64.tar.gz
+cd chatrepo-mcp_0.3.0_linux_amd64
 cp .env.example .env
 ./chatrepo-mcp
 ```

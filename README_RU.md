@@ -2,7 +2,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](python/)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go/)
-[![MCP](https://img.shields.io/badge/MCP-87%20tools-black)](contracts/tool-schemas/tools.json)
+[![MCP](https://img.shields.io/badge/MCP-95%20tools-black)](contracts/tool-schemas/tools.json)
 [![Platforms](https://img.shields.io/badge/Go-Linux%20%7C%20macOS%20%7C%20Windows-5c6ac4)](docs/INSTALL.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -10,7 +10,7 @@
 подключения к ChatGPT и автозапуска после reboot есть
 [полный runbook на английском](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP-сервер, который превращает **любую папку или репозиторий** в рабочую среду для автономного кодинг-агента внутри ChatGPT. Пользователь выбирает Python-пакет или самостоятельный Go-бинарник; обе версии публикуют одинаковые 87 инструментов, конфигурацию и режимы доступа.
+MCP-сервер, который превращает **любую папку или репозиторий** в рабочую среду для автономного кодинг-агента внутри ChatGPT. Пользователь выбирает Python-пакет или самостоятельный Go-бинарник; обе версии используют единый каталог из 95 инструментов, конфигурацию и режимы доступа. Шесть PTY-инструментов регистрируются только на POSIX при `ACCESS_MODE=full` и `ENABLE_PTY=true`; обычный runtime публикует 89 инструментов.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -186,16 +186,19 @@ WORKSPACE_ROOTS=/home/you/code/shared-protos
 
 ## Группы тулов
 
-Обе реализации регистрируют 87 тулов; вызов `doctor` (или `smoke_all`) вернёт точное число и матрицу возможностей (какие опциональные бинари — `gh`, `ctags`, `pyright`, `go`, ... — установлены). Группы:
+Обе реализации используют каталог из 95 тулов и по умолчанию регистрируют 89; шесть инструментов persistent terminal включаются условно. `doctor` показывает реальное число, effective PATH, версии toolchain и feature capabilities.
 
 - **Чтение / поиск** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`.
 - **Git (только чтение)** — `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_blame`, `git_grep` — все принимают опциональный `repo=` для polyrepo-workspace.
 - **Редактирование** — `write_text_file`, `replace_text_in_file`, `insert_text_in_file`, `delete_text_in_file`, `create_text_file`, `move_path`, `delete_path`, `ensure_directory`, `batch_edit_files`, `apply_change_set`, `replace_lines`, `insert_before_line` / `insert_after_line`, `insert_before_heading` / `insert_after_heading`, `append_to_file`, `apply_patch`. Если `dry_run` не передан, safe делает preview, а full применяет; явный `dry_run=true` всегда оставляет preview.
-- **Команды / тесты / jobs** — `run_command`, `run_commands`, `run_test_preset`, `list_test_presets`, `run_quality_gate`, `quality_gate_and_commit`, `scan_new_policy_violations`, `command_policy_check`, `start_command_job` / `get_command_job` / `get_job_status` / `get_command_log` / `summarize_command_log` / `cancel_command_job`, `git_worktree_guard`, `git_commit`.
-- **Git-workflow** — `git_switch_branch`, `git_create_branch`, `git_add`, `git_restore`, `git_stash`, `git_fetch`, `git_pull`, `git_push`, `git_merge`, `git_revert`, `git_reset`, `git_worktree_add` / `git_worktree_list` / `git_worktree_remove`. Safe делает preview/confirmation, full выполняет без внутренних вопросов. Структурные force push и hard reset всё равно требуют `ALLOW_FORCE_PUSH=true` / `ALLOW_HARD_RESET=true`.
+- **Команды / тесты / jobs** — `run_command`, `run_commands`, `run_test_preset`, `list_test_presets`, `run_quality_gate`, `quality_gate_and_commit`, `scan_new_policy_violations`, `command_policy_check`, `start_command_job` / `list_command_jobs` / `get_command_job` / `get_job_status` / `get_command_log` / `summarize_command_log` / `cancel_command_job`, `git_worktree_guard`, `git_commit`.
+- **Persistent terminal** (условно) — `start_terminal_session`, `read_terminal_session`, `write_terminal_session`, `resize_terminal_session`, `close_terminal_session`, `list_terminal_sessions`.
+- **Git-workflow** — `git_switch_branch`, `git_create_branch`, `git_add`, `git_restore`, `git_stash`, `git_fetch`, `git_pull`, `git_push`, `git_merge`, `git_revert`, `git_reset`, `git_worktree_add` / `prepare_task_worktree` / `git_worktree_list` / `git_worktree_remove`. Safe делает preview/confirmation, full выполняет без внутренних вопросов. Структурные force push и hard reset всё равно требуют `ALLOW_FORCE_PUSH=true` / `ALLOW_HARD_RESET=true`.
 - **GitHub** (нужен установленный и авторизованный `gh`) — `gh_status`, `gh_pr_create`, `gh_pr_list`, `gh_pr_view`, `gh_pr_comment`, `gh_pr_merge`, `gh_checks`, `gh_run_view`, `gh_run_rerun`, `gh_issue_list`, `gh_issue_view`.
 - **Диагностика и символы** — `code_diagnostics` (запускает `go vet` / `pyright` (или `ruff`) / `tsc --noEmit` в зависимости от определённого стека), `symbol_definition`, `document_symbols`, `workspace_symbols` (через `ctags`, если установлен, иначе regex-эвристика — всегда с пометкой `engine`).
 - **Самопроверка** — `doctor`, `smoke_all`, `context_bootstrap`, `batch_call`.
+
+`batch_call` по умолчанию параллельно выполняет безопасные read/preview-вызовы (`max_concurrency=4`) и сохраняет порядок результатов; при необходимости задайте `execution="sequential"`. Одинаковые фоновые test presets автоматически подключаются к уже запущенному job. PTY — сырой shell доверенной машины, поэтому его инструменты полностью отсутствуют без одновременных `ACCESS_MODE=full` и `ENABLE_PTY=true`.
 
 * * *
 
