@@ -111,7 +111,13 @@ def test_real_tree_git_grep_and_diagnostics_variants_validate_through_fastmcp() 
 
     tree, grep, diagnostics = anyio.run(calls)
     assert isinstance(tree["entries"], int)
-    assert {"repo", "query", "results", "count", "truncated"} <= set(grep)
+    assert {"query", "results", "count", "truncated"} <= set(grep)
+    if grep.get("polyrepo") is True:
+        assert {"polyrepo", "repos_searched"} <= set(grep)
+        assert isinstance(grep["repos_searched"], list)
+        assert all(isinstance(repo, str) for repo in grep["repos_searched"])
+    else:
+        assert "repo" in grep
     assert {"language", "tool_used", "diagnostics", "missing_tools", "truncated", "output_truncated"} <= set(diagnostics)
     assert isinstance(diagnostics["tool_used"], list)
 
