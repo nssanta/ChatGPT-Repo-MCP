@@ -7873,6 +7873,91 @@
           "GitGrepSuccess1": {
             "additionalProperties": true,
             "properties": {
+              "polyrepo": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Polyrepo"
+              },
+              "repos_searched": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Repos Searched"
+              },
+              "query": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Query"
+              },
+              "results": {
+                "anyOf": [
+                  {
+                    "items": {},
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Results"
+              },
+              "count": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Count"
+              },
+              "truncated": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Truncated"
+              }
+            },
+            "required": [
+              "polyrepo",
+              "repos_searched",
+              "query",
+              "results",
+              "count",
+              "truncated"
+            ],
+            "title": "GitGrepSuccess1",
+            "type": "object"
+          },
+          "GitGrepSuccess2": {
+            "additionalProperties": true,
+            "properties": {
               "query": {
                 "anyOf": [
                   {
@@ -7918,7 +8003,7 @@
               "count",
               "ok"
             ],
-            "title": "GitGrepSuccess1",
+            "title": "GitGrepSuccess2",
             "type": "object"
           },
           "_LegacyError": {
@@ -7977,6 +8062,9 @@
             "$ref": "#/$defs/GitGrepSuccess1"
           },
           {
+            "$ref": "#/$defs/GitGrepSuccess2"
+          },
+          {
             "$ref": "#/$defs/_TypedError"
           },
           {
@@ -8006,6 +8094,15 @@
           },
           "truncated": {
             "type": "boolean"
+          },
+          "polyrepo": {
+            "type": "boolean"
+          },
+          "repos_searched": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "matches": {
             "items": {},

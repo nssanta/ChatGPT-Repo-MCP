@@ -535,11 +535,27 @@ async def verify_full_contract(python_url: str, go_url: str) -> None:
     )
 
 
+async def verify_polyrepo_grep(python_url: str, go_url: str) -> None:
+    python_result, go_result = await asyncio.gather(
+        call(python_url, "git_grep", {"query": "shared-polyrepo-needle"}),
+        call(go_url, "git_grep", {"query": "shared-polyrepo-needle"}),
+    )
+    for runtime, result in (("python", python_result), ("go", go_result)):
+        if result.get("polyrepo") is not True:
+            raise AssertionError(f"{runtime} git_grep did not fan out: {result!r}")
+        assert result["count"] == 2
+        assert result["repos_searched"] == ["repo-a", "repo-b"]
+        assert {match["repo"] for match in result["results"]} == {"repo-a", "repo-b"}
+
+
 def main() -> None:
     go_binary = ROOT / "bin" / ("chatrepo-mcp.exe" if os.name == "nt" else "chatrepo-mcp")
     if not go_binary.exists():
         raise SystemExit("Go binary is missing; run `make build` first")
-    with tempfile.TemporaryDirectory(prefix="chatrepo-acceptance-") as temporary:
+    with (
+        tempfile.TemporaryDirectory(prefix="chatrepo-acceptance-") as temporary,
+        tempfile.TemporaryDirectory(prefix="chatrepo-polyrepo-") as polytemporary,
+    ):
         fixture = Path(temporary)
         (fixture / "hello.txt").write_text("shared-token\n", encoding="utf-8")
         subprocess.run(["git", "init", "-b", "main", str(fixture)], check=True, capture_output=True)
@@ -616,6 +632,43 @@ def main() -> None:
                     f"http://127.0.0.1:{full_go_port}/mcp",
                 )
             )
+
+        polyrepo = Path(polytemporary)
+        for name in ("repo-a", "repo-b"):
+            repo = polyrepo / name
+            repo.mkdir()
+            subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+            (repo / "match.txt").write_text("shared-polyrepo-needle\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "match.txt"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "-c", "user.email=acceptance@example.com",
+                 "-c", "user.name=Acceptance", "commit", "-m", "fixture"],
+                check=True, capture_output=True,
+            )
+        poly_python_port, poly_go_port = free_port(), free_port()
+        poly_base_env = {**base_env, "PROJECT_ROOT": str(polyrepo)}
+        poly_python_env = {
+            **poly_base_env, "PORT": str(poly_python_port),
+            "PYTHONPATH": str(ROOT / "python" / "src"),
+        }
+        poly_go_env = {**poly_base_env, "PORT": str(poly_go_port)}
+        with ExitStack() as stack:
+            python_process = subprocess.Popen(
+                [sys.executable, "-m", "chatrepo_mcp"], cwd=ROOT, env=poly_python_env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            )
+            go_process = subprocess.Popen(
+                [str(go_binary)], cwd=ROOT, env=poly_go_env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            )
+            stack.callback(lambda: python_process.kill() if python_process.poll() is None else None)
+            stack.callback(lambda: go_process.kill() if go_process.poll() is None else None)
+            wait_for_port(poly_python_port, python_process)
+            wait_for_port(poly_go_port, go_process)
+            asyncio.run(verify_polyrepo_grep(
+                f"http://127.0.0.1:{poly_python_port}/mcp",
+                f"http://127.0.0.1:{poly_go_port}/mcp",
+            ))
     print("dual-server acceptance ok: 90 safe tools, full canonical tools, and core behavior")
 
 

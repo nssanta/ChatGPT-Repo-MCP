@@ -11,8 +11,12 @@ import (
 )
 
 func (e *Engine) executeGitTool(ctx context.Context, name string, args map[string]any) map[string]any {
-	repo, err := e.resolveRepo(ctx, stringArg(args, "repo", ""))
+	repoArg := stringArg(args, "repo", "")
+	repo, err := e.resolveRepo(ctx, repoArg)
 	if err != nil {
+		if name == "git_grep" && strings.TrimSpace(repoArg) == "" {
+			return e.gitGrepFanout(ctx, args)
+		}
 		return withError("git_error", err)
 	}
 	switch name {
@@ -204,8 +208,21 @@ func (e *Engine) gitGrep(ctx context.Context, repo string, args map[string]any) 
 	if query == "" {
 		return failure("invalid_query", "query must not be empty")
 	}
+	arguments := gitGrepArguments(args, query)
+	output, err := e.runGit(ctx, repo, e.settings.SubprocessTimeout, arguments...)
+	if err != nil && strings.TrimSpace(output) != "" {
+		return withError("git_error", err)
+	}
+	matches := parseGitGrepMatches(output, "")
+	return map[string]any{
+		"ok": true, "repo": e.perimeter.Display(repo), "query": query,
+		"results": matches, "matches": matches, "count": len(matches), "truncated": false,
+	}
+}
+
+func gitGrepArguments(args map[string]any, query string) []string {
 	arguments := []string{"grep", "-n", "--full-name"}
-	if !boolArg(args, "case_sensitive", true) {
+	if !boolArg(args, "case_sensitive", false) {
 		arguments = append(arguments, "-i")
 	}
 	arguments = append(arguments, "-e", query)
@@ -220,22 +237,62 @@ func (e *Engine) gitGrep(ctx context.Context, repo string, args map[string]any) 
 		arguments = append(arguments, "--")
 		arguments = append(arguments, paths...)
 	}
-	output, err := e.runGit(ctx, repo, e.settings.SubprocessTimeout, arguments...)
-	if err != nil && !strings.Contains(err.Error(), "exit status 1") {
-		// git grep reports no matches as exit 1; the wrapped message is tolerated below.
-		if !strings.Contains(err.Error(), "failed:") || strings.TrimSpace(output) != "" {
-			return withError("git_error", err)
-		}
-	}
-	var matches []map[string]any
+	return arguments
+}
+
+func parseGitGrepMatches(output, repo string) []map[string]any {
+	matches := make([]map[string]any, 0)
 	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		parts := strings.SplitN(line, ":", 3)
 		if len(parts) == 3 {
 			lineNumber, _ := strconv.Atoi(parts[1])
-			matches = append(matches, map[string]any{"path": parts[0], "line": lineNumber, "text": parts[2]})
+			match := map[string]any{"path": parts[0], "line": lineNumber, "text": parts[2]}
+			if repo != "" {
+				match["repo"] = repo
+			}
+			matches = append(matches, match)
 		}
 	}
-	return map[string]any{"ok": true, "query": query, "matches": matches, "count": len(matches)}
+	return matches
+}
+
+func (e *Engine) gitGrepFanout(ctx context.Context, args map[string]any) map[string]any {
+	query := stringArg(args, "query", "")
+	if query == "" {
+		return failure("invalid_query", "query must not be empty")
+	}
+	arguments := gitGrepArguments(args, query)
+	limit := e.settings.MaxSearchResults
+	results := make([]map[string]any, 0)
+	reposSearched := make([]string, 0)
+	for _, entry := range e.workspaceEntries(ctx) {
+		if entry["is_git"] != true || len(results) >= limit {
+			continue
+		}
+		relative, _ := entry["path"].(string)
+		directory := e.settings.ProjectRoot
+		if relative != "" {
+			directory = filepath.Join(directory, relative)
+		}
+		reposSearched = append(reposSearched, relative)
+		output, err := e.runGit(ctx, directory, e.settings.SubprocessTimeout, arguments...)
+		if err != nil && strings.TrimSpace(output) != "" {
+			continue
+		}
+		for _, match := range parseGitGrepMatches(output, relative) {
+			results = append(results, match)
+			if len(results) >= limit {
+				break
+			}
+		}
+	}
+	if len(reposSearched) == 0 {
+		return failure("git_error", "not a git repository and no sub-repositories were discovered")
+	}
+	return map[string]any{
+		"polyrepo": true, "repos_searched": reposSearched, "query": query,
+		"results": results, "count": len(results), "truncated": len(results) >= limit,
+	}
 }
 
 func (e *Engine) gitSwitch(ctx context.Context, repo string, args map[string]any) map[string]any {

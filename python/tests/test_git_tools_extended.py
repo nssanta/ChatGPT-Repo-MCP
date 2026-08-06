@@ -10,6 +10,7 @@ from test_command_tools import make_settings
 from chatrepo_mcp import git_tools
 from chatrepo_mcp.git_tools import GitToolError
 from chatrepo_mcp.output_store import read_artifact
+from chatrepo_mcp.result_models import result_model_for_tool
 
 
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -182,6 +183,15 @@ def test_git_grep_polyrepo_aggregates_results_from_multiple_repos_and_limits(tmp
     result = git_tools.git_grep(settings, "need", repo=None)
 
     assert result["polyrepo"] is True
+    assert {"polyrepo", "repos_searched", "query", "results", "count", "truncated"} <= set(result)
     assert result["count"] == 1
     assert result["results"]
     assert result["results"][0]["repo"] in {"a", "b"}
+    model = result_model_for_tool("git_grep")
+    assert model.model_validate(result).model_dump() == result
+    schema = model.model_json_schema()
+    fanout = schema["$defs"]["GitGrepSuccess1"]["properties"]
+    assert fanout["polyrepo"]["anyOf"][0] == {"type": "boolean"}
+    assert fanout["repos_searched"]["anyOf"][0] == {
+        "items": {"type": "string"}, "type": "array",
+    }
