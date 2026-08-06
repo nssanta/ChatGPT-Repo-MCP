@@ -114,6 +114,7 @@ from .lsp_tools import code_diagnostics
 from .output_store import read_artifact
 from .profile import list_test_presets, load_repo_profile
 from .resource_profile import ResourceBusyError
+from .result_models import result_model_for_tool
 from .runtime_env import effective_path, tool_status
 from .terminal_tools import (
     close_terminal_session,
@@ -183,6 +184,12 @@ def _tool(*args: Any, **kwargs: Any):
 
     def decorator(fn):
         name = kwargs.get("name") or fn.__name__
+        # FastMCP serializes the existing dict to legacy text before it
+        # validates the same result into structuredContent.
+        fn.__annotations__["return"] = result_model_for_tool(name)
+        if "structured_output" in kwargs:
+            raise RuntimeError("tool wrappers own structured_output registration")
+        kwargs["structured_output"] = True
         _TOOL_REGISTRY.append(name)
         return mcp.tool(*args, **kwargs)(fn)
 

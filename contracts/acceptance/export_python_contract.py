@@ -40,7 +40,7 @@ async def export_contract() -> dict[str, object]:
     ]
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "contractVersion": 2,
+        "contractVersion": 3,
         "server": {
             "name": "chatrepo-mcp",
             "version": version,

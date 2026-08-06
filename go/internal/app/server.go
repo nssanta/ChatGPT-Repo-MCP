@@ -63,7 +63,9 @@ func New(settings config.Settings) (*Application, error) {
 		annotation.OpenWorldHint = definition.Annotations.OpenWorldHint
 		server.AddTool(&mcp.Tool{
 			Name: definition.Name, Description: definition.Description,
-			InputSchema: json.RawMessage(definition.InputSchema), Annotations: annotation,
+			InputSchema:  json.RawMessage(definition.InputSchema),
+			OutputSchema: json.RawMessage(definition.OutputSchema),
+			Annotations:  annotation,
 		}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			arguments := make(map[string]any)
 			if len(request.Params.Arguments) > 0 {

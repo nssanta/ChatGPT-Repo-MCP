@@ -38,9 +38,10 @@ Shared MCP catalog (96 tools; 90 default)
 One workspace folder on disk (single repo or polyrepo)
 ```
 
-Both servers expose the same names, input schemas, annotations, `.env`
-configuration, and structured behavior. `contracts/tool-schemas/tools.json` is
-the checked-in public API; language-specific acceptance tests reject drift.
+Both servers expose the same names, input schemas, additive output schemas,
+annotations, `.env` configuration, and structured behavior.
+`contracts/tool-schemas/tools.json` is the checked-in contract-v3 public API;
+language-specific acceptance tests reject schema or runtime-registration drift.
 Operational details for streaming, receipts, artifact paging, quotas, and
 resource profiles live in [BOUNDED_OUTPUT.md](BOUNDED_OUTPUT.md).
 
@@ -90,9 +91,11 @@ This server blocks sensitive patterns by default. Structured access can be enabl
 
 ### 7) Two implementations, one release
 
-The Python package and Go binary are equal public implementations. Go embeds a
-generated copy of the shared contract so release binaries need no runtime schema files. A single
-`VERSION`, release tag workflow, and documentation set cover both packages.
+The Python package and Go binary are equal public implementations. Python
+derives exact success/error output unions from its result models; Go embeds and
+publishes the generated shared contract so release binaries need no runtime
+schema files. A single `VERSION`, release tag workflow, and documentation set
+cover both packages.
 
 ## Tool groups
 

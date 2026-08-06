@@ -69,9 +69,10 @@ def test_bounded_output_result_schemas_are_exact_and_additive() -> None:
     assert result["properties"]["metadata"]["properties"]["sha256"]["type"] == ["string", "null"]
 
 
-def test_read_artifact_contract_increments_catalog_without_rewriting_legacy_tools() -> None:
+def test_public_catalog_is_v3_with_structured_outputs_for_every_tool() -> None:
     contract = _contract()
 
-    assert contract["contractVersion"] == 2
+    assert contract["contractVersion"] == 3
     assert contract["server"]["toolCount"] == 96
     assert len(contract["tools"]) == 96
+    assert all(tool.get("outputSchema", {}).get("type") == "object" for tool in contract["tools"])

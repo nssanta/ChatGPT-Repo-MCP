@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
@@ -28,6 +29,10 @@ CANONICAL_CONTRACT = json.loads(
 PTY_TOOLS = {
     "start_terminal_session", "read_terminal_session", "write_terminal_session",
     "resize_terminal_session", "close_terminal_session", "list_terminal_sessions",
+}
+OUTPUT_VALIDATORS = {
+    tool["name"]: Draft202012Validator(tool["outputSchema"])
+    for tool in CANONICAL_CONTRACT["tools"]
 }
 
 
@@ -70,7 +75,15 @@ async def call(url: str, name: str, arguments: dict[str, Any]) -> dict[str, Any]
         result = await session.call_tool(name, arguments)
         if not result.content or not hasattr(result.content[0], "text"):
             raise AssertionError(f"{name} returned no JSON text content")
-        return json.loads(result.content[0].text)
+        payload = json.loads(result.content[0].text)
+        errors = sorted(OUTPUT_VALIDATORS[name].iter_errors(payload), key=lambda item: list(item.path))
+        if errors:
+            details = "; ".join(
+                f"{'.'.join(map(str, error.path)) or '<root>'}: {error.message}"
+                for error in errors[:5]
+            )
+            raise AssertionError(f"{name} returned output outside its canonical schema: {details}")
+        return payload
 
 
 async def inspect(url: str) -> dict[str, Any]:

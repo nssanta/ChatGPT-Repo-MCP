@@ -9,7 +9,7 @@
 Run it from a private Linux PC through OpenAI Secure MCP Tunnel, including
 ChatGPT connection and reboot-safe systemd services: [full runbook](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT. Choose the Python package or the standalone Go binary; both share the same 96-tool capability catalog, configuration, and access semantics. `ENABLE_PTY=true` is the default, so trusted POSIX deployments expose all 96 tools as soon as `ACCESS_MODE=full`; safe mode still exposes 90 tools without PTY.
+MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT. Choose the Python package or the standalone Go binary; both share the same 96-tool capability catalog, configuration, and access semantics. Every tool publishes canonical input and additive output schemas, so MCP clients receive typed structured results without losing the existing JSON text representation. `ENABLE_PTY=true` is the default, so trusted POSIX deployments expose all 96 tools as soon as `ACCESS_MODE=full`; safe mode still exposes 90 tools without PTY.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
