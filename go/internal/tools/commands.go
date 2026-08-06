@@ -225,12 +225,23 @@ func (e *Engine) runCommand(ctx context.Context, request commandRequest) map[str
 	if request.TailLines >= 0 {
 		result.Stdout = capture.stdout.TailLines(request.TailLines)
 		result.Stderr = capture.stderr.TailLines(request.TailLines)
-		result.Stdout, _ = capText(result.Stdout, stdoutLimit)
-		result.Stderr, _ = capText(result.Stderr, stderrLimit)
+		if stdoutLimit <= 0 {
+			result.Stdout = ""
+		} else {
+			result.Stdout, _ = capText(result.Stdout, stdoutLimit)
+		}
+		if stderrLimit <= 0 {
+			result.Stderr = ""
+		} else {
+			result.Stderr, _ = capText(result.Stderr, stderrLimit)
+		}
 	}
 	e.writeCommandMetadata(logID, normalized, directory, result.ExitCode)
 	e.writeCommandAudit("finish", logID, "run_command", normalized, directory, time.Since(started), capture.stdout.Total(), capture.stderr.Total(), map[bool]string{true: "completed", false: "failed"}[result.ExitCode == 0 && !result.TimedOut])
-	truncated := capture.stdout.Total() > int64(len(result.Stdout)) || capture.stderr.Total() > int64(len(result.Stderr))
+	// Determine truncation from the capture budget before TailLines
+	// normalization. Formatting may remove a trailing newline without losing
+	// any source output.
+	truncated := capture.stdout.Total() > int64(stdoutLimit) || capture.stderr.Total() > int64(stderrLimit)
 	receipt := boundedOutputReceiptWithInlineLimit(
 		truncated, capture.stdout.Total()+capture.stderr.Total(),
 		int64(len(result.Stdout)+len(result.Stderr)), e.settings.DefaultInlineOutputBytes, request.MaxOutput,
@@ -614,9 +625,26 @@ func (e *Engine) runJob(ctx context.Context, entry *job, request commandRequest)
 		return
 	}
 	entry.mu.Lock()
-	entry.Stdout, entry.Stderr = capture.stdout.TailLines(request.TailLines), capture.stderr.TailLines(request.TailLines)
 	entry.StdoutBytes, entry.StderrBytes = capture.stdout.Total(), capture.stderr.Total()
-	entry.OutputTruncated = entry.StdoutBytes > int64(len(entry.Stdout)) || entry.StderrBytes > int64(len(entry.Stderr))
+	stdoutLimit, stderrLimit := request.MaxOutput, request.MaxOutput
+	if entry.StdoutBytes > 0 && entry.StderrBytes > 0 {
+		stdoutLimit = (request.MaxOutput + 1) / 2
+		stderrLimit = request.MaxOutput - stdoutLimit
+	}
+	entry.Stdout, entry.Stderr = capture.stdout.TailLines(request.TailLines), capture.stderr.TailLines(request.TailLines)
+	if stdoutLimit <= 0 {
+		entry.Stdout = ""
+	} else {
+		entry.Stdout, _ = capText(entry.Stdout, stdoutLimit)
+	}
+	if stderrLimit <= 0 {
+		entry.Stderr = ""
+	} else {
+		entry.Stderr, _ = capText(entry.Stderr, stderrLimit)
+	}
+	// Keep display-tail normalization separate from the durable source's actual
+	// inline-budget overflow.
+	entry.OutputTruncated = entry.StdoutBytes > int64(stdoutLimit) || entry.StderrBytes > int64(stderrLimit)
 	entry.ExitCode, entry.TimedOut = exitCode, timedOut
 	entry.ProcessGroupCleaned = entry.pgid == 0 || !processGroupAlive(entry.pgid)
 	entry.mu.Unlock()

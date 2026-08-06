@@ -192,6 +192,9 @@ func (c *streamCapture) Head() string {
 func (c *streamCapture) Preview(limit int) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if limit <= 0 {
+		return ""
+	}
 	head := utf8Window(c.head, false)
 	if c.total <= int64(len(c.head)) {
 		return head
