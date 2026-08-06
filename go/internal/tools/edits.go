@@ -1,17 +1,44 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
+
+type boundedRawBuffer struct {
+	buffer   bytes.Buffer
+	limit    int
+	overflow bool
+}
+
+func (buffer *boundedRawBuffer) Write(data []byte) (int, error) {
+	written := len(data)
+	remaining := buffer.limit - buffer.buffer.Len()
+	if remaining <= 0 {
+		buffer.overflow = true
+		return written, nil
+	}
+	if len(data) > remaining {
+		buffer.overflow = true
+		data = data[:remaining]
+	}
+	_, _ = buffer.buffer.Write(data)
+	return written, nil
+}
+
+func (buffer *boundedRawBuffer) String() string {
+	return buffer.buffer.String()
+}
 
 type editSnapshot struct {
 	path   string
@@ -400,10 +427,11 @@ func (e *Engine) batchEdits(operations []map[string]any, atomic, dryRun bool, na
 	results := make([]map[string]any, 0, len(operations))
 	ok := true
 	for _, operation := range operations {
-		typeName := firstNonEmpty(stringArg(operation, "operation", ""), stringArg(operation, "type", ""))
-		if typeName == "" {
-			typeName = "replace_text"
-		}
+		typeName := firstNonEmpty(
+			stringArg(operation, "op", ""),
+			stringArg(operation, "operation", ""),
+			stringArg(operation, "type", ""),
+		)
 		result := e.executeBatchOperation(typeName, operation, dryRun)
 		results = append(results, result)
 		if result["ok"] == false {
@@ -423,7 +451,11 @@ func (e *Engine) batchEdits(operations []map[string]any, atomic, dryRun bool, na
 		}
 	}
 	combined, truncated := capText(combined, e.settings.MaxCombinedDiffChars)
-	return map[string]any{"ok": ok, "name": name, "atomic": atomic, "dry_run": dryRun, "rolled_back": atomic && !ok && !dryRun, "results": results, "combined_diff": combined, "diff_truncated": truncated}
+	return map[string]any{
+		"ok": ok, "name": name, "atomic": atomic, "dry_run": dryRun,
+		"rolled_back": atomic && !ok && !dryRun, "results": results,
+		"operations_total": len(operations), "combined_diff": combined, "diff_truncated": truncated,
+	}
 }
 
 func (e *Engine) executeBatchOperation(name string, args map[string]any, dryRun bool) map[string]any {
@@ -521,7 +553,85 @@ func (e *Engine) restoreSnapshots(snapshots []editSnapshot) {
 	}
 }
 
-var patchPathPattern = regexp.MustCompile(`(?m)^(?:---|\+\+\+)\s+(?:[ab]/)?([^\t\n]+)`)
+func appendPatchPath(files []string, seen map[string]bool, raw string) ([]string, error) {
+	path := raw
+	if strings.HasPrefix(path, `"`) {
+		decoded, err := strconv.Unquote(path)
+		if err != nil {
+			return nil, fmt.Errorf("invalid quoted git path: %w", err)
+		}
+		path = decoded
+	}
+	path = filepath.ToSlash(filepath.Clean(path))
+	if path == "" || path == "." || path == "/dev/null" {
+		return files, nil
+	}
+	if !seen[path] {
+		seen[path] = true
+		files = append(files, path)
+	}
+	return files, nil
+}
+
+func parsePatchNumstat(output, patch string) ([]string, error) {
+	seen := make(map[string]bool)
+	files := make([]string, 0)
+	fields := strings.Split(output, "\x00")
+	for index := 0; index < len(fields); index++ {
+		record := fields[index]
+		if record == "" {
+			continue
+		}
+		parts := strings.SplitN(record, "\t", 3)
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("invalid git numstat record")
+		}
+		var err error
+		files, err = appendPatchPath(files, seen, parts[2])
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, line := range strings.Split(patch, "\n") {
+		for _, prefix := range []string{"rename from ", "copy from "} {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			var err error
+			files, err = appendPatchPath(files, seen, strings.TrimPrefix(line, prefix))
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("patch contains no verifiable file paths")
+	}
+	return files, nil
+}
+
+func (e *Engine) rawPatchNumstat(ctx context.Context, toplevel, patch string) (string, error) {
+	processContext, cancel := context.WithTimeout(ctx, e.settings.SubprocessTimeout)
+	defer cancel()
+	command := exec.CommandContext(processContext, "git", "-C", toplevel, "apply", "--numstat", "--unsafe-paths", "-z", "-")
+	command.Dir = toplevel
+	command.Env = e.commandEnvironment(nil)
+	command.Stdin = strings.NewReader(patch)
+	stdout := &boundedRawBuffer{limit: len(patch) + 1}
+	stderr := &boundedRawBuffer{limit: 64 * 1024}
+	command.Stdout = stdout
+	command.Stderr = stderr
+	if err := command.Run(); err != nil {
+		return "", fmt.Errorf("git could not inspect patch paths")
+	}
+	if processContext.Err() != nil {
+		return "", fmt.Errorf("git patch path inspection timed out")
+	}
+	if stdout.overflow || stderr.overflow {
+		return "", fmt.Errorf("git patch path inspection exceeded its bounded output")
+	}
+	return stdout.String(), nil
+}
 
 func (e *Engine) applyPatch(ctx context.Context, patch string, dryRun bool, expectedBase *string, repo string) map[string]any {
 	if patch == "" || len(patch) > e.settings.MaxPatchBytes {
@@ -537,11 +647,16 @@ func (e *Engine) applyPatch(ctx context.Context, patch string, dryRun bool, expe
 			return failure("stale_base", "expected_base_sha does not match HEAD")
 		}
 	}
-	for _, match := range patchPathPattern.FindAllStringSubmatch(patch, -1) {
-		if len(match) < 2 || match[1] == "/dev/null" {
-			continue
-		}
-		if _, resolveErr := e.perimeter.Resolve(filepath.Join(toplevel, match[1]), true, true); resolveErr != nil {
+	numstat, numstatErr := e.rawPatchNumstat(ctx, toplevel, patch)
+	if numstatErr != nil {
+		return withError("patch_apply_error", numstatErr)
+	}
+	changedFiles, pathErr := parsePatchNumstat(numstat, patch)
+	if pathErr != nil {
+		return withError("patch_rejected", pathErr)
+	}
+	for _, path := range changedFiles {
+		if _, resolveErr := e.perimeter.Resolve(filepath.Join(toplevel, path), true, true); resolveErr != nil {
 			return withError("patch_rejected", resolveErr)
 		}
 	}
@@ -556,7 +671,11 @@ func (e *Engine) applyPatch(ctx context.Context, patch string, dryRun bool, expe
 			return map[string]any{"ok": false, "error_kind": "patch_apply_error", "error": strings.TrimSpace(applied.Stdout + "\n" + applied.Stderr), "dry_run": false}
 		}
 	}
-	return map[string]any{"ok": true, "dry_run": dryRun, "applied": !dryRun, "patch_bytes": len(patch)}
+	return map[string]any{
+		"ok": true, "changed": len(changedFiles) > 0, "dry_run": dryRun,
+		"applied": !dryRun, "repo": e.perimeter.Display(toplevel),
+		"changed_files": changedFiles, "patch_bytes": len(patch),
+	}
 }
 
 func (e *Engine) updateMission(args map[string]any) map[string]any {

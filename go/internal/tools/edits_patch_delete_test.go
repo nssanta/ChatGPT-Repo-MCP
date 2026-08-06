@@ -37,7 +37,8 @@ index 0000000..1111111 100644
 +++ b/../outside.txt
 @@ -1 +1 @@
 -one
-+two`
++two
+`
 	outsidePatch := engine.Execute(context.Background(), "apply_patch", map[string]any{
 		"repo":    ".",
 		"patch":   outside,
@@ -79,8 +80,107 @@ index 5626abf..0000000
 	if applied["ok"] != true || applied["applied"].(bool) != true {
 		t.Fatalf("delete patch should apply: %#v", applied)
 	}
+	changedFiles, ok := applied["changed_files"].([]string)
+	if !ok || len(changedFiles) != 1 || changedFiles[0] != "readme.md" {
+		t.Fatalf("delete patch changed_files = %#v, want [readme.md]", applied["changed_files"])
+	}
 	if _, err := os.Stat(filepath.Join(root, "readme.md")); !os.IsNotExist(err) {
 		t.Fatalf("readme.md should be removed by patch: %v", err)
+	}
+}
+
+func TestApplyPatchSuccessPublishesCanonicalChangedFiles(t *testing.T) {
+	engine, root := newTestEngine(t)
+
+	runGitTest(t, root, "init", "-b", "main")
+	runGitTest(t, root, "config", "user.email", "test@example.com")
+	runGitTest(t, root, "config", "user.name", "Tester")
+	if err := os.WriteFile(filepath.Join(root, "readme.md"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, root, "add", "readme.md")
+	runGitTest(t, root, "commit", "-m", "init")
+
+	patch := `diff --git a/readme.md b/readme.md
+index 0000000..1111111 100644
+--- a/readme.md
++++ b/readme.md
+@@ -1 +1 @@
+-one
++two
+`
+	result := engine.Execute(context.Background(), "apply_patch", map[string]any{
+		"repo": ".", "patch": patch, "dry_run": true,
+	})
+
+	if result["ok"] != true || result["changed"] != true || result["repo"] != "." {
+		t.Fatalf("patch result lacks canonical truth: %#v", result)
+	}
+	changedFiles, ok := result["changed_files"].([]string)
+	if !ok || len(changedFiles) != 1 || changedFiles[0] != "readme.md" {
+		t.Fatalf("changed_files = %#v, want [readme.md]", result["changed_files"])
+	}
+}
+
+func TestApplyPatchRejectsQuotedBlockedPath(t *testing.T) {
+	engine, root := newTestEngine(t)
+
+	runGitTest(t, root, "init", "-b", "main")
+	patch := `diff --git "a/.env" "b/.env"
+new file mode 100644
+index 0000000..257cc56
+--- /dev/null
++++ "b/.env"
+@@ -0,0 +1 @@
++secret
+`
+	result := engine.Execute(context.Background(), "apply_patch", map[string]any{
+		"repo": ".", "patch": patch, "dry_run": true,
+	})
+	if result["ok"] != false || result["error_kind"] != "patch_rejected" {
+		t.Fatalf("quoted blocked path bypassed perimeter: %#v", result)
+	}
+}
+
+func TestApplyPatchRejectsRenameToBlockedPath(t *testing.T) {
+	engine, root := newTestEngine(t)
+
+	runGitTest(t, root, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(root, "safe.txt"), []byte("safe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, root, "add", "safe.txt")
+	runGitTest(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Tester", "commit", "-m", "init")
+	patch := `diff --git a/safe.txt b/.env
+similarity index 100%
+rename from safe.txt
+rename to .env
+`
+	result := engine.Execute(context.Background(), "apply_patch", map[string]any{
+		"repo": ".", "patch": patch, "dry_run": true,
+	})
+	if result["ok"] != false || result["error_kind"] != "patch_rejected" {
+		t.Fatalf("rename-only blocked path bypassed perimeter: %#v", result)
+	}
+}
+
+func TestApplyPatchChecksRawUnredactedPath(t *testing.T) {
+	engine, root := newTestEngine(t)
+
+	runGitTest(t, root, "init", "-b", "main")
+	patch := `diff --git a/token=foo.bin b/token=foo.bin
+new file mode 100644
+index 0000000..257cc56
+--- /dev/null
++++ b/token=foo.bin
+@@ -0,0 +1 @@
++blocked
+`
+	result := engine.Execute(context.Background(), "apply_patch", map[string]any{
+		"repo": ".", "patch": patch, "dry_run": true,
+	})
+	if result["ok"] != false || result["error_kind"] != "patch_rejected" {
+		t.Fatalf("redacted blocked path bypassed perimeter: %#v", result)
 	}
 }
 

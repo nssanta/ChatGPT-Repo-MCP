@@ -333,6 +333,43 @@ async def verify(python_url: str, go_url: str, fixture: Path) -> None:
             assert go_result["applied"] is False
             assert not (fixture / "preview.txt").exists()
 
+    batch_edit_arguments = {
+        "operations": [{"op": "ensure_directory", "path": "contract-preview"}],
+        "atomic": True,
+        "dry_run": True,
+    }
+    python_edit, go_edit = await asyncio.gather(
+        call(python_url, "batch_edit_files", batch_edit_arguments),
+        call(go_url, "batch_edit_files", batch_edit_arguments),
+    )
+    for runtime, result in (("python", python_edit), ("go", go_edit)):
+        if result.get("ok") is not True:
+            raise AssertionError(f"{runtime} rejected canonical batch operation op: {result!r}")
+        assert result["operations_total"] == 1
+    assert not (fixture / "contract-preview").exists()
+
+    patch = """diff --git a/contract-preview.txt b/contract-preview.txt
+new file mode 100644
+index 0000000..257cc56
+--- /dev/null
++++ b/contract-preview.txt
+@@ -0,0 +1 @@
++contract-preview
+"""
+    python_patch, go_patch = await asyncio.gather(
+        call(python_url, "apply_patch", {"patch": patch, "dry_run": True}),
+        call(go_url, "apply_patch", {"patch": patch, "dry_run": True}),
+    )
+    for runtime, result in (("python", python_patch), ("go", go_patch)):
+        if result.get("ok") is not True:
+            raise AssertionError(f"{runtime} apply_patch dry-run failed: {result!r}")
+        assert result["changed"] is True
+        assert result["dry_run"] is True
+        assert result["applied"] is False
+        assert result["repo"] in {"", "."}
+        assert result["changed_files"] == ["contract-preview.txt"]
+    assert not (fixture / "contract-preview.txt").exists()
+
     batch_arguments = {
         "calls": [{"tool": "repo_info", "args": {}} for _ in range(6)],
         "max_concurrency": 6,
