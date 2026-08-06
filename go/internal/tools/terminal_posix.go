@@ -26,9 +26,10 @@ type terminalSession struct {
 	ExitCode                      *int
 	TermSignal                    any
 	IdleTimeout                   time.Duration
+	OutputBytes                   int64
+	heavyLease                    *heavyOperationLease
 	process                       *exec.Cmd
 	pty                           *os.File
-	output                        []byte
 	done                          chan struct{}
 }
 
@@ -58,7 +59,7 @@ func (e *Engine) terminalResult(session *terminalSession) map[string]any {
 	if session.ExitCode != nil {
 		exit = *session.ExitCode
 	}
-	return map[string]any{"ok": true, "session_id": session.ID, "status": session.Status, "pid": session.PID, "pgid": session.PGID, "cwd": e.perimeter.Display(session.CWD), "shell": session.Shell, "cols": session.Cols, "rows": session.Rows, "created_at": session.CreatedAt.UTC().Format(time.RFC3339Nano), "last_activity_at": session.LastActivity.UTC().Format(time.RFC3339Nano), "exit_code": exit, "term_signal": session.TermSignal, "log_id": session.LogID, "next_cursor": len(session.output)}
+	return map[string]any{"ok": true, "session_id": session.ID, "status": session.Status, "pid": session.PID, "pgid": session.PGID, "cwd": e.perimeter.Display(session.CWD), "shell": session.Shell, "cols": session.Cols, "rows": session.Rows, "created_at": session.CreatedAt.UTC().Format(time.RFC3339Nano), "last_activity_at": session.LastActivity.UTC().Format(time.RFC3339Nano), "exit_code": exit, "term_signal": session.TermSignal, "log_id": session.LogID, "next_cursor": session.OutputBytes}
 }
 
 func (e *Engine) startTerminal(args map[string]any) map[string]any {
@@ -75,8 +76,13 @@ func (e *Engine) startTerminal(args map[string]any) map[string]any {
 	if active >= e.settings.MaxTerminalSessions {
 		return failure("terminal_limit", "maximum terminal sessions reached")
 	}
+	heavyLease, acquired := e.acquireHeavyOperation()
+	if !acquired {
+		return e.heavyBusyResult()
+	}
 	directory, err := e.resolveCommandCWD(stringArg(args, "cwd", ""))
 	if err != nil {
+		heavyLease.Release()
 		return withError("invalid_cwd", err)
 	}
 	shell := stringArg(args, "shell", "")
@@ -84,6 +90,7 @@ func (e *Engine) startTerminal(args map[string]any) map[string]any {
 		shell = bashBinary()
 	}
 	if info, err := os.Stat(shell); err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+		heavyLease.Release()
 		return failure("invalid_shell", "shell is not executable")
 	}
 	cols, rows := intArg(args, "cols", 120), intArg(args, "rows", 40)
@@ -96,52 +103,122 @@ func (e *Engine) startTerminal(args map[string]any) map[string]any {
 	command.Env = e.commandEnvironment(nil)
 	ptmx, err := pty.StartWithSize(command, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
+		heavyLease.Release()
 		return withError("terminal_spawn_error", err)
 	}
 	now := time.Now().UTC()
-	session := &terminalSession{ID: randomID(), LogID: randomID(), CWD: directory, Shell: shell, Status: "running", PID: command.Process.Pid, PGID: command.Process.Pid, Cols: cols, Rows: rows, CreatedAt: now, LastActivity: now, IdleTimeout: time.Duration(intArg(args, "idle_timeout_ms", 1800000)) * time.Millisecond, process: command, pty: ptmx, done: make(chan struct{})}
+	session := &terminalSession{ID: randomID(), LogID: randomID(), CWD: directory, Shell: shell, Status: "running", PID: command.Process.Pid, PGID: command.Process.Pid, Cols: cols, Rows: rows, CreatedAt: now, LastActivity: now, IdleTimeout: time.Duration(intArg(args, "idle_timeout_ms", 1800000)) * time.Millisecond, heavyLease: heavyLease, process: command, pty: ptmx, done: make(chan struct{})}
+	store, storeErr := e.artifactStore()
+	if storeErr != nil {
+		heavyLease.Release()
+		_, _ = terminateProcessGroup(session.PGID, 0)
+		_ = ptmx.Close()
+		_ = command.Wait()
+		return outputPersistenceError(storeErr)
+	}
+	artifact, artifactErr := store.create(session.LogID)
+	if artifactErr != nil {
+		heavyLease.Release()
+		_, _ = terminateProcessGroup(session.PGID, 0)
+		_ = ptmx.Close()
+		_ = command.Wait()
+		return outputPersistenceError(artifactErr)
+	}
+	artifact.setMetadata("pty", "capture_order")
+	artifact.companionCopies = 1
 	e.terminalsMu.Lock()
 	e.terminals[session.ID] = session
 	e.terminalsMu.Unlock()
 	e.persistTerminal(session)
-	go e.readTerminalOutput(session)
+	e.writeCommandAudit("start", session.LogID, "start_terminal_session", shell, directory, 0, 0, 0, "running")
+	go e.readTerminalOutput(session, store, artifact)
 	go e.watchTerminalIdle(session)
 	result := e.terminalResult(session)
 	result["next_cursor"] = 0
+	result["artifact"] = map[string]any{
+		"artifact_id":  session.LogID,
+		"has_more":     true,
+		"eof":          false,
+		"next_cursor":  nil,
+		"continuation": artifactContinuation(session.LogID),
+		"receipt": map[string]any{
+			"schema_version": 1,
+			"status":         "partial",
+			"completeness":   "partial",
+			"reason":         "source_active",
+			"configured":     map[string]any{"page_bytes": 65_536, "max_page_bytes": 262_144},
+			"applied":        map[string]any{"source_complete": false},
+			"returned":       map[string]any{},
+			"total":          nil,
+			"warnings":       []string{},
+		},
+	}
 	return result
 }
 
 func (e *Engine) persistTerminal(session *terminalSession) {
-	_ = os.MkdirAll(filepath.Join(e.settings.CommandJobsDir, "logs"), 0700)
 	metadata, _ := json.Marshal(e.terminalResult(session))
-	_ = os.WriteFile(filepath.Join(e.settings.CommandJobsDir, "logs", session.LogID+".json"), append(metadata, '\n'), 0600)
+	if store, err := e.artifactStore(); err == nil {
+		_ = store.writeCompanion(session.LogID, filepath.Join(e.settings.CommandJobsDir, "logs", session.LogID+".json"), append(metadata, '\n'))
+	}
 }
 
-func (e *Engine) readTerminalOutput(session *terminalSession) {
+func (e *Engine) readTerminalOutput(session *terminalSession, store *artifactStore, artifact *artifactWriter) {
 	defer close(session.done)
+	defer session.heavyLease.Release()
 	path := filepath.Join(e.settings.CommandJobsDir, "logs", session.LogID+".combined")
 	_ = os.MkdirAll(filepath.Dir(path), 0700)
-	file, _ := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if file != nil {
-		defer file.Close()
+	capture, captureErr := newStreamCapture(path, 0, 0)
+	if captureErr != nil {
+		_ = artifact.Abort()
+		session.mu.Lock()
+		session.Status = "failed"
+		session.LastActivity = time.Now().UTC()
+		session.mu.Unlock()
+		_, _ = terminateProcessGroup(session.PGID, 0)
+		_ = session.pty.Close()
+		_ = session.process.Wait()
+		e.persistTerminal(session)
+		return
 	}
+	capture.mirror = func(data []byte) error { return artifact.WriteRecord(1, data) }
+	capture.mirrorRollback = func(amount int64) { store.rollbackWrite(session.LogID, amount) }
 	buffer := make([]byte, 65536)
+	var writeErr error
 	for {
 		count, err := session.pty.Read(buffer)
 		if count > 0 {
-			text := []byte(redact(string(buffer[:count])))
+			text := buffer[:count]
 			session.mu.Lock()
-			session.output = append(session.output, text...)
 			session.LastActivity = time.Now().UTC()
 			session.mu.Unlock()
-			if file != nil {
-				_, _ = file.Write(text)
+			if capture != nil {
+				if _, err := capture.Write(text); err != nil {
+					writeErr = err
+					_, _ = terminateProcessGroup(session.PGID, 0)
+					break
+				}
+			}
+			if capture != nil {
+				session.mu.Lock()
+				session.OutputBytes = capture.Total()
+				session.mu.Unlock()
 			}
 		}
 		if err != nil {
 			break
 		}
 	}
+	closeErr := capture.Close()
+	var artifactErr error
+	if writeErr != nil || closeErr != nil {
+		artifactErr = artifact.Abort()
+	} else {
+		artifactErr = artifact.Close()
+	}
+	session.mu.Lock()
+	session.OutputBytes = capture.Total()
+	session.mu.Unlock()
 	err := session.process.Wait()
 	code := 0
 	if err != nil {
@@ -151,6 +228,10 @@ func (e *Engine) readTerminalOutput(session *terminalSession) {
 		}
 	}
 	session.mu.Lock()
+	if writeErr != nil || closeErr != nil || artifactErr != nil {
+		code = -1
+		session.Status = "failed"
+	}
 	session.ExitCode = &code
 	if session.Status != "closed" {
 		if code == 0 {
@@ -162,6 +243,10 @@ func (e *Engine) readTerminalOutput(session *terminalSession) {
 	session.LastActivity = time.Now().UTC()
 	session.mu.Unlock()
 	e.persistTerminal(session)
+	session.mu.RLock()
+	outputBytes, status := session.OutputBytes, session.Status
+	session.mu.RUnlock()
+	e.writeCommandAudit("finish", session.LogID, "start_terminal_session", session.Shell, session.CWD, time.Since(session.CreatedAt), outputBytes, 0, status)
 	_ = session.pty.Close()
 }
 
@@ -192,7 +277,7 @@ func (e *Engine) readTerminal(id string, cursor, maximum, waitMS int) map[string
 	deadline := time.Now().Add(time.Duration(min(max(waitMS, 0), 30000)) * time.Millisecond)
 	for {
 		session.mu.RLock()
-		size, status := len(session.output), session.Status
+		size, status := int(session.OutputBytes), session.Status
 		session.mu.RUnlock()
 		if size > cursor || status != "running" || time.Now().After(deadline) {
 			break
@@ -200,15 +285,25 @@ func (e *Engine) readTerminal(id string, cursor, maximum, waitMS int) map[string
 		time.Sleep(25 * time.Millisecond)
 	}
 	session.mu.RLock()
-	defer session.mu.RUnlock()
-	end := min(cursor+maximum, len(session.output))
-	if cursor > len(session.output) {
-		cursor = len(session.output)
+	size := int(session.OutputBytes)
+	status := session.Status
+	session.mu.RUnlock()
+	end := min(cursor+maximum, size)
+	if cursor > size {
+		cursor = size
 		end = cursor
 	}
-	data := string(session.output[cursor:end])
-	eof := session.Status != "running" && end == len(session.output)
-	return map[string]any{"ok": true, "session_id": id, "data": data, "next_cursor": end, "eof": eof, "truncated": end < len(session.output)}
+	data := make([]byte, end-cursor)
+	if len(data) > 0 {
+		file, openErr := os.Open(filepath.Join(e.settings.CommandJobsDir, "logs", session.LogID+".combined"))
+		if openErr != nil {
+			return withError("command_log_error", openErr)
+		}
+		_, _ = file.ReadAt(data, int64(cursor))
+		_ = file.Close()
+	}
+	eof := status != "running" && end == size
+	return map[string]any{"ok": true, "session_id": id, "data": string(data), "next_cursor": end, "eof": eof, "truncated": end < size}
 }
 
 func (e *Engine) writeTerminal(id, data, encoding string) map[string]any {

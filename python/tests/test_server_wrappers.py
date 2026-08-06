@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
+from test_command_tools import make_settings
+
 from chatrepo_mcp import server
 from chatrepo_mcp.command_tools import CommandPolicyError, ConfirmationRequiredError, GitCommitError
 from chatrepo_mcp.git_tools import GitToolError
-from test_command_tools import make_settings
+from chatrepo_mcp.resource_profile import ResourceBusyError
 
 
 def test_batch_dispatch_routes_read_and_blocks_mutation_without_dry_run(monkeypatch) -> None:
@@ -75,13 +77,22 @@ def test_command_result_maps_command_errors_and_timeout_like_paths(monkeypatch) 
     assert recorded["confirmed"] is False
 
     def fake_run_command(*, command, settings, timeout_ms=None, cwd=None, env=None, max_output_chars=None, tail_lines=200, confirmed=False, parse_kind="auto"):
-        raise Exception("boom")
+        raise RuntimeError("boom")
 
     monkeypatch.setattr(server, "run_command", fake_run_command)
     generic = server._command_result("anything")
     assert generic["ok"] is False
     assert generic["error_kind"] == "command_failed"
     assert "boom" in generic["error"]
+
+    monkeypatch.setattr(
+        server, "run_command",
+        lambda **kwargs: (_ for _ in ()).throw(ResourceBusyError(3)),
+    )
+    busy = server._command_result("anything")
+    assert busy["error_kind"] == "resource_busy"
+    assert busy["capacity"] == 3
+    assert "Retry" in busy["retry_hint"]
 
 
 def test_run_command_tool_maps_command_policy_error(monkeypatch) -> None:
@@ -125,6 +136,43 @@ def test_batch_call_tool_collects_success_and_error_items(monkeypatch) -> None:
     assert "error" in result["results"][1]
     assert "batch_call only allows write tools when dry_run=true" in result["results"][1]["error"]
     assert result["results"][2]["ok"] is False
+
+
+def test_config_info_exposes_detected_and_applied_resource_truth(monkeypatch) -> None:
+    monkeypatch.setattr(
+        server,
+        "settings",
+        server.settings.__class__(
+            **{
+                **server.settings.__dict__,
+                "resource_profile": "auto",
+                "resource_profile_applied": "medium",
+                "resource_detected_memory_bytes": 8 * 1024**3,
+                "resource_buffer_bytes": 32 * 1024**2,
+                "max_heavy_operations": 4,
+                "persist_full_output": True,
+            }
+        ),
+    )
+    info = server._write_config_info()
+    assert info["resource_profile"] == "auto"
+    assert info["resource_profile_applied"] == "medium"
+    assert info["resource_detected_memory_bytes"] == 8 * 1024**3
+    assert info["resource_buffer_bytes"] == 32 * 1024**2
+    assert info["resource_buffer_enforced"] is False
+    assert info["resource_buffer_semantics"] == "diagnostic_estimate_only"
+    assert info["max_heavy_operations"] == 4
+    assert info["persist_full_output"] is True
+
+
+def test_search_surface_returns_typed_resource_busy(monkeypatch) -> None:
+    monkeypatch.setattr(
+        server, "search_text", lambda **kwargs: (_ for _ in ()).throw(ResourceBusyError(2)),
+    )
+    result = server.search_text_tool("needle")
+    assert result["error_kind"] == "resource_busy"
+    assert result["capacity"] == 2
+    assert "Retry" in result["retry_hint"]
 
 
 def test_wrapper_returns_structural_error_for_empty_git_add_paths() -> None:
@@ -403,7 +451,7 @@ def test_tool_names_prefers_fastmcp_and_falls_back_on_manager_error(monkeypatch)
     assert server._tool_names() == ["a", "b"]
 
     class BrokenManager:
-        def list_tools(self):  # noqa: D401
+        def list_tools(self):
             raise RuntimeError("disabled")
 
     monkeypatch.setattr(server.mcp, "_tool_manager", BrokenManager())

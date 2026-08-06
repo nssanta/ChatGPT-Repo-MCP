@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import heapq
 import json
 import os
 import re
+import shlex
 import subprocess
+import tempfile
+import threading
+import time
 import tomllib
-from hashlib import sha256
+import uuid
+from collections.abc import Iterable, Iterator
 from fnmatch import fnmatch
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from .config import Settings
+from .resource_profile import ResourceBusyError, acquire_heavy_operation
 from .security import (
     display_path,
     is_allowed_relative,
@@ -20,7 +28,6 @@ from .security import (
     rel_posix_lexical,
     resolve_path_context,
 )
-
 
 TEXT_EXTENSIONS = {
     ".py", ".pyi", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt", ".go", ".rs", ".c",
@@ -76,27 +83,30 @@ def _entry_allowed(root: Path, path: Path, settings: Settings, *, allow_hidden: 
     return True, rel
 
 
-def _iter_files(root: Path, target: Path, settings: Settings, *, allow_hidden: bool) -> list[Path]:
-    files: list[Path] = []
+def _iter_files(
+    root: Path, target: Path, settings: Settings, *, allow_hidden: bool,
+) -> Iterable[Path]:
     if target.is_file():
         ok, _ = _entry_allowed(root, target, settings, allow_hidden=allow_hidden)
         return [target] if ok else []
 
-    for current, dirnames, filenames in os.walk(target, followlinks=False):
-        current_path = Path(current)
-        kept_dirs = []
-        for dirname in dirnames:
-            child = current_path / dirname
-            ok, _ = _entry_allowed(root, child, settings, allow_hidden=allow_hidden)
-            if ok:
-                kept_dirs.append(dirname)
-        dirnames[:] = kept_dirs
-        for filename in filenames:
-            child = current_path / filename
-            ok, _ = _entry_allowed(root, child, settings, allow_hidden=allow_hidden)
-            if ok:
-                files.append(child)
-    return files
+    def walk() -> Iterator[Path]:
+        for current, dirnames, filenames in os.walk(target, followlinks=False):
+            current_path = Path(current)
+            kept_dirs = []
+            for dirname in dirnames:
+                child = current_path / dirname
+                ok, _ = _entry_allowed(root, child, settings, allow_hidden=allow_hidden)
+                if ok:
+                    kept_dirs.append(dirname)
+            dirnames[:] = kept_dirs
+            for filename in filenames:
+                child = current_path / filename
+                ok, _ = _entry_allowed(root, child, settings, allow_hidden=allow_hidden)
+                if ok:
+                    yield child
+
+    return walk()
 
 
 def _rg_exclude_globs(settings: Settings) -> list[str]:
@@ -132,6 +142,14 @@ def repo_info(settings: Settings) -> dict[str, Any]:
             "max_read_files": settings.max_read_files,
             "max_search_results": settings.max_search_results,
             "max_tree_entries": settings.max_tree_entries,
+            "resource_profile": settings.resource_profile,
+            "resource_profile_applied": settings.resource_profile_applied,
+            "resource_detected_memory_bytes": settings.resource_detected_memory_bytes,
+            "resource_buffer_bytes": settings.resource_buffer_bytes,
+            "resource_buffer_enforced": False,
+            "resource_buffer_semantics": "diagnostic_estimate_only",
+            "max_heavy_operations": settings.max_heavy_operations,
+            "persist_full_output": settings.persist_full_output,
             "blocked_globs": list(settings.blocked_globs),
         },
     }
@@ -222,8 +240,7 @@ def read_text_file(
     text = _read_text(target, settings)
     lines = text.splitlines()
 
-    if start_line < 1:
-        start_line = 1
+    start_line = max(start_line, 1)
     if end_line is None or end_line > len(lines):
         end_line = len(lines)
     if end_line < start_line:
@@ -308,7 +325,7 @@ def find_files(
     return {"pattern": pattern, "path": context.display, "matches": matches, "count": len(matches)}
 
 
-def search_text(
+def _search_text_impl(
     query: str,
     settings: Settings,
     path: str = ".",
@@ -316,7 +333,10 @@ def search_text(
     regex: bool = False,
     case_sensitive: bool = False,
     limit: int = 100,
+    mode: str = "quick",
 ) -> dict[str, Any]:
+    if mode not in {"quick", "exhaustive"}:
+        raise ValueError("mode must be quick or exhaustive")
     limit = min(limit, settings.max_search_results)
     results: list[dict[str, Any]] = []
     search_paths = paths if paths else [path]
@@ -336,12 +356,53 @@ def search_text(
         if ok and rel_path is not None:
             grouped.setdefault(context.root, []).append(rel_path)
     if not grouped:
-        return {"query": query, "regex": regex, "path": path, "paths": search_paths, "results": [], "count": 0}
+        return {
+            "query": query, "regex": regex, "path": path, "paths": search_paths,
+            "results": [], "count": 0, "mode": mode, "complete": True, "reason": None,
+        }
 
+    if mode == "exhaustive":
+        if len(grouped) != 1:
+            raise ValueError("exhaustive search paths must share one workspace root")
+        root, rel_paths = next(iter(grouped.items()))
+        command = ["rg", "--hidden", "-nI", "--with-filename", "--no-heading", "--color", "never"]
+        if not regex:
+            command.append("--fixed-strings")
+        if not case_sensitive:
+            command.append("--ignore-case")
+        command.extend(_rg_exclude_globs(settings))
+        command.extend(["--", query, *rel_paths])
+        fingerprint = sha256("\0".join(command).encode("utf-8")).hexdigest()
+        from .command_tools import start_command_job
+
+        result = start_command_job(
+            shlex.join(command), settings, cwd=str(root), tail_lines=0,
+            concurrency_key=f"search:{fingerprint}", on_conflict="attach", policy_exempt=True,
+            audit_tool="search_text",
+        )
+        result.update({
+            "query": query,
+            "regex": regex,
+            "path": path,
+            "paths": search_paths,
+            "mode": "exhaustive",
+            "engine": "ripgrep",
+        })
+        artifact_id = str(result.get("job_id", ""))
+        if artifact_id:
+            result["continuation"] = {
+                "tool": "read_artifact",
+                "arguments": {"artifact_id": artifact_id},
+            }
+        return result
+
+    complete = True
+    reason: str | None = None
     for root, rel_paths in grouped.items():
         cmd = [
             "rg", "--hidden", "-nI", "--with-filename", "--no-heading",
             "--color", "never", "--max-count", str(max(limit, 1)),
+            "--max-columns", "4096", "--max-columns-preview",
         ]
         if not regex:
             cmd.append("--fixed-strings")
@@ -349,43 +410,150 @@ def search_text(
             cmd.append("--ignore-case")
         cmd.extend(_rg_exclude_globs(settings))
         cmd.extend(["--", query, *rel_paths])
-        proc = subprocess.run(
-            cmd,
-            cwd=str(root),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=settings.subprocess_timeout,
-        )
-        if proc.returncode not in {0, 1}:
-            stderr = proc.stderr.strip() or proc.stdout.strip()
-            raise RuntimeError(stderr or "ripgrep search failed")
-        for line in proc.stdout.splitlines():
-            file_path, line_no, text = (
-                line.split(":", 2) if line.count(":") >= 2 else (None, None, None)
+        with tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(root),
+                stdout=subprocess.PIPE,
+                stderr=stderr_file,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
             )
-            if file_path is None or line_no is None or text is None or not line_no.isdigit():
-                continue
-            if file_path.startswith("./"):
-                file_path = file_path[2:]
-            if not is_allowed_relative(
-                file_path,
-                settings,
-                allow_hidden=settings.allow_hidden_default,
-            ):
-                continue
-            results.append(
-                {
-                    "path": display_path(root / file_path, settings),
-                    "line": int(line_no),
-                    "text": _truncate(text, 400),
-                }
-            )
-            if len(results) >= limit:
-                break
+            assert proc.stdout is not None
+            timed_out = threading.Event()
+
+            def stop_on_timeout(
+                event: threading.Event = timed_out,
+                process: subprocess.Popen[str] = proc,
+            ) -> None:
+                event.set()
+                process.kill()
+
+            timer = threading.Timer(settings.subprocess_timeout, stop_on_timeout)
+            timer.daemon = True
+            timer.start()
+            hit_limit = False
+            try:
+                for line in proc.stdout:
+                    file_path, line_no, text = (
+                        line.rstrip("\r\n").split(":", 2)
+                        if line.count(":") >= 2
+                        else (None, None, None)
+                    )
+                    if file_path is None or line_no is None or text is None or not line_no.isdigit():
+                        continue
+                    file_path = file_path.removeprefix("./")
+                    if not is_allowed_relative(
+                        file_path,
+                        settings,
+                        allow_hidden=settings.allow_hidden_default,
+                    ):
+                        continue
+                    results.append(
+                        {
+                            "path": display_path(root / file_path, settings),
+                            "line": int(line_no),
+                            "text": _truncate(text, 400),
+                        }
+                    )
+                    if len(results) >= limit:
+                        hit_limit = True
+                        complete = False
+                        reason = "result_limit"
+                        proc.terminate()
+                        break
+                return_code = proc.wait(timeout=1 if hit_limit else None)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                return_code = proc.wait()
+            finally:
+                timer.cancel()
+                proc.stdout.close()
+
+            if timed_out.is_set():
+                raise TimeoutError(f"ripgrep search exceeded {settings.subprocess_timeout}s")
+            if not hit_limit and return_code not in {0, 1}:
+                stderr_file.seek(0)
+                stderr = stderr_file.read(8_192).decode("utf-8", errors="replace").strip()
+                raise RuntimeError(stderr or "ripgrep search failed")
         if len(results) >= limit:
             break
-    return {"query": query, "regex": regex, "path": path, "paths": search_paths, "results": results, "count": len(results)}
+    return {
+        "query": query,
+        "regex": regex,
+        "path": path,
+        "paths": search_paths,
+        "results": results,
+        "count": len(results),
+        "mode": "quick",
+        "complete": complete,
+        "reason": reason,
+    }
+
+
+def search_text(
+    query: str,
+    settings: Settings,
+    path: str = ".",
+    paths: list[str] | None = None,
+    regex: bool = False,
+    case_sensitive: bool = False,
+    limit: int = 100,
+    mode: str = "quick",
+) -> dict[str, Any]:
+    if mode == "exhaustive":
+        return _search_text_impl(
+            query, settings, path=path, paths=paths, regex=regex,
+            case_sensitive=case_sensitive, limit=limit, mode=mode,
+        )
+    from .command_tools import _audit
+
+    request_id = str(uuid.uuid4())
+    fingerprint = sha256(
+        json.dumps(
+            {"query": query, "path": path, "paths": paths, "regex": regex},
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    started = time.monotonic()
+    _audit(settings, {
+        "timestamp": int(time.time()), "event": "heavy_started", "request_id": request_id,
+        "tool": "search_text", "args_fingerprint": fingerprint,
+    })
+    try:
+        lease = acquire_heavy_operation(settings)
+    except ResourceBusyError:
+        _audit(settings, {
+            "timestamp": int(time.time()), "event": "heavy_finished", "request_id": request_id,
+            "tool": "search_text", "args_fingerprint": fingerprint,
+            "duration_ms": 0, "bytes": 0, "status": "failed",
+            "error_kind": "resource_busy",
+        })
+        raise
+    try:
+        result = _search_text_impl(
+            query, settings, path=path, paths=paths, regex=regex,
+            case_sensitive=case_sensitive, limit=limit, mode=mode,
+        )
+    except (OSError, RuntimeError, TimeoutError, ValueError):
+        _audit(settings, {
+            "timestamp": int(time.time()), "event": "heavy_finished", "request_id": request_id,
+            "tool": "search_text", "args_fingerprint": fingerprint,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "bytes": 0, "status": "failed",
+        })
+        raise
+    finally:
+        lease.release()
+    returned_bytes = sum(len(str(item.get("text", "")).encode()) for item in result["results"])
+    _audit(settings, {
+        "timestamp": int(time.time()), "event": "heavy_finished", "request_id": request_id,
+        "tool": "search_text", "args_fingerprint": fingerprint,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "bytes": returned_bytes, "status": "completed",
+    })
+    return result
 
 
 def symbol_search(
@@ -421,23 +589,41 @@ def symbol_search(
 
 
 def recent_changes(settings: Settings, path: str = ".", paths: list[str] | None = None, limit: int = 100) -> dict[str, Any]:
-    items: list[dict[str, str | float | int]] = []
+    limit = min(max(limit, 0), settings.max_tree_entries)
+    if limit == 0:
+        return {"path": path, "paths": paths if paths else [path], "files": [], "count": 0}
+    candidates: dict[str, dict[str, str | float | int]] = {}
+    oldest: list[tuple[float, str]] = []
     search_paths = paths if paths else [path]
 
     for item in search_paths:
         context = resolve_path_context(item, settings, allow_hidden=settings.allow_hidden_default)
         for file_path in _iter_files(context.root, context.target, settings, allow_hidden=settings.allow_hidden_default):
-            stat = file_path.stat()
+            try:
+                stat = file_path.stat()
+            except OSError:
+                continue
+            display = display_path(file_path, settings)
             row: dict[str, str | float | int] = {
-                "path": display_path(file_path, settings),
+                "path": display,
                 "mtime": stat.st_mtime,
                 "size": stat.st_size,
             }
-            if row not in items:
-                items.append(row)
+            if display in candidates:
+                candidates[display] = row
+                oldest = [(float(value["mtime"]), name) for name, value in candidates.items()]
+                heapq.heapify(oldest)
+                continue
+            if len(candidates) < limit:
+                candidates[display] = row
+                heapq.heappush(oldest, (stat.st_mtime, display))
+                continue
+            if oldest and stat.st_mtime > oldest[0][0]:
+                _, removed = heapq.heapreplace(oldest, (stat.st_mtime, display))
+                candidates.pop(removed, None)
+                candidates[display] = row
 
-    items.sort(key=lambda x: float(x["mtime"]), reverse=True)
-    items = items[:limit]
+    items = sorted(candidates.values(), key=lambda value: float(value["mtime"]), reverse=True)
     return {"path": path, "paths": search_paths, "files": items, "count": len(items)}
 
 
@@ -449,7 +635,7 @@ def _parse_requirements_txt(path: Path) -> list[str]:
     deps = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or line.startswith("-r"):
+        if not line or line.startswith(("#", "-r")):
             continue
         deps.append(line)
     return deps
@@ -514,9 +700,11 @@ def dependency_map(settings: Settings, path: str = ".") -> dict[str, Any]:
     target = context.target
     root = context.root
 
-    manifests = []
+    manifests: list[Path] = []
     if target.is_file():
-        manifests = _iter_files(root, target, settings, allow_hidden=settings.allow_hidden_default)
+        manifests.extend(
+            _iter_files(root, target, settings, allow_hidden=settings.allow_hidden_default)
+        )
     else:
         names = ["pyproject.toml", "requirements.txt", "package.json", "go.mod", "Cargo.toml"]
         for file_path in _iter_files(root, target, settings, allow_hidden=settings.allow_hidden_default):

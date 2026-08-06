@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from test_command_tools import make_settings
+
 from chatrepo_mcp.git_tools import GitToolError
 from chatrepo_mcp.git_workflow_tools import (
     _conflicted_paths,
@@ -15,7 +17,6 @@ from chatrepo_mcp.git_workflow_tools import (
     git_switch_branch,
     git_worktree_remove,
 )
-from test_command_tools import make_settings
 
 
 def test_conflicted_paths_ignores_short_lines_and_collects_refs() -> None:
@@ -297,7 +298,7 @@ def test_git_push_timeout_is_reported(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr("chatrepo_mcp.git_workflow_tools._resolve_repo_toplevel", fake_resolve_repo_toplevel)
     monkeypatch.setattr("chatrepo_mcp.git_workflow_tools._run_git", fake_run_git)
-    monkeypatch.setattr("chatrepo_mcp.git_workflow_tools.subprocess.run", fake_subprocess_run)
+    monkeypatch.setattr("chatrepo_mcp.git_workflow_tools.run_bounded", fake_subprocess_run)
 
     result = git_push(settings, dry_run=False, confirmed=True, branch="release")
 

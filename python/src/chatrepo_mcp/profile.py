@@ -5,7 +5,6 @@ from typing import Any
 
 from .config import Settings
 
-
 DEFAULT_PRESETS: dict[str, dict[str, Any]] = {
     "git_diff_check": {"command": "git diff --check", "parser": "git_diff_check", "timeout_ms": 120_000},
     "node_version": {"command": "node --version", "parser": "none", "timeout_ms": 30_000},
@@ -126,7 +125,7 @@ def _load_yaml_text(text: str) -> dict[str, Any]:
     if loaded is None:
         return {}
     if not isinstance(loaded, dict):
-        raise ValueError("mcp.yml root must be a mapping")
+        raise TypeError("mcp.yml root must be a mapping")
     return loaded
 
 
@@ -156,7 +155,11 @@ def load_repo_profile(settings: Settings) -> RepoProfile:
     data: dict[str, Any] = {}
     if path.exists():
         try:
-            data = _load_yaml_text(path.read_text(encoding="utf-8"))
+            with path.open("rb") as handle:
+                raw = handle.read(settings.max_file_bytes + 1)
+            if len(raw) > settings.max_file_bytes:
+                raise ValueError(f"profile exceeds MAX_FILE_BYTES ({settings.max_file_bytes})")
+            data = _load_yaml_text(raw.decode("utf-8"))
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc))
             data = {}

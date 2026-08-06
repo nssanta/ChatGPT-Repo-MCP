@@ -84,7 +84,6 @@ func TestMCPContractParityForAllTools(t *testing.T) {
 		if string(expectedSchema) != string(actualSchema) {
 			t.Fatalf("tool %q inputSchema mismatch", name)
 		}
-
 		wantReadOnly := false
 		if contractTool.Annotations.ReadOnlyHint != nil {
 			wantReadOnly = *contractTool.Annotations.ReadOnlyHint

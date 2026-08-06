@@ -25,8 +25,12 @@ import time
 from typing import Any
 
 from . import git_tools
+from .bounded_subprocess import run_bounded
 from .command_tools import ConfirmationRequiredError, _audit, _redact
 from .config import Settings
+from .output_store import inline_head_tail
+from .resource_profile import acquire_heavy_operation
+from .runtime_env import command_environment, resolve_binary
 
 #: Shown whenever ``gh`` is missing so the caller (human or agent) knows how
 #: to unblock itself.
@@ -69,7 +73,7 @@ def _guard(settings: Settings) -> dict[str, Any] | None:
     return None
 
 
-def _require_gh_ready() -> dict[str, Any] | None:
+def _require_gh_ready(settings: Settings | None = None) -> dict[str, Any] | None:
     """Return a structural error dict if ``gh`` is missing/unauthenticated, else ``None``.
 
     Used by write/destructive operations to check availability *before*
@@ -77,7 +81,7 @@ def _require_gh_ready() -> dict[str, Any] | None:
     confirm a destructive action that cannot possibly run yet because ``gh``
     isn't installed or authenticated.
     """
-    availability = _gh_available()
+    availability = _gh_available(settings)
     if not availability["installed"]:
         return {"ok": False, "error_kind": "gh_unavailable", "install_hint": GH_INSTALL_HINT}
     if not availability["authenticated"]:
@@ -85,30 +89,32 @@ def _require_gh_ready() -> dict[str, Any] | None:
     return None
 
 
-def _gh_available() -> dict[str, Any]:
+def _gh_available(settings: Settings | None = None) -> dict[str, Any]:
     """Probe whether ``gh`` is installed and authenticated.
 
     Returns ``{"installed": bool, "authenticated": bool, "version": str|None,
     "hint": str}``. Never raises -- any subprocess error is treated as "not
     installed"/"not authenticated".
     """
-    path = shutil.which("gh")
+    path = shutil.which("gh") if settings is None else resolve_binary("gh", settings)[0]
     if not path:
         return {
             "installed": False,
             "authenticated": False,
             "version": None,
             "hint": GH_INSTALL_HINT,
+            "path": None,
         }
 
     version: str | None = None
+    command_binary = "gh" if settings is None else path
     try:
-        proc = subprocess.run(
-            ["gh", "--version"],
-            capture_output=True,
-            text=True,
+        proc = run_bounded(
+            [command_binary, "--version"],
+            env=_gh_env(settings) if settings is not None else None,
             timeout=_PROBE_TIMEOUT,
-            check=False,
+            max_stdout_bytes=4_096,
+            max_stderr_bytes=4_096,
         )
         if proc.returncode == 0 and proc.stdout.strip():
             version = proc.stdout.strip().splitlines()[0]
@@ -117,12 +123,12 @@ def _gh_available() -> dict[str, Any]:
 
     authenticated = False
     try:
-        auth_proc = subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True,
-            text=True,
+        auth_proc = run_bounded(
+            [command_binary, "auth", "status"],
+            env=_gh_env(settings) if settings is not None else None,
             timeout=_PROBE_TIMEOUT,
-            check=False,
+            max_stdout_bytes=4_096,
+            max_stderr_bytes=4_096,
         )
         authenticated = auth_proc.returncode == 0
     except (subprocess.SubprocessError, OSError):
@@ -134,14 +140,16 @@ def _gh_available() -> dict[str, Any]:
         "authenticated": authenticated,
         "version": version,
         "hint": hint,
+        "path": path,
     }
 
 
-def _gh_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env["GH_PROMPT_DISABLED"] = "1"
-    env.setdefault("NO_COLOR", "1")
-    return env
+def _gh_env(settings: Settings) -> dict[str, str]:
+    if not hasattr(settings, "mcp_extra_path"):
+        env = os.environ.copy()
+        env.update({"GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"})
+        return env
+    return command_environment(settings, {"GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"})
 
 
 def _run_gh(
@@ -162,7 +170,7 @@ def _run_gh(
     - other non-zero exit       -> ``{"ok": False, "error_kind": "gh_command_failed", ...}``
     - success                   -> ``{"ok": True, "stdout": ..., "stderr": ..., "exit_code": 0}``
     """
-    availability = _gh_available()
+    availability = _gh_available(settings)
     if not availability["installed"]:
         return {"ok": False, "error_kind": "gh_unavailable", "install_hint": GH_INSTALL_HINT}
 
@@ -171,44 +179,144 @@ def _run_gh(
     except git_tools.GitToolError as exc:
         return {"ok": False, "error_kind": "no_github_remote", "error": _redact(str(exc))}
 
-    cmd = ["gh", *args]
+    binary = availability.get("path") or (
+        resolve_binary("gh", settings)[0] if hasattr(settings, "mcp_extra_path") else "gh"
+    )
+    if binary is None:
+        return {"ok": False, "error_kind": "gh_unavailable", "install_hint": GH_INSTALL_HINT}
+    inline_limit = min(getattr(settings, "default_inline_output_bytes", 65_536), settings.max_diff_bytes)
+    cmd = [binary, *args]
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(toplevel),
-            env=_gh_env(),
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=timeout or settings.gh_timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error_kind": "gh_timeout", "timeout": timeout or settings.gh_timeout}
+        lease = acquire_heavy_operation(settings)
+        try:
+            proc = run_bounded(
+                cmd,
+                cwd=str(toplevel),
+                env=_gh_env(settings),
+                timeout=timeout or settings.gh_timeout,
+                max_stdout_bytes=inline_limit,
+                max_stderr_bytes=inline_limit,
+                max_combined_bytes=inline_limit,
+                artifact_settings=settings,
+            )
+        finally:
+            lease.release()
+    except subprocess.TimeoutExpired as exc:
+        partial = getattr(exc, "result", None)
+        timeout_result: dict[str, Any] = {
+            "ok": False,
+            "error_kind": "gh_timeout",
+            "timeout": timeout or settings.gh_timeout,
+        }
+        if partial is not None:
+            artifact = getattr(partial, "artifact", None)
+            timeout_result.update({
+                "stdout": _redact(partial.stdout),
+                "stderr": _redact(partial.stderr),
+                "exit_code": None,
+                "output_truncated": True,
+            })
+            if artifact is not None:
+                receipt = artifact["receipt"]
+                receipt["configured"]["inline_output_bytes"] = getattr(settings, "default_inline_output_bytes", 65_536)
+                receipt["applied"]["inline_output_bytes"] = inline_limit
+                receipt["returned"] = {
+                    "stdout_bytes": len(partial.stdout.encode("utf-8")),
+                    "stderr_bytes": len(partial.stderr.encode("utf-8")),
+                }
+                receipt["total"] = {
+                    "stdout_bytes": partial.stdout_bytes,
+                    "stderr_bytes": partial.stderr_bytes,
+                }
+                timeout_result.update({
+                    "artifact": artifact,
+                    "continuation": artifact["continuation"],
+                    "receipt": receipt,
+                })
+        return timeout_result
     except OSError as exc:
         return {"ok": False, "error_kind": "gh_unavailable", "install_hint": GH_INSTALL_HINT, "error": _redact(str(exc))}
 
+    stdout_total = getattr(proc, "stdout_bytes", len(proc.stdout.encode("utf-8")))
+    stderr_total = getattr(proc, "stderr_bytes", len(proc.stderr.encode("utf-8")))
     stdout = _redact(proc.stdout)
     stderr = _redact(proc.stderr)
+    if len(stdout.encode("utf-8")) + len(stderr.encode("utf-8")) > inline_limit:
+        stdout_limit = inline_limit
+        stderr_limit = inline_limit
+        if stdout_total and stderr_total:
+            stdout_limit = (inline_limit + 1) // 2
+            stderr_limit = inline_limit - stdout_limit
+        stdout = inline_head_tail(stdout, stdout, total_bytes=stdout_total, maximum=stdout_limit)
+        stderr = inline_head_tail(stderr, stderr, total_bytes=stderr_total, maximum=stderr_limit)
+    artifact = getattr(proc, "artifact", None)
+    output_truncated = (
+        bool(getattr(proc, "truncated", False))
+        or stdout_total > len(stdout.encode("utf-8"))
+        or stderr_total > len(stderr.encode("utf-8"))
+    )
+    response: dict[str, Any] = {
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_code": proc.returncode,
+        "output_truncated": output_truncated,
+    }
+    if artifact is not None:
+        receipt = artifact["receipt"]
+        if output_truncated:
+            artifact.update({
+                "has_more": True,
+                "eof": False,
+                "continuation": {
+                    "tool": "read_artifact",
+                    "arguments": {"artifact_id": artifact["artifact_id"]},
+                },
+            })
+            receipt.update({
+                "status": "partial", "completeness": "partial", "reason": "inline_limit",
+            })
+        receipt["configured"]["inline_output_bytes"] = getattr(settings, "default_inline_output_bytes", 65_536)
+        receipt["applied"]["inline_output_bytes"] = inline_limit
+        receipt["returned"] = {
+            "stdout_bytes": len(stdout.encode("utf-8")),
+            "stderr_bytes": len(stderr.encode("utf-8")),
+        }
+        receipt["total"] = {
+            "stdout_bytes": stdout_total,
+            "stderr_bytes": stderr_total,
+        }
+        response.update({"artifact": artifact, "continuation": artifact["continuation"], "receipt": receipt})
     if proc.returncode != 0:
         combined = f"{stderr}\n{stdout}".lower()
         if any(marker in combined for marker in _NO_REMOTE_MARKERS):
-            return {"ok": False, "error_kind": "no_github_remote", "stderr": stderr, "stdout": stdout, "exit_code": proc.returncode}
+            return {"ok": False, "error_kind": "no_github_remote", **response}
         if any(marker in combined for marker in _NOT_AUTHENTICATED_MARKERS):
             return {
                 "ok": False,
                 "error_kind": "gh_not_authenticated",
                 "install_hint": "run `gh auth login` to authenticate",
-                "stderr": stderr,
-                "stdout": stdout,
-                "exit_code": proc.returncode,
+                **response,
             }
-        return {"ok": False, "error_kind": "gh_command_failed", "stderr": stderr, "stdout": stdout, "exit_code": proc.returncode}
+        return {"ok": False, "error_kind": "gh_command_failed", **response}
 
-    return {"ok": True, "stdout": stdout, "stderr": stderr, "exit_code": proc.returncode}
+    return {"ok": True, **response}
 
 
 def _json_or_error(gh_result: dict[str, Any], *, default: Any) -> tuple[Any, dict[str, Any] | None]:
     """Parse ``gh_result["stdout"]`` as JSON, or return a structural error dict."""
+    if gh_result.get("output_truncated"):
+        evidence: dict[str, Any] = {
+            key: gh_result[key]
+            for key in ("artifact", "continuation", "receipt")
+            if key in gh_result
+        }
+        return default, {
+            "ok": False,
+            "error_kind": "gh_output_truncated",
+            "output_truncated": True,
+            "stdout": gh_result.get("stdout"),
+            **evidence,
+        }
     try:
         return json.loads(gh_result.get("stdout") or json.dumps(default)), None
     except json.JSONDecodeError:
@@ -284,7 +392,7 @@ def gh_status(settings: Settings) -> dict[str, Any]:
     if guard:
         return guard
 
-    availability = _gh_available()
+    availability = _gh_available(settings)
     result: dict[str, Any] = {"ok": availability["installed"] and availability["authenticated"], **availability}
     if not availability["installed"]:
         result["error_kind"] = "gh_unavailable"
@@ -333,7 +441,7 @@ def gh_pr_create(
     if guard:
         return guard
 
-    not_ready = _require_gh_ready()
+    not_ready = _require_gh_ready(settings)
     if not_ready:
         return not_ready
 
@@ -442,14 +550,14 @@ def gh_pr_view(
 
     result: dict[str, Any] = {"ok": True, "pr": data}
     if include_diff:
-        max_bytes = getattr(settings, "max_diff_bytes", 1_000_000) or 1_000_000
         diff_result = _run_gh(["pr", "diff", str(number)], settings, repo=repo)
         if diff_result.get("ok"):
-            diff_text = diff_result.get("stdout") or ""
-            encoded = diff_text.encode("utf-8", errors="replace")
-            if len(encoded) > max_bytes:
-                diff_text = encoded[:max_bytes].decode("utf-8", errors="replace") + "\n...[truncated]"
-            result["diff"] = diff_text
+            result["diff"] = diff_result.get("stdout") or ""
+            if diff_result.get("artifact") is not None:
+                result["diff_artifact"] = diff_result["artifact"]
+                result["diff_receipt"] = diff_result["receipt"]
+                if diff_result.get("output_truncated"):
+                    result["diff_continuation"] = diff_result.get("continuation")
         else:
             result["diff_error"] = diff_result
     return result
@@ -475,7 +583,7 @@ def gh_pr_comment(
     guard = _guard(settings)
     if guard:
         return guard
-    not_ready = _require_gh_ready()
+    not_ready = _require_gh_ready(settings)
     if not_ready:
         return not_ready
     if not settings.confirmation_granted(confirmed):
@@ -524,7 +632,7 @@ def gh_pr_merge(
         return guard
     if method not in {"merge", "squash", "rebase"}:
         return {"ok": False, "error_kind": "invalid_method", "error": f"method must be one of merge, squash, rebase (got {method!r})"}
-    not_ready = _require_gh_ready()
+    not_ready = _require_gh_ready(settings)
     if not_ready:
         return not_ready
     if not settings.confirmation_granted(confirmed):
@@ -668,7 +776,7 @@ def gh_run_rerun(
     guard = _guard(settings)
     if guard:
         return guard
-    not_ready = _require_gh_ready()
+    not_ready = _require_gh_ready(settings)
     if not_ready:
         return not_ready
     if not settings.confirmation_granted(confirmed):

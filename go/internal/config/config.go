@@ -50,6 +50,7 @@ type Settings struct {
 	MaxBatchOperations           int
 	MaxCombinedDiffChars         int
 	MaxPatchBytes                int
+	DefaultInlineOutputBytes     int
 	MaxCommandOutputChars        int
 	CommandTimeout               time.Duration
 	SubprocessTimeout            time.Duration
@@ -57,6 +58,16 @@ type Settings struct {
 	GHTimeout                    time.Duration
 	CommandAuditLogPath          string
 	CommandJobsDir               string
+	ArtifactTotalBytes           int64
+	ArtifactMaxBytes             int64
+	ArtifactTTL                  time.Duration
+	ArtifactDiskReserveBytes     int64
+	ResourceProfile              string
+	ResourceProfileApplied       string
+	ResourceBufferBytes          int64
+	MaxHeavyOperations           int
+	DetectedMemoryBytes          int64
+	PersistFullOutput            bool
 	CommandPolicyMode            string
 	DeniedWords                  []string
 	DestructiveWords             []string
@@ -135,6 +146,27 @@ func Load() (Settings, error) {
 		return Settings{}, errors.New("SECRET_GLOBS must not be empty unless ACCESS_MODE=full and ALLOW_SECRET_ACCESS=true")
 	}
 
+	configuredResourceProfile := lowerEnv("RESOURCE_PROFILE", "auto")
+	resourceBufferOverride, _, resourceErr := optionalPositiveIntEnv("RESOURCE_BUFFER_BYTES")
+	if resourceErr != nil {
+		return Settings{}, resourceErr
+	}
+	heavyOperationsOverride, heavyOperationsSet, resourceErr := optionalPositiveIntEnv("MAX_HEAVY_OPERATIONS")
+	if resourceErr != nil {
+		return Settings{}, resourceErr
+	}
+	if configuredResourceProfile == "custom" && !heavyOperationsSet {
+		return Settings{}, errors.New("RESOURCE_PROFILE=custom requires positive MAX_HEAVY_OPERATIONS")
+	}
+	resourceProfile, resourceBuffer, heavyOperations, detectedMemory, resourceErr := resolveResourceProfile(
+		configuredResourceProfile, int64(resourceBufferOverride), heavyOperationsOverride,
+	)
+	if resourceErr != nil {
+		return Settings{}, resourceErr
+	}
+	if !boolEnv("PERSIST_FULL_OUTPUT", true) {
+		return Settings{}, errors.New("PERSIST_FULL_OUTPUT=false is unsupported; full redacted output persistence is mandatory")
+	}
 	settings := Settings{
 		AppName:                      stringEnv("APP_NAME", "chatrepo-mcp"),
 		Host:                         stringEnv("HOST", "127.0.0.1"),
@@ -166,6 +198,7 @@ func Load() (Settings, error) {
 		MaxBatchOperations:           intEnv("MAX_BATCH_OPERATIONS", 50),
 		MaxCombinedDiffChars:         intEnv("MAX_COMBINED_DIFF_CHARS", 300_000),
 		MaxPatchBytes:                intEnv("MAX_PATCH_BYTES", 500_000),
+		DefaultInlineOutputBytes:     intEnv("DEFAULT_INLINE_OUTPUT_BYTES", 64*1024),
 		MaxCommandOutputChars:        intEnv("MAX_COMMAND_OUTPUT_CHARS", 200_000),
 		CommandTimeout:               time.Duration(intEnv("COMMAND_TIMEOUT_MS", 300_000)) * time.Millisecond,
 		SubprocessTimeout:            time.Duration(intEnv("SUBPROCESS_TIMEOUT", 15)) * time.Second,
@@ -173,6 +206,16 @@ func Load() (Settings, error) {
 		GHTimeout:                    time.Duration(intEnv("GH_TIMEOUT", 60)) * time.Second,
 		CommandAuditLogPath:          expandHome(stringEnv("COMMAND_AUDIT_LOG_PATH", "~/.local/state/chatrepo-mcp/commands.log")),
 		CommandJobsDir:               expandHome(stringEnv("COMMAND_JOBS_DIR", "/tmp/chatrepo-mcp-jobs")),
+		ArtifactTotalBytes:           int64(intEnv("ARTIFACT_TOTAL_BYTES", 10*1024*1024*1024)),
+		ArtifactMaxBytes:             int64(intEnv("ARTIFACT_MAX_BYTES", 5*1024*1024*1024)),
+		ArtifactTTL:                  time.Duration(intEnv("ARTIFACT_TTL_SECONDS", 7*24*60*60)) * time.Second,
+		ArtifactDiskReserveBytes:     int64(intEnv("ARTIFACT_DISK_RESERVE_BYTES", 2*1024*1024*1024)),
+		ResourceProfile:              configuredResourceProfile,
+		ResourceProfileApplied:       resourceProfile,
+		ResourceBufferBytes:          resourceBuffer,
+		MaxHeavyOperations:           heavyOperations,
+		DetectedMemoryBytes:          detectedMemory,
+		PersistFullOutput:            true,
 		CommandPolicyMode:            policy,
 		DeniedWords:                  csvEnv("DENIED_WORDS", "sudo,su"),
 		DestructiveWords:             csvEnv("DESTRUCTIVE_WORDS", "rm -rf,rmdir,git push --force,git reset --hard,git clean,docker system prune,chmod -R,chown -R,mkfs,dd"),
@@ -197,7 +240,26 @@ func Load() (Settings, error) {
 	if settings.Transport != "streamable-http" && settings.Transport != "stdio" {
 		return Settings{}, errors.New("TRANSPORT must be one of: streamable-http, stdio")
 	}
+	inlineHardLimit := min(settings.MaxResponseChars, settings.MaxDiffBytes, settings.MaxCommandOutputChars)
+	if settings.DefaultInlineOutputBytes <= 0 || settings.DefaultInlineOutputBytes > inlineHardLimit {
+		return Settings{}, fmt.Errorf(
+			"DEFAULT_INLINE_OUTPUT_BYTES must be positive and no greater than the smallest configured output ceiling (%d)",
+			inlineHardLimit,
+		)
+	}
 	return settings, nil
+}
+
+func optionalPositiveIntEnv(name string) (int, bool, error) {
+	raw, present := os.LookupEnv(name)
+	if !present || strings.TrimSpace(raw) == "" {
+		return 0, false, nil
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value <= 0 {
+		return 0, true, fmt.Errorf("%s must be a positive integer when set", name)
+	}
+	return value, true, nil
 }
 
 func pathListEnv(name string) []string {

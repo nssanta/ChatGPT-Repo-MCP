@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from . import fs_tools, git_tools
+from .bounded_subprocess import run_bounded
 from .config import Settings
 from .security import SecurityError, display_path, resolve_path_context, resolve_repo_path
 
@@ -41,6 +42,11 @@ _EXCLUDE_DIRS = (
 
 _CTAGS_TIMEOUT = 60
 _CACHE_TTL_SECONDS = 300
+
+
+class CtagsIncompleteError(RuntimeError):
+    """Raised when ctags succeeded but its bounded output was incomplete."""
+
 
 _HEURISTIC_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^\s*def\s+(\w+)"), "function"),
@@ -64,7 +70,9 @@ def _ctags_binary() -> str | None:
     if not binary:
         return None
     try:
-        proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=5, check=False)
+        proc = run_bounded(
+            [binary, "--version"], timeout=5, max_stdout_bytes=4_096, max_stderr_bytes=4_096,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     if "Universal Ctags" not in (proc.stdout or ""):
@@ -89,11 +97,17 @@ def _cache_path(settings: Settings, repo_rel: str) -> Path:
     return _cache_dir(settings) / safe_repo / "symbols.json"
 
 
-def _load_cache(path: Path, ttl_seconds: int = _CACHE_TTL_SECONDS) -> list[dict[str, Any]] | None:
+def _load_cache(
+    path: Path, ttl_seconds: int = _CACHE_TTL_SECONDS, max_bytes: int = 1_000_000,
+) -> list[dict[str, Any]] | None:
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        with path.open("rb") as handle:
+            raw = handle.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            return None
+        data = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError):
         return None
     generated_at = data.get("generated_at", 0)
@@ -133,44 +147,60 @@ def _parse_ctags_json_lines(text: str) -> list[dict[str, Any]]:
     return tags
 
 
-def _run_ctags_recursive(target: Path) -> list[dict[str, Any]]:
+def _run_ctags_recursive(target: Path, max_bytes: int = 1_000_000) -> list[dict[str, Any]]:
     """Run universal-ctags recursively over ``target``; empty list if unavailable/failed."""
     binary = _ctags_binary()
     if not binary:
         return []
     exclude_args = [f"--exclude={name}" for name in _EXCLUDE_DIRS]
+    incomplete = False
     for fields_arg in ("--fields=+n", None):
         cmd = [binary, "--output-format=json", "-R", *exclude_args]
         if fields_arg:
             cmd.append(fields_arg)
         cmd.append(str(target))
         try:
-            proc = subprocess.run(cmd, cwd=str(target), capture_output=True, text=True, timeout=_CTAGS_TIMEOUT, check=False)
+            proc = run_bounded(
+                cmd, cwd=str(target), timeout=_CTAGS_TIMEOUT,
+                max_stdout_bytes=max_bytes, max_stderr_bytes=4_096,
+            )
         except (OSError, subprocess.SubprocessError):
             continue
         if proc.returncode == 0:
+            if bool(getattr(proc, "stdout_truncated", False)):
+                incomplete = True
+                continue
             return _parse_ctags_json_lines(proc.stdout)
+    if incomplete:
+        raise CtagsIncompleteError("ctags recursive output exceeded its bounded capture")
     return []
 
 
-def _run_ctags_file(target: Path) -> list[dict[str, Any]]:
+def _run_ctags_file(target: Path, max_bytes: int = 1_000_000) -> list[dict[str, Any]]:
     """Run universal-ctags over a single file; empty list if unavailable/failed."""
     binary = _ctags_binary()
     if not binary:
         return []
+    incomplete = False
     for fields_arg in ("--fields=+n", None):
         cmd = [binary, "--output-format=json"]
         if fields_arg:
             cmd.append(fields_arg)
         cmd.append(str(target))
         try:
-            proc = subprocess.run(
-                cmd, cwd=str(target.parent), capture_output=True, text=True, timeout=_CTAGS_TIMEOUT, check=False
+            proc = run_bounded(
+                cmd, cwd=str(target.parent), timeout=_CTAGS_TIMEOUT,
+                max_stdout_bytes=max_bytes, max_stderr_bytes=4_096,
             )
         except (OSError, subprocess.SubprocessError):
             continue
         if proc.returncode == 0:
+            if bool(getattr(proc, "stdout_truncated", False)):
+                incomplete = True
+                continue
             return _parse_ctags_json_lines(proc.stdout)
+    if incomplete:
+        raise CtagsIncompleteError("ctags file output exceeded its bounded capture")
     return []
 
 
@@ -218,10 +248,10 @@ def _resolve_index_scope(settings: Settings, repo: str | None) -> tuple[Path, st
 
 def _get_or_build_index(settings: Settings, toplevel: Path, repo_rel: str) -> list[dict[str, Any]]:
     cache_path = _cache_path(settings, repo_rel)
-    cached = _load_cache(cache_path)
+    cached = _load_cache(cache_path, max_bytes=settings.max_diff_bytes)
     if cached is not None:
         return cached
-    raw_tags = _run_ctags_recursive(toplevel)
+    raw_tags = _run_ctags_recursive(toplevel, settings.max_diff_bytes)
     symbols = _normalize_tags(raw_tags, toplevel, settings)
     _save_cache(cache_path, symbols)
     return symbols
@@ -279,7 +309,7 @@ def symbol_definition(
                 matches = [item for item in matches if item.get("kind") == kind]
             matches = matches[:limit]
             return {"ok": True, "symbol": symbol, "definitions": matches, "count": len(matches), "engine": "ctags"}
-        except Exception:  # noqa: BLE001 - never let index issues break the tool, fall back
+        except Exception:  # noqa: BLE001, S110 - never let index issues break the tool, fall back
             pass
 
     result = fs_tools.symbol_search(symbol, settings, path=repo or ".", limit=limit)
@@ -315,7 +345,7 @@ def document_symbols(settings: Settings, path: str, *, repo: str | None = None) 
 
     if _ctags_available():
         try:
-            raw_tags = _run_ctags_file(target)
+            raw_tags = _run_ctags_file(target, settings.max_response_chars)
             if raw_tags:
                 symbols = [
                     {
@@ -328,10 +358,17 @@ def document_symbols(settings: Settings, path: str, *, repo: str | None = None) 
                     for tag in raw_tags
                 ]
                 return {"ok": True, "path": shown_path, "symbols": symbols, "engine": "ctags"}
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 - optional ctags failure falls back to heuristics
             pass
 
-    text = target.read_text(encoding="utf-8", errors="replace")
+    with target.open("rb") as handle:
+        raw = handle.read(settings.max_file_bytes + 1)
+    if len(raw) > settings.max_file_bytes:
+        return {
+            "ok": False, "path": shown_path, "symbols": [], "engine": "none",
+            "error": f"file exceeds MAX_FILE_BYTES ({settings.max_file_bytes})",
+        }
+    text = raw.decode("utf-8", errors="replace")
     symbols = _heuristic_document_symbols(text)
     return {"ok": True, "path": shown_path, "symbols": symbols, "engine": "heuristic"}
 
@@ -348,7 +385,7 @@ def workspace_symbols(settings: Settings, query: str, *, repo: str | None = None
             matches = [item for item in symbols if item.get("name") and needle in str(item["name"]).lower()]
             matches = matches[:limit]
             return {"ok": True, "query": query, "symbols": matches, "count": len(matches), "engine": "ctags"}
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 - optional ctags failure falls back to heuristics
             pass
 
     result = fs_tools.search_text(query, settings, path=repo or ".", regex=False, case_sensitive=False, limit=limit)

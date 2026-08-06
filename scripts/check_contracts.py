@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Verify shared contract copies and release metadata without modifying files."""
 
 from __future__ import annotations
@@ -11,22 +10,20 @@ from pathlib import Path
 
 import anyio
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python" / "src"))
+sys.path.insert(0, str(ROOT / "contracts" / "acceptance"))
 os.environ.setdefault("PROJECT_ROOT", str(ROOT))
 
-from chatrepo_mcp import __version__  # noqa: E402
-from chatrepo_mcp.server import mcp  # noqa: E402
+from bounded_output_contract import BOUNDED_OUTPUT_RESULT_SCHEMAS
+from chatrepo_mcp import __version__
+from chatrepo_mcp.server import mcp
 
 
 async def main() -> None:
     canonical_path = ROOT / "contracts" / "tool-schemas" / "tools.json"
     go_path = ROOT / "go" / "internal" / "contracts" / "tools.json"
     canonical_bytes = canonical_path.read_bytes()
-    if canonical_bytes != go_path.read_bytes():
-        raise SystemExit("Go embedded contract is stale; run `make contracts`")
-
     contract = json.loads(canonical_bytes)
     tools = await mcp.list_tools()
     live = [
@@ -34,7 +31,14 @@ async def main() -> None:
         for tool in sorted(tools, key=lambda item: item.name)
     ]
     if live != contract["tools"]:
-        raise SystemExit("Python live tool schema differs from the canonical contract")
+        raise SystemExit(
+            "Canonical contract is stale against the full Python live schema; "
+            "run `make contracts`"
+        )
+    if canonical_bytes != go_path.read_bytes():
+        raise SystemExit("Go embedded contract is stale; run `make contracts`")
+    if contract.get("resultSchemas") != BOUNDED_OUTPUT_RESULT_SCHEMAS:
+        raise SystemExit("bounded result schemas differ from the canonical contract; run `make contracts`")
 
     version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     pyproject = (ROOT / "python" / "pyproject.toml").read_text(encoding="utf-8")

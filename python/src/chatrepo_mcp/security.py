@@ -37,8 +37,7 @@ def is_hidden_relative(rel_path: str) -> bool:
 
 
 def normalize_rel_path(rel_path: str) -> str:
-    if rel_path.startswith("./"):
-        rel_path = rel_path[2:]
+    rel_path = rel_path.removeprefix("./")
     return rel_path.strip("/")
 
 

@@ -1,40 +1,40 @@
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
-import time
+from test_command_tools import make_settings
 
 from chatrepo_mcp import command_tools
 from chatrepo_mcp.command_tools import (
     CommandPolicyError,
     ConfirmationRequiredError,
     GitCommitError,
+    _active_lock_job,
     _bash_command,
     _check_command_policy,
+    _command_env,
     _effective_tokens,
     _first_exec_token,
     _profile_command_overrides,
+    _resolve_cwd,
     _resolved_binaries,
     _segment_tokens,
     _split_command,
-    _resolve_cwd,
-    _active_lock_job,
-    _command_env,
     _watch_job_timeout,
     cancel_command_job,
     command_policy_check,
     get_command_job,
     get_command_log,
+    git_commit,
     run_command,
     run_commands,
     run_test_preset,
     start_command_job,
     summarize_command_log,
-    git_commit,
 )
 from chatrepo_mcp.security import SecurityError
-
-from test_command_tools import make_settings
 
 
 def test_command_token_helpers_cover_parsing_variants() -> None:
@@ -210,6 +210,20 @@ def test_watch_job_timeout_and_active_lock_cleanup(tmp_path: Path, monkeypatch) 
     assert _active_lock_job(settings, "shared") is None
 
 
+def test_pid_probe_treats_proc_disappearance_as_not_running(monkeypatch) -> None:
+    target = Path(f"/proc/{os.getpid()}/stat")
+    original = Path.read_text
+
+    def disappearing(path: Path, *args, **kwargs) -> str:
+        if path == target:
+            raise ProcessLookupError(3, "process disappeared", str(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", disappearing)
+
+    assert command_tools._is_pid_running(os.getpid()) is False
+
+
 def test_get_command_job_timed_out_path_and_git_commit_edge_cases(tmp_path: Path, monkeypatch) -> None:
     settings = make_settings(tmp_path)
     settings = settings.__class__(**{**settings.__dict__, "command_policy_mode": "full_repo"})
@@ -288,7 +302,7 @@ def test_resolved_binaries_uses_cache(monkeypatch, tmp_path: Path) -> None:
         return FakeResult()
 
     monkeypatch.setattr(command_tools, "detect_stack", lambda _cwd: ("python", "node"))
-    monkeypatch.setattr(command_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(command_tools, "run_bounded", fake_run)
     first = _resolved_binaries(tmp_path, {}, settings)
     second = _resolved_binaries(tmp_path, {}, settings)
 

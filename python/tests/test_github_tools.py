@@ -63,7 +63,7 @@ def test_gh_run_view_resolves_latest_run_non_interactively(monkeypatch, tmp_path
 
 def test_gh_pr_create_checks_the_requested_head(monkeypatch) -> None:
     observed: list[str | None] = []
-    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda: None)
+    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda _settings: None)
 
     def fake_status(settings, repo, branch=None):
         observed.append(branch)

@@ -1,35 +1,34 @@
 from __future__ import annotations
 
-import os
 import atexit
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Annotated, Any, Literal
 
-from mcp.server.auth.provider import AccessToken
-from mcp.server.auth.provider import TokenVerifier
+from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl, Field
 
 from .command_tools import (
+    TEST_PRESETS,
     CommandPolicyError,
     ConfirmationRequiredError,
     GitCommitError,
-    TEST_PRESETS,
     cancel_command_job,
     command_policy_check,
-    get_command_log,
     get_command_job,
+    get_command_log,
     get_job_status,
-    list_command_jobs,
     git_commit,
+    list_command_jobs,
     run_command,
     run_commands,
     run_test_preset,
-    summarize_command_log,
-    start_command_job,
     shutdown_command_jobs,
+    start_command_job,
+    summarize_command_log,
 )
 from .config import Settings
 from .edit_tools import (
@@ -39,8 +38,8 @@ from .edit_tools import (
     batch_edit_files,
     create_text_file,
     current_text_sha256,
-    delete_text_in_file,
     delete_path,
+    delete_text_in_file,
     ensure_directory,
     insert_after_heading,
     insert_after_line,
@@ -48,8 +47,8 @@ from .edit_tools import (
     insert_before_line,
     insert_text_in_file,
     move_path,
-    replace_text_in_file,
     replace_lines,
+    replace_text_in_file,
     structured_error,
     update_current_mission,
     write_text_file,
@@ -112,16 +111,18 @@ from .github_tools import (
 )
 from .index_tools import document_symbols, symbol_definition, workspace_symbols
 from .lsp_tools import code_diagnostics
-from .profile import load_repo_profile, list_test_presets
+from .output_store import read_artifact
+from .profile import list_test_presets, load_repo_profile
+from .resource_profile import ResourceBusyError
 from .runtime_env import effective_path, tool_status
 from .terminal_tools import (
     close_terminal_session,
     list_terminal_sessions,
     read_terminal_session,
     resize_terminal_session,
+    shutdown_terminal_sessions,
     start_terminal_session,
     write_terminal_session,
-    shutdown_terminal_sessions,
 )
 from .workflows import (
     git_worktree_guard,
@@ -199,7 +200,7 @@ def _tool_names() -> list[str]:
         names = [tool.name for tool in mcp._tool_manager.list_tools()]
         if names:
             return sorted(names)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - private FastMCP API has registry fallback
         pass
     return sorted(_TOOL_REGISTRY)
 
@@ -410,17 +411,19 @@ def search_text_tool(
     regex: bool = False,
     case_sensitive: bool = False,
     limit: int = 100,
+    mode: Annotated[
+        Literal["quick", "exhaustive"],
+        Field(description="quick returns a bounded inline result; exhaustive starts a durable background search job."),
+    ] = "quick",
 ) -> dict:
-    """Search text across the repository or within a specific file/directory."""
-    return search_text(
-        query=query,
-        settings=settings,
-        path=path,
-        paths=paths,
-        regex=regex,
-        case_sensitive=case_sensitive,
-        limit=limit,
-    )
+    """Search text with a bounded quick path or a durable exhaustive background job."""
+    try:
+        return search_text(
+            query=query, settings=settings, path=path, paths=paths, regex=regex,
+            case_sensitive=case_sensitive, limit=limit, mode=mode,
+        )
+    except ResourceBusyError as exc:
+        return _resource_busy_result(exc)
 
 
 @_tool(
@@ -465,7 +468,7 @@ def dependency_map_tool(path: str = ".") -> dict:
 )
 def git_status_tool(short: bool = True, repo: RepoScope = None) -> dict:
     """Return the current git status for the repository (or a polyrepo sub-repo via `repo`)."""
-    return git_status(settings=settings, short=short, repo=repo)
+    return _structural_result(git_status, settings=settings, short=short, repo=repo)
 
 
 @_tool(
@@ -479,7 +482,10 @@ def git_diff_tool(
     repo: RepoScope = None,
 ) -> dict:
     """Return git diff output for the working tree or staged changes (or a polyrepo sub-repo via `repo`)."""
-    return git_diff(settings=settings, staged=staged, pathspec=pathspec, context_lines=context_lines, repo=repo)
+    return _structural_result(
+        git_diff, settings=settings, staged=staged, pathspec=pathspec,
+        context_lines=context_lines, repo=repo,
+    )
 
 
 @_tool(
@@ -502,7 +508,7 @@ def git_log_tool(
 )
 def git_show_tool(revision: str, path: str | None = None, repo: RepoScope = None) -> dict:
     """Show a commit object or a file at a given revision (or a polyrepo sub-repo via `repo`)."""
-    return git_show(settings=settings, revision=revision, path=path, repo=repo)
+    return _structural_result(git_show, settings=settings, revision=revision, path=path, repo=repo)
 
 
 @_tool(
@@ -520,7 +526,10 @@ def git_branches_tool(all_branches: bool = True, repo: RepoScope = None) -> dict
 )
 def git_blame_tool(path: str, start_line: int = 1, end_line: int | None = None, repo: RepoScope = None) -> dict:
     """Blame a file line range to see who changed it and in which commit (or a polyrepo sub-repo via `repo`)."""
-    return git_blame(settings=settings, path=path, start_line=start_line, end_line=end_line, repo=repo)
+    return _structural_result(
+        git_blame, settings=settings, path=path, start_line=start_line,
+        end_line=end_line, repo=repo,
+    )
 
 
 @_tool(
@@ -633,6 +642,14 @@ def _write_config_info() -> dict:
         "command_timeout_ms": settings.command_timeout_ms,
         "command_audit_log_path": str(settings.command_audit_log_path),
         "mcp_auth_mode": settings.mcp_auth_mode,
+        "resource_profile": settings.resource_profile,
+        "resource_profile_applied": settings.resource_profile_applied,
+        "resource_detected_memory_bytes": settings.resource_detected_memory_bytes,
+        "resource_buffer_bytes": settings.resource_buffer_bytes,
+        "resource_buffer_enforced": False,
+        "resource_buffer_semantics": "diagnostic_estimate_only",
+        "max_heavy_operations": settings.max_heavy_operations,
+        "persist_full_output": settings.persist_full_output,
     }
 
 
@@ -643,6 +660,16 @@ def _write_result(func, *args, **kwargs) -> dict:
         return func(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001
         return structured_error(exc)
+
+
+def _resource_busy_result(exc: ResourceBusyError) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error_kind": "resource_busy",
+        "error": str(exc),
+        "capacity": exc.capacity,
+        "retry_hint": "Retry after another heavy operation finishes.",
+    }
 
 
 def _structural_result(func, *args, **kwargs) -> dict:
@@ -664,7 +691,11 @@ def _structural_result(func, *args, **kwargs) -> dict:
     except ConfirmationRequiredError as exc:
         return {"ok": False, "error_kind": "confirmation_required", "message": str(exc)}
     except GitToolError as exc:
+        if exc.result is not None:
+            return exc.result
         return {"ok": False, "error_kind": "git_error", "message": str(exc)}
+    except ResourceBusyError as exc:
+        return _resource_busy_result(exc)
 
 
 def _command_result(
@@ -693,6 +724,8 @@ def _command_result(
         return {"ok": False, "error_kind": "confirmation_required", "reason": str(exc), "command": command}
     except CommandPolicyError as exc:
         return {"ok": False, "error_kind": "command_not_allowed", "error": str(exc), "command": command}
+    except ResourceBusyError as exc:
+        return {**_resource_busy_result(exc), "command": command}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error_kind": "command_failed", "error": str(exc), "command": command}
 
@@ -705,7 +738,7 @@ def _first_existing_repo_file(candidates: list[str]) -> str | None:
         try:
             if (settings.project_root / candidate).is_file():
                 return candidate
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S112 - optional candidate probing is best-effort
             continue
     return None
 
@@ -726,7 +759,7 @@ def _first_root_markdown_file() -> str | None:
     """Return the first Markdown file found at the repository root, if any."""
     try:
         listing = list_dir(path=".", settings=settings, include_hidden=False, limit=200)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - optional Markdown probe is best-effort
         return None
     for entry in listing.get("entries", []):
         if entry.get("type") == "file" and str(entry.get("name", "")).lower().endswith(".md"):
@@ -746,7 +779,7 @@ def _search_probe_token() -> str:
         for entry in listing.get("entries", []):
             if entry.get("type") == "file" and entry.get("name"):
                 return entry["name"]
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - optional probe falls back to a neutral token
         pass
     return "def"
 
@@ -1015,21 +1048,39 @@ def batch_call_tool(
             return index, {"index": index, "tool": tool, "ok": False, "error": "call must contain string tool and object args"}
         try:
             return index, {"index": index, "tool": tool, "ok": True, "result": _batch_dispatch(tool, args)}
+        except ResourceBusyError as exc:
+            return index, {
+                "index": index,
+                "tool": tool,
+                "ok": False,
+                "result": _resource_busy_result(exc),
+            }
         except Exception as exc:  # noqa: BLE001
             return index, {"index": index, "tool": tool, "ok": False, "error": str(exc)}
 
     ordered: list[dict[str, Any] | None] = [None] * len(calls)
+    applied_concurrency = 1 if execution == "sequential" else min(max_concurrency, max(len(calls), 1))
     if execution == "sequential":
         for index, call in enumerate(calls):
             _, ordered[index] = invoke(index, call)
     else:
-        with ThreadPoolExecutor(max_workers=min(max_concurrency, max(len(calls), 1))) as pool:
+        with ThreadPoolExecutor(max_workers=min(applied_concurrency, max(len(calls), 1))) as pool:
             futures = [pool.submit(invoke, index, call) for index, call in enumerate(calls)]
             for future in as_completed(futures):
                 index, result = future.result()
                 ordered[index] = result
     results = [item for item in ordered if item is not None]
-    return {"ok": all(item["ok"] for item in results), "execution": execution, "max_concurrency": max_concurrency, "results": results, "count": len(results)}
+    return {
+        "ok": all(item["ok"] for item in results),
+        "execution": execution,
+        "max_concurrency": max_concurrency,
+        "requested_max_concurrency": max_concurrency,
+        "applied_max_concurrency": applied_concurrency,
+        "heavy_capacity": settings.max_heavy_operations,
+        "resource_profile": settings.resource_profile_applied,
+        "results": results,
+        "count": len(results),
+    }
 
 
 @_tool(
@@ -1448,7 +1499,7 @@ def run_command_tool(
     ] = None,
     max_output_chars: Annotated[
         int | None,
-        Field(description="Optional stdout/stderr character cap, capped by server configuration."),
+        Field(ge=1, description="Optional stdout/stderr character cap, capped by server configuration."),
     ] = None,
     tail_lines: TailLines = 200,
     confirmed: Annotated[
@@ -1645,6 +1696,22 @@ def command_policy_check_tool(command: Annotated[str, Field(description="Command
 
 
 @_tool(
+    name="read_artifact",
+    annotations={**READ_ONLY, "title": "Read Artifact"},
+)
+def read_artifact_tool(
+    artifact_id: Annotated[str, Field(min_length=1, description="Opaque artifact id returned by another tool receipt.")],
+    cursor: Annotated[str | None, Field(description="Opaque continuation cursor from the previous page.")] = None,
+    max_bytes: Annotated[int, Field(ge=1, le=262_144, description="Maximum artifact bytes to return in this page.")] = 65_536,
+) -> dict:
+    """Read a bounded page from a durable tool-output artifact."""
+    try:
+        return read_artifact(artifact_id, settings, cursor=cursor, max_bytes=max_bytes)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error_kind": "artifact_read_error", "error": str(exc), "artifact_id": artifact_id}
+
+
+@_tool(
     name="get_command_log",
     annotations={**READ_ONLY, "title": "Get Command Log"},
 )
@@ -1746,6 +1813,8 @@ def start_command_job_tool(
         return {"ok": False, "error_kind": "confirmation_required", "reason": str(exc), "command": command}
     except CommandPolicyError as exc:
         return {"ok": False, "error_kind": "command_not_allowed", "error": str(exc), "command": command}
+    except ResourceBusyError as exc:
+        return {**_resource_busy_result(exc), "command": command}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error_kind": "command_failed", "error": str(exc), "command": command}
 
@@ -1816,7 +1885,13 @@ if settings.full_access and settings.enable_pty and os.name == "posix":
         idle_timeout_ms: Annotated[int, Field(ge=1000, le=86_400_000)] = 1_800_000,
     ) -> dict:
         """Start a persistent interactive POSIX terminal session."""
-        return start_terminal_session(settings, cwd=cwd, shell=shell, command=command, cols=cols, rows=rows, env=env, idle_timeout_ms=idle_timeout_ms)
+        try:
+            return start_terminal_session(
+                settings, cwd=cwd, shell=shell, command=command, cols=cols, rows=rows,
+                env=env, idle_timeout_ms=idle_timeout_ms,
+            )
+        except ResourceBusyError as exc:
+            return _resource_busy_result(exc)
 
     @_tool(name="read_terminal_session", annotations={**READ_ONLY, "title": "Read Terminal Session"})
     def read_terminal_session_tool(

@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from test_command_tools import make_settings
+
 from chatrepo_mcp import github_tools
 from chatrepo_mcp.command_tools import ConfirmationRequiredError
-from test_command_tools import make_settings
 
 
 class _Completed:
@@ -33,7 +34,7 @@ def test_gh_available_handles_version_probe_exception(tmp_path: Path, monkeypatc
             raise OSError("no version")
         raise OSError("auth failed")
 
-    monkeypatch.setattr(github_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(github_tools, "run_bounded", fake_run)
 
     status = github_tools._gh_available()
 
@@ -43,9 +44,9 @@ def test_gh_available_handles_version_probe_exception(tmp_path: Path, monkeypatc
 
 
 def test_run_gh_returns_unavailable_on_subprocess_error(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(github_tools, "_gh_available", lambda: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"})
+    monkeypatch.setattr(github_tools, "_gh_available", lambda _settings: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"})
     monkeypatch.setattr(github_tools.git_tools, "_resolve_repo_toplevel", lambda repo, settings: tmp_path)
-    monkeypatch.setattr(github_tools.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("boom")))
+    monkeypatch.setattr(github_tools, "run_bounded", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("boom")))
 
     result = github_tools._run_gh(["pr", "list"], _settings())
 
@@ -65,7 +66,7 @@ def test_gh_pr_merge_rejects_invalid_method(tmp_path: Path, monkeypatch) -> None
 
 def test_gh_pr_comment_reply_to_success_paths_reply_endpoint(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(github_tools, "_guard", lambda _settings: None)
-    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda: None)
+    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda _settings: None)
     monkeypatch.setattr(
         github_tools,
         "_repo_owner_name",
@@ -85,7 +86,7 @@ def test_gh_pr_comment_reply_to_success_paths_reply_endpoint(tmp_path: Path, mon
 
 def test_gh_pr_comment_reply_to_without_owner_returns_no_remote(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(github_tools, "_guard", lambda _settings: None)
-    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda: None)
+    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda _settings: None)
     monkeypatch.setattr(
         github_tools,
         "_repo_owner_name",
@@ -100,7 +101,7 @@ def test_gh_pr_comment_reply_to_without_owner_returns_no_remote(tmp_path: Path, 
 
 def test_gh_pr_comment_blocks_without_confirmation(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(github_tools, "_guard", lambda _settings: None)
-    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda: None)
+    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda _settings: None)
 
     try:
         github_tools.gh_pr_comment(_settings(), 12, "Blocked", confirmed=False)

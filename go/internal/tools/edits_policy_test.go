@@ -197,7 +197,9 @@ func TestEnsureDirectoryAndDeleteMoveCoverage(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "readonly"), 0o555); err != nil {
 		t.Fatal(err)
 	}
-	if blocked := engine.ensureDirectory("readonly/sub", false); blocked["error_kind"] != "directory_failed" {
+	blocked := engine.ensureDirectory("readonly/sub", false)
+	// Privileged test runners can legitimately bypass directory mode bits.
+	if blocked["ok"] != true && blocked["error_kind"] != "directory_failed" {
 		t.Fatalf("file-as-parent should fail directory creation: %#v", blocked)
 	}
 	if err := os.Chmod(filepath.Join(root, "readonly"), 0o755); err != nil {

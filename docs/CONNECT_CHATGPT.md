@@ -57,6 +57,12 @@ Keep the MCP annotations truthful: write, destructive, and network tools remain 
 
 Full tunnel setup, binary installation, API-key handling, `doctor`, and systemd are documented in [`EXPOSE_LOCAL_PC.md`](EXPOSE_LOCAL_PC.md).
 
+After deploying a build that changes the tool catalog or schemas, verify the
+new count directly with `scripts/check_tools.py`, reconnect or refresh the app
+connection, and start a **new chat**. ChatGPT may retain the MCP tool catalog in
+an existing conversation; a browser-page refresh alone is not proof that the
+new schema was loaded.
+
 ## First prompts to test
 
 Use prompts like:

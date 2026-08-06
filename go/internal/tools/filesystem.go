@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bufio"
+	"container/heap"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -20,6 +21,24 @@ import (
 	"time"
 )
 
+type recentFile struct {
+	path string
+	mod  time.Time
+	size int64
+}
+type recentFileHeap []recentFile
+
+func (h recentFileHeap) Len() int           { return len(h) }
+func (h recentFileHeap) Less(i, j int) bool { return h[i].mod.Before(h[j].mod) }
+func (h recentFileHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *recentFileHeap) Push(value any)    { *h = append(*h, value.(recentFile)) }
+func (h *recentFileHeap) Pop() any {
+	old := *h
+	value := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return value
+}
+
 func (e *Engine) executeReadTool(ctx context.Context, name string, args map[string]any) map[string]any {
 	switch name {
 	case "repo_info":
@@ -37,7 +56,12 @@ func (e *Engine) executeReadTool(ctx context.Context, name string, args map[stri
 	case "find_files":
 		return e.findFiles(stringArg(args, "pattern", "*"), stringArg(args, "path", "."), boolArg(args, "include_hidden", true), intArg(args, "limit", 200))
 	case "search_text":
-		return e.searchText(ctx, stringArg(args, "query", ""), stringArg(args, "path", "."), stringSliceArg(args, "paths"), boolArg(args, "regex", false), boolArg(args, "case_sensitive", true), intArg(args, "limit", 100))
+		if mode := stringArg(args, "mode", "quick"); mode == "exhaustive" {
+			return e.startExhaustiveSearch(ctx, args)
+		} else if mode != "quick" {
+			return failure("invalid_mode", "mode must be quick or exhaustive")
+		}
+		return e.searchText(ctx, stringArg(args, "query", ""), stringArg(args, "path", "."), stringSliceArg(args, "paths"), boolArg(args, "regex", false), boolArg(args, "case_sensitive", false), intArg(args, "limit", 100))
 	case "symbol_search":
 		return e.searchText(ctx, `\b`+regexp.QuoteMeta(stringArg(args, "symbol", ""))+`\b`, stringArg(args, "path", "."), stringSliceArg(args, "paths"), true, true, intArg(args, "limit", 100))
 	case "recent_changes":
@@ -70,6 +94,60 @@ func (e *Engine) executeReadTool(ctx context.Context, name string, args map[stri
 	}
 }
 
+func shellArgument(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+
+func (e *Engine) startExhaustiveSearch(ctx context.Context, args map[string]any) map[string]any {
+	query := stringArg(args, "query", "")
+	if query == "" {
+		return failure("invalid_query", "query must not be empty")
+	}
+	targets := stringSliceArg(args, "paths")
+	if len(targets) == 0 {
+		targets = []string{stringArg(args, "path", ".")}
+	}
+	root := ""
+	resolvedTargets := make([]string, 0, len(targets))
+	for _, target := range targets {
+		resolved, err := e.perimeter.Resolve(target, e.settings.AllowHiddenDefault, false)
+		if err != nil {
+			return withError("path_not_allowed", err)
+		}
+		if root == "" {
+			root = resolved.Root
+		} else if resolved.Root != root {
+			return failure("path_not_allowed", "exhaustive search paths must share one workspace root")
+		}
+		resolvedTargets = append(resolvedTargets, resolved.Relative)
+	}
+	targets = resolvedTargets
+	commandArgs := []string{"rg", "--json", "--line-number", "--no-messages", "--max-columns", "4096"}
+	if !boolArg(args, "regex", false) {
+		commandArgs = append(commandArgs, "--fixed-strings")
+	}
+	if !boolArg(args, "case_sensitive", false) {
+		commandArgs = append(commandArgs, "--ignore-case")
+	}
+	for _, pattern := range e.settings.BlockedGlobs {
+		commandArgs = append(commandArgs, "--glob", "!"+pattern)
+	}
+	commandArgs = append(commandArgs, "--", query)
+	commandArgs = append(commandArgs, targets...)
+	quoted := make([]string, len(commandArgs))
+	for index, value := range commandArgs {
+		quoted[index] = shellArgument(value)
+	}
+	fingerprint := sha256.Sum256([]byte(strings.Join(commandArgs, "\x00")))
+	result := e.startInternalJob(ctx, map[string]any{"command": strings.Join(quoted, " "), "cwd": root, "concurrency_key": "search:" + fmt.Sprintf("%x", fingerprint[:]), "on_conflict": "attach", "max_output_chars": e.settings.MaxCommandOutputChars})
+	result["mode"] = "exhaustive"
+	result["query"] = query
+	if artifact, ok := result["artifact"].(map[string]any); ok {
+		if artifactID, ok := artifact["artifact_id"].(string); ok && artifactID != "" {
+			result["continuation"] = artifactContinuation(artifactID)
+		}
+	}
+	return result
+}
+
 func (e *Engine) repoInfo(ctx context.Context, repo string) map[string]any {
 	result := map[string]any{
 		"ok": true, "project_root": e.settings.ProjectRoot, "exists": true, "is_dir": true,
@@ -81,6 +159,10 @@ func (e *Engine) repoInfo(ctx context.Context, repo string) map[string]any {
 			"max_file_bytes": e.settings.MaxFileBytes, "max_response_chars": e.settings.MaxResponseChars,
 			"max_read_files": e.settings.MaxReadFiles, "max_search_results": e.settings.MaxSearchResults,
 			"max_tree_entries": e.settings.MaxTreeEntries, "blocked_globs": e.settings.BlockedGlobs,
+			"resource_profile": e.settings.ResourceProfile, "resource_profile_applied": e.settings.ResourceProfileApplied, "resource_buffer_bytes": e.settings.ResourceBufferBytes,
+			"resource_buffer_enforced": false, "resource_buffer_semantics": "diagnostic_estimate_only",
+			"max_heavy_operations": e.settings.MaxHeavyOperations, "detected_memory_bytes": e.settings.DetectedMemoryBytes,
+			"persist_full_output": e.settings.PersistFullOutput,
 		},
 	}
 	if toplevel, err := e.resolveRepo(ctx, repo); err == nil {
@@ -203,6 +285,13 @@ func (e *Engine) readText(path string, startLine, endLine int, withNumbers bool)
 	resolved, err := e.perimeter.Resolve(path, true, false)
 	if err != nil {
 		return withError("path_not_allowed", err)
+	}
+	info, err := os.Stat(resolved.Absolute)
+	if err != nil {
+		return withError("read_failed", err)
+	}
+	if info.Size() > e.settings.MaxFileBytes {
+		return failure("file_too_large", fmt.Sprintf("file exceeds MAX_FILE_BYTES (%d > %d)", info.Size(), e.settings.MaxFileBytes))
 	}
 	data, err := os.ReadFile(resolved.Absolute)
 	if err != nil {
@@ -358,6 +447,11 @@ func (e *Engine) searchText(ctx context.Context, query, path string, paths []str
 		}
 		resolvedTargets = append(resolvedTargets, resolved.Absolute)
 	}
+	heavyLease, acquired := e.acquireHeavyOperation()
+	if !acquired {
+		return e.heavyBusyResult()
+	}
+	defer heavyLease.Release()
 	if _, err := exec.LookPath("rg"); err == nil {
 		return e.searchWithRipgrep(ctx, query, resolvedTargets, regexMode, caseSensitive, limit)
 	}
@@ -365,7 +459,10 @@ func (e *Engine) searchText(ctx context.Context, query, path string, paths []str
 }
 
 func (e *Engine) searchWithRipgrep(ctx context.Context, query string, targets []string, regexMode, caseSensitive bool, limit int) map[string]any {
-	arguments := []string{"--json", "--line-number", "--no-messages"}
+	if limit == 0 {
+		return map[string]any{"ok": true, "query": query, "matches": []map[string]any{}, "count": 0, "truncated": false, "engine": "ripgrep"}
+	}
+	arguments := []string{"--json", "--line-number", "--no-messages", "--max-columns", "4096"}
 	if !regexMode {
 		arguments = append(arguments, "--fixed-strings")
 	}
@@ -375,19 +472,32 @@ func (e *Engine) searchWithRipgrep(ctx context.Context, query string, targets []
 	for _, pattern := range e.settings.BlockedGlobs {
 		arguments = append(arguments, "--glob", "!"+pattern)
 	}
-	arguments = append(arguments, query)
+	arguments = append(arguments, "--", query)
 	arguments = append(arguments, targets...)
 	command := exec.CommandContext(ctx, "rg", arguments...)
-	output, err := command.Output()
+	requestID := randomID()
+	started := time.Now()
+	e.writeCommandAudit("start", requestID, "search_text", "rg search", strings.Join(targets, ","), 0, 0, 0, "running")
+	auditStatus := "failed"
+	var auditReturned int64
+	defer func() {
+		e.writeCommandAudit("finish", requestID, "search_text", "rg search", strings.Join(targets, ","), time.Since(started), auditReturned, 0, auditStatus)
+	}()
+	configureProcessGroup(command)
+	stdout, err := command.StdoutPipe()
 	if err != nil {
-		if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
-			return withError("search_failed", err)
-		}
+		return withError("search_failed", err)
+	}
+	stderr := newMemoryStreamCapture(64 * 1024)
+	command.Stderr = stderr
+	if err := command.Start(); err != nil {
+		return withError("search_failed", err)
 	}
 	results := make([]map[string]any, 0, min(limit, 64))
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scanner.Scan() && len(results) < limit {
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 64*1024), 256*1024)
+	truncated := false
+	for scanner.Scan() {
 		var event struct {
 			Type string `json:"type"`
 			Data struct {
@@ -403,12 +513,37 @@ func (e *Engine) searchWithRipgrep(ctx context.Context, query string, targets []
 		if json.Unmarshal(scanner.Bytes(), &event) != nil || event.Type != "match" {
 			continue
 		}
+		if len(results) >= limit {
+			truncated = true
+			_, _ = terminateProcessGroup(command.Process.Pid, 0)
+			break
+		}
 		results = append(results, map[string]any{
 			"path": e.perimeter.Display(event.Data.Path.Text), "line": event.Data.LineNumber,
 			"text": strings.TrimSuffix(event.Data.Lines.Text, "\n"),
 		})
+		if len(results) == limit {
+			truncated = true
+			_, _ = terminateProcessGroup(command.Process.Pid, 0)
+			break
+		}
 	}
-	return map[string]any{"ok": true, "query": query, "matches": results, "count": len(results), "truncated": len(results) >= limit, "engine": "ripgrep"}
+	waitErr := command.Wait()
+	_ = stderr.Close()
+	if scanErr := scanner.Err(); scanErr != nil && !truncated {
+		return withError("search_failed", scanErr)
+	}
+	if waitErr != nil && !truncated {
+		if exit, ok := waitErr.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+			return failure("search_failed", strings.TrimSpace(stderr.Head()))
+		}
+	}
+	auditStatus, auditReturned = "completed", int64(len(results))
+	receipt := boundedOutputReceipt(truncated, int64(len(results)), int64(len(results)))
+	if truncated {
+		receipt["reason"] = "result_limit"
+	}
+	return map[string]any{"ok": true, "query": query, "matches": results, "count": len(results), "truncated": truncated, "engine": "ripgrep", "receipt": receipt}
 }
 
 func (e *Engine) searchFallback(query string, targets []string, regexMode, caseSensitive bool, limit int) map[string]any {
@@ -458,20 +593,58 @@ func (e *Engine) searchFallback(query string, targets []string, regexMode, caseS
 }
 
 func (e *Engine) recentChanges(ctx context.Context, path string, paths []string, limit int) map[string]any {
-	result := e.searchText(ctx, ".", path, paths, true, true, e.settings.MaxSearchResults)
-	matches, _ := result["matches"].([]map[string]any)
-	sort.SliceStable(matches, func(i, j int) bool {
-		left, leftErr := os.Stat(filepath.Join(e.settings.ProjectRoot, fmt.Sprint(matches[i]["path"])))
-		right, rightErr := os.Stat(filepath.Join(e.settings.ProjectRoot, fmt.Sprint(matches[j]["path"])))
-		if leftErr != nil || rightErr != nil {
-			return false
-		}
-		return left.ModTime().After(right.ModTime())
-	})
-	if len(matches) > limit {
-		matches = matches[:limit]
+	_ = ctx
+	limit = min(max(limit, 0), e.settings.MaxSearchResults)
+	targets := paths
+	if len(targets) == 0 {
+		targets = []string{path}
 	}
-	return map[string]any{"ok": true, "changes": matches, "count": len(matches)}
+	items := &recentFileHeap{}
+	heap.Init(items)
+	for _, target := range targets {
+		resolved, err := e.perimeter.Resolve(target, true, false)
+		if err != nil {
+			return withError("path_not_allowed", err)
+		}
+		_ = filepath.WalkDir(resolved.Absolute, func(item string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if entry.IsDir() {
+				if item != resolved.Absolute && ignoredDirectories[entry.Name()] {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if e.perimeter.IsBlocked(e.perimeter.Display(item)) {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return nil
+			}
+			if limit == 0 {
+				return nil
+			}
+			candidate := recentFile{item, info.ModTime(), info.Size()}
+			if items.Len() < limit {
+				heap.Push(items, candidate)
+			} else if candidate.mod.After((*items)[0].mod) {
+				heap.Pop(items)
+				heap.Push(items, candidate)
+			}
+			return nil
+		})
+	}
+	ordered := make([]recentFile, items.Len())
+	for index := len(ordered) - 1; index >= 0; index-- {
+		ordered[index] = heap.Pop(items).(recentFile)
+	}
+	files := make([]map[string]any, 0, len(ordered))
+	for _, item := range ordered {
+		files = append(files, map[string]any{"path": e.perimeter.Display(item.path), "mtime": float64(item.mod.UnixNano()) / 1e9, "size": item.size})
+	}
+	return map[string]any{"ok": true, "path": path, "paths": paths, "files": files, "count": len(files)}
 }
 
 func (e *Engine) dependencyMap(path string) map[string]any {
@@ -480,7 +653,7 @@ func (e *Engine) dependencyMap(path string) map[string]any {
 		return withError("path_not_allowed", err)
 	}
 	dependencies := make(map[string]any)
-	if data, readErr := os.ReadFile(filepath.Join(directory, "package.json")); readErr == nil {
+	if data, readErr := readFileLimited(filepath.Join(directory, "package.json"), e.settings.MaxFileBytes); readErr == nil {
 		var packageJSON map[string]any
 		if json.Unmarshal(data, &packageJSON) == nil {
 			dependencies["node"] = map[string]any{"dependencies": packageJSON["dependencies"], "devDependencies": packageJSON["devDependencies"]}
@@ -499,7 +672,7 @@ func (e *Engine) dependencyMap(path string) map[string]any {
 		}
 		dependencies["go"] = modules
 	}
-	if data, readErr := os.ReadFile(filepath.Join(directory, "requirements.txt")); readErr == nil {
+	if data, readErr := readFileLimited(filepath.Join(directory, "requirements.txt"), e.settings.MaxFileBytes); readErr == nil {
 		var requirements []string
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
@@ -515,6 +688,22 @@ func (e *Engine) dependencyMap(path string) map[string]any {
 		dependencies["rust"] = map[string]any{"manifest": "Cargo.toml"}
 	}
 	return map[string]any{"ok": true, "path": e.perimeter.Display(directory), "stack": detectStack(directory), "dependencies": dependencies}
+}
+
+func readFileLimited(path string, maximum int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maximum+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maximum {
+		return nil, fmt.Errorf("file exceeds %d bytes", maximum)
+	}
+	return data, nil
 }
 
 func (e *Engine) doctor(ctx context.Context) map[string]any {
@@ -542,8 +731,9 @@ func (e *Engine) doctor(ctx context.Context) map[string]any {
 		"ok": true, "implementation": "go", "tool_count": len(e.toolNames), "tools": e.toolNames,
 		"namespace": e.settings.CanonicalNamespace, "access_mode": e.settings.AccessMode,
 		"capabilities": capabilities, "effective_path": paths, "path_warnings": warnings,
-		"toolchains": []any{capabilities["go"], capabilities["python3"], capabilities["node"]},
-		"repos":      e.workspaceEntries(ctx),
+		"resource_limits": map[string]any{"profile": e.settings.ResourceProfile, "profile_applied": e.settings.ResourceProfileApplied, "buffer_bytes": e.settings.ResourceBufferBytes, "buffer_enforced": false, "buffer_semantics": "diagnostic_estimate_only", "heavy_operations": e.settings.MaxHeavyOperations, "detected_memory_bytes": e.settings.DetectedMemoryBytes, "persist_full_output": e.settings.PersistFullOutput},
+		"toolchains":      []any{capabilities["go"], capabilities["python3"], capabilities["node"]},
+		"repos":           e.workspaceEntries(ctx),
 	}
 }
 
@@ -593,38 +783,55 @@ func (e *Engine) batchCall(ctx context.Context, args map[string]any) map[string]
 		results[index] = map[string]any{"index": index, "tool": name, "ok": ok, "result": value}
 	}
 	execution := stringArg(args, "execution", "parallel")
-	maximum := intArg(args, "max_concurrency", 4)
-	if maximum < 1 {
+	requestedMaximum := intArg(args, "max_concurrency", 4)
+	if requestedMaximum < 1 {
+		requestedMaximum = 1
+	}
+	if requestedMaximum > 10 {
+		requestedMaximum = 10
+	}
+	maximum := min(requestedMaximum, max(len(calls), 1))
+	if execution == "sequential" {
 		maximum = 1
 	}
-	if maximum > 10 {
-		maximum = 10
-	}
-	if execution == "sequential" {
-		for index, call := range calls {
-			invoke(index, call)
-		}
-	} else {
-		semaphore := make(chan struct{}, maximum)
-		var wait sync.WaitGroup
-		for index, call := range calls {
-			wait.Add(1)
-			go func(index int, call map[string]any) {
-				defer wait.Done()
-				semaphore <- struct{}{}
-				defer func() { <-semaphore }()
-				invoke(index, call)
-			}(index, call)
-		}
-		wait.Wait()
-	}
+	batchExecute(calls, maximum, invoke)
 	ok := true
 	for _, result := range results {
 		if result["ok"] == false {
 			ok = false
 		}
 	}
-	return map[string]any{"ok": ok, "execution": execution, "max_concurrency": maximum, "results": results, "count": len(results)}
+	return map[string]any{
+		"ok": ok, "execution": execution, "max_concurrency": requestedMaximum,
+		"requested_max_concurrency": requestedMaximum, "applied_max_concurrency": maximum,
+		"heavy_capacity": e.settings.MaxHeavyOperations, "resource_profile": e.settings.ResourceProfileApplied,
+		"results": results, "count": len(results),
+	}
+}
+
+func batchExecute(calls []map[string]any, maximum int, invoke func(int, map[string]any)) {
+	if maximum <= 1 {
+		for index, call := range calls {
+			invoke(index, call)
+		}
+		return
+	}
+	jobs := make(chan int)
+	var wait sync.WaitGroup
+	for worker := 0; worker < maximum; worker++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for index := range jobs {
+				invoke(index, calls[index])
+			}
+		}()
+	}
+	for index := range calls {
+		jobs <- index
+	}
+	close(jobs)
+	wait.Wait()
 }
 
 func (e *Engine) codeDiagnostics(ctx context.Context, args map[string]any) map[string]any {
@@ -646,7 +853,7 @@ func (e *Engine) codeDiagnostics(ctx context.Context, args map[string]any) map[s
 		case "go":
 			binary, command = "go", []string{"vet", "./..."}
 		case "python":
-			if _, lookupErr := exec.LookPath("pyright"); lookupErr == nil {
+			if path, _ := e.resolveExecutable("pyright"); path != "" {
 				binary, command = "pyright", []string{"--outputjson"}
 			} else {
 				binary, command = "ruff", []string{"check", "--output-format=json", "."}
@@ -656,12 +863,13 @@ func (e *Engine) codeDiagnostics(ctx context.Context, args map[string]any) map[s
 		default:
 			continue
 		}
-		if _, lookupErr := exec.LookPath(binary); lookupErr != nil {
-			missing = append(missing, map[string]any{"tool": binary, "language": stack})
+		path, source := e.resolveExecutable(binary)
+		if path == "" {
+			missing = append(missing, map[string]any{"tool": binary, "language": stack, "reason": "not found in effective PATH"})
 			continue
 		}
-		run := runProcess(ctx, repo, e.settings.SubprocessTimeout, nil, binary, command...)
-		checks = append(checks, map[string]any{"language": stack, "tool": binary, "exit_code": run.ExitCode, "stdout": run.Stdout, "stderr": run.Stderr, "ok": run.ExitCode == 0})
+		run := runProcess(ctx, repo, e.settings.SubprocessTimeout, e.commandEnvironment(nil), path, command...)
+		checks = append(checks, map[string]any{"language": stack, "tool": binary, "path": path, "path_source": source, "exit_code": run.ExitCode, "stdout": run.Stdout, "stderr": run.Stderr, "ok": run.ExitCode == 0})
 	}
 	return map[string]any{"ok": true, "checks": checks, "missing_tools": missing, "diagnostics": []any{}}
 }
@@ -705,18 +913,34 @@ type processResult struct {
 }
 
 func runProcess(parent context.Context, directory string, timeout time.Duration, env []string, binary string, arguments ...string) processResult {
+	return runProcessInput(parent, directory, timeout, env, nil, binary, arguments...)
+}
+
+func runProcessInput(parent context.Context, directory string, timeout time.Duration, env []string, input io.Reader, binary string, arguments ...string) processResult {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, binary, arguments...)
+	command := exec.Command(binary, arguments...)
 	command.Dir = directory
 	if env != nil {
 		command.Env = env
 	}
-	var stdout strings.Builder
-	var stderr strings.Builder
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	err := command.Run()
+	command.Stdin = input
+	stdout := newMemoryStreamCapture(1024 * 1024)
+	stderr := newMemoryStreamCapture(1024 * 1024)
+	command.Stdout = stdout
+	command.Stderr = stderr
+	configureProcessGroup(command)
+	err := command.Start()
+	if err == nil {
+		done := make(chan error, 1)
+		go func() { done <- command.Wait() }()
+		select {
+		case err = <-done:
+		case <-ctx.Done():
+			_, _ = terminateProcessGroup(command.Process.Pid, 0)
+			err = <-done
+		}
+	}
 	exitCode := 0
 	if err != nil {
 		exitCode = -1
@@ -724,5 +948,87 @@ func runProcess(parent context.Context, directory string, timeout time.Duration,
 			exitCode = exit.ExitCode()
 		}
 	}
-	return processResult{ExitCode: exitCode, Stdout: stdout.String(), Stderr: stderr.String(), TimedOut: ctx.Err() == context.DeadlineExceeded}
+	_ = stdout.Close()
+	_ = stderr.Close()
+	return processResult{ExitCode: exitCode, Stdout: stdout.Head(), Stderr: stderr.Head(), TimedOut: ctx.Err() == context.DeadlineExceeded}
+}
+
+func (e *Engine) runArtifactProcess(parent context.Context, tool, directory string, timeout time.Duration, env []string, limit int, binary string, arguments ...string) (processResult, string, int64, int64, error) {
+	heavyLease, acquired := e.acquireHeavyOperation()
+	if !acquired {
+		return processResult{}, "", 0, 0, e.heavyBusyError()
+	}
+	defer heavyLease.Release()
+	store, err := e.artifactStore()
+	if err != nil {
+		return processResult{}, "", 0, 0, err
+	}
+	id := randomID()
+	capture, err := newCommandCapture(e.settings.CommandJobsDir, id, limit, store)
+	if err != nil {
+		return processResult{}, "", 0, 0, err
+	}
+	started := time.Now()
+	safeCommand := binary + " " + strings.Join(arguments, " ")
+	e.writeCommandAudit("start", id, tool, safeCommand, directory, 0, 0, 0, "running")
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	command := exec.Command(binary, arguments...)
+	command.Dir = directory
+	if env != nil {
+		command.Env = env
+	}
+	command.Stdout = capture.stdout
+	command.Stderr = capture.stderr
+	configureProcessGroup(command)
+	runErr := command.Start()
+	if runErr == nil {
+		done := make(chan error, 1)
+		go func() { done <- command.Wait() }()
+		select {
+		case runErr = <-done:
+		case <-ctx.Done():
+			_, _ = terminateProcessGroup(command.Process.Pid, 0)
+			runErr = <-done
+		}
+	}
+	closeErr := capture.Close()
+	stdoutBytes, stderrBytes := capture.stdout.Total(), capture.stderr.Total()
+	status := "completed"
+	if runErr != nil || closeErr != nil {
+		status = "failed"
+	}
+	e.writeCommandAudit("finish", id, tool, safeCommand, directory, time.Since(started), stdoutBytes, stderrBytes, status)
+	if closeErr != nil {
+		return processResult{}, id, stdoutBytes, stderrBytes, closeErr
+	}
+	exitCode := 0
+	if runErr != nil {
+		exitCode = -1
+		if exit, ok := runErr.(*exec.ExitError); ok {
+			exitCode = exit.ExitCode()
+		}
+	}
+	stdoutLimit, stderrLimit := combinedStreamPreviewLimits(limit, stdoutBytes, stderrBytes)
+	return processResult{ExitCode: exitCode, Stdout: capture.stdout.Preview(stdoutLimit), Stderr: capture.stderr.Preview(stderrLimit), TimedOut: ctx.Err() == context.DeadlineExceeded}, id, stdoutBytes, stderrBytes, nil
+}
+
+func combinedStreamPreviewLimits(limit int, stdoutBytes, stderrBytes int64) (int, int) {
+	limit = max(limit, 0)
+	if stdoutBytes == 0 {
+		return 0, limit
+	}
+	if stderrBytes == 0 {
+		return limit, 0
+	}
+	if limit <= 1 {
+		return limit, 0
+	}
+	available := limit - 1 // Один байт резервируем под разделитель потоков.
+	stdoutLimit := available / 2
+	stderrLimit := available - stdoutLimit
+	if stdoutLimit == 0 {
+		stdoutLimit, stderrLimit = 1, available-1
+	}
+	return stdoutLimit, stderrLimit
 }

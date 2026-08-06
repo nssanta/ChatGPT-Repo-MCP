@@ -1,23 +1,33 @@
 from __future__ import annotations
 
 import base64
-import fcntl
+import hashlib
 import json
 import os
-import pty
 import signal
 import struct
 import subprocess
-import termios
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .command_tools import _redact, _resolve_cwd, _terminate_process_group, _utc_now
+if os.name == "posix":
+    import fcntl
+    import pty
+    import termios
+else:  # pragma: no cover - exercised by Windows CI import smoke
+    fcntl = None  # type: ignore[assignment]
+    pty = None  # type: ignore[assignment]
+    termios = None  # type: ignore[assignment]
+
+from .command_tools import _audit, _resolve_cwd, _terminate_process_group, _utc_now
 from .config import Settings
+from .output_store import artifact_reference, store_for
+from .resource_profile import HeavyOperationLease, ResourceBusyError, acquire_heavy_operation
 from .runtime_env import command_environment, resolve_binary
 
 
@@ -33,6 +43,8 @@ class TerminalSession:
     rows: int
     created_at: str
     idle_timeout_ms: int
+    args_fingerprint: str
+    heavy_lease: HeavyOperationLease
     status: str = "running"
     last_activity_at: str = field(default_factory=_utc_now)
     exit_code: int | None = None
@@ -45,7 +57,7 @@ SESSIONS_LOCK = threading.RLock()
 
 
 def _log_paths(settings: Settings, log_id: str) -> tuple[Path, Path]:
-    root = settings.command_jobs_dir / "logs"
+    root = settings.command_jobs_dir / "artifacts"
     return root / f"{log_id}.json", root / f"{log_id}.combined"
 
 
@@ -74,13 +86,18 @@ def _persist(settings: Settings, session: TerminalSession) -> None:
 
 
 def _set_size(fd: int, cols: int, rows: int) -> None:
+    if fcntl is None or termios is None:
+        raise RuntimeError("PTY is unavailable on this platform")
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
 def _reader(settings: Settings, session: TerminalSession) -> None:
     _, log_path = _log_paths(settings, session.log_id)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("ab", buffering=0) as handle:
+    artifact = store_for(settings).open(
+        session.log_id, "combined", log_path, settings.max_command_output_chars,
+    )
+    capture_error: str | None = None
+    try:
         while True:
             try:
                 chunk = os.read(session.master_fd, 65536)
@@ -88,18 +105,37 @@ def _reader(settings: Settings, session: TerminalSession) -> None:
                 break
             if not chunk:
                 break
-            redacted = _redact(chunk).encode("utf-8", errors="replace")
-            handle.write(redacted)
+            artifact.write(chunk)
             with session.lock:
                 session.last_activity_at = _utc_now()
                 _persist(settings, session)
+    except (OSError, ValueError) as exc:
+        capture_error = str(exc)
+    finally:
+        try:
+            artifact.close()
+        except OSError as exc:
+            capture_error = capture_error or str(exc)
     return_code = session.process.wait()
     with session.lock:
         session.exit_code = return_code
-        if session.status not in {"closed", "failed"}:
+        if capture_error:
+            session.status = "failed"
+        elif session.status not in {"closed", "failed"}:
             session.status = "exited"
         session.last_activity_at = _utc_now()
         _persist(settings, session)
+    _, log_path = _log_paths(settings, session.log_id)
+    _audit(settings, {
+        "timestamp": int(time.time()), "event": "terminal_finished",
+        "request_id": session.session_id, "tool": "start_terminal_session",
+        "args_fingerprint": session.args_fingerprint,
+        "duration_ms": max(0, int((time.time() - datetime.fromisoformat(session.created_at).timestamp()) * 1000)),
+        "bytes": log_path.stat().st_size if log_path.exists() else 0,
+        "status": "failed" if capture_error else "completed",
+        "error": capture_error,
+    })
+    session.heavy_lease.release()
     try:
         os.close(session.master_fd)
     except OSError:
@@ -112,9 +148,7 @@ def _idle_watch(settings: Settings, session: TerminalSession) -> None:
         with session.lock:
             if session.status != "running":
                 return
-            from datetime import datetime
-
-            last = datetime.fromisoformat(session.last_activity_at.replace("Z", "+00:00")).timestamp()
+            last = datetime.fromisoformat(session.last_activity_at).timestamp()
             if (time.time() - last) * 1000 < session.idle_timeout_ms:
                 continue
         close_terminal_session(session.session_id, settings, signal_name="SIGTERM", grace_ms=settings.kill_grace_ms)
@@ -132,6 +166,8 @@ def start_terminal_session(
     env: dict[str, str] | None = None,
     idle_timeout_ms: int = 1_800_000,
 ) -> dict[str, Any]:
+    if pty is None:
+        raise RuntimeError("PTY is unavailable on this platform")
     with SESSIONS_LOCK:
         active = sum(item.status in {"starting", "running", "closing"} for item in SESSIONS.values())
         if active >= settings.max_terminal_sessions:
@@ -146,10 +182,28 @@ def start_terminal_session(
     else:
         shell_path, _ = resolve_binary("bash", settings)
         shell_path = shell_path or "/bin/sh"
-    master_fd, slave_fd = pty.openpty()
-    _set_size(slave_fd, cols, rows)
+    session_id = str(uuid.uuid4())
+    log_id = str(uuid.uuid4())
+    fingerprint = hashlib.sha256(f"{shell_path}\0{run_cwd}\0{command or ''}".encode()).hexdigest()
+    _audit(settings, {
+        "timestamp": int(time.time()), "event": "terminal_started", "request_id": session_id,
+        "tool": "start_terminal_session", "args_fingerprint": fingerprint,
+    })
+    try:
+        heavy_lease = acquire_heavy_operation(settings)
+    except ResourceBusyError:
+        _audit(settings, {
+            "timestamp": int(time.time()), "event": "terminal_finished", "request_id": session_id,
+            "tool": "start_terminal_session", "args_fingerprint": fingerprint,
+            "duration_ms": 0, "bytes": 0, "status": "failed", "error_kind": "resource_busy",
+        })
+        raise
+    master_fd: int | None = None
+    slave_fd: int | None = None
     argv = [shell_path, "-lc", command] if command else [shell_path, "-i"]
     try:
+        master_fd, slave_fd = pty.openpty()
+        _set_size(slave_fd, cols, rows)
         process = subprocess.Popen(
             argv,
             cwd=str(run_cwd),
@@ -159,19 +213,35 @@ def start_terminal_session(
             stderr=slave_fd,
             start_new_session=True,
         )
+    except OSError as exc:
+        heavy_lease.release()
+        if master_fd is not None:
+            os.close(master_fd)
+        _audit(settings, {
+            "timestamp": int(time.time()), "event": "terminal_finished", "request_id": session_id,
+            "tool": "start_terminal_session", "args_fingerprint": fingerprint,
+            "duration_ms": 0, "bytes": 0, "status": "failed", "error": str(exc),
+        })
+        raise
     finally:
-        os.close(slave_fd)
+        if slave_fd is not None:
+            os.close(slave_fd)
+    assert master_fd is not None
     session = TerminalSession(
-        session_id=str(uuid.uuid4()), log_id=str(uuid.uuid4()), process=process,
+        session_id=session_id, log_id=log_id, process=process,
         master_fd=master_fd, cwd=str(run_cwd), shell=shell_path, cols=cols, rows=rows,
-        created_at=_utc_now(), idle_timeout_ms=idle_timeout_ms,
+        created_at=_utc_now(), idle_timeout_ms=idle_timeout_ms, args_fingerprint=fingerprint,
+        heavy_lease=heavy_lease,
     )
     with SESSIONS_LOCK:
         SESSIONS[session.session_id] = session
     _persist(settings, session)
     threading.Thread(target=_reader, args=(settings, session), daemon=True, name=f"pty-read-{session.session_id[:8]}").start()
     threading.Thread(target=_idle_watch, args=(settings, session), daemon=True, name=f"pty-idle-{session.session_id[:8]}").start()
-    return {"ok": True, **_metadata(session), "next_cursor": 0}
+    return {
+        "ok": True, **_metadata(session), "next_cursor": 0,
+        "artifact": artifact_reference(session.log_id, complete=False, reason="source_active"),
+    }
 
 
 def _get(session_id: str) -> TerminalSession:
@@ -277,5 +347,5 @@ def shutdown_terminal_sessions(settings: Settings) -> None:
     for session_id in ids:
         try:
             close_terminal_session(session_id, settings, grace_ms=settings.kill_grace_ms)
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - shutdown remains best-effort per session
             continue

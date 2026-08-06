@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 import shlex
-from typing import Any, Callable
-
+from collections.abc import Callable
+from typing import Any
 
 VITEST_FILES_RE = re.compile(r"Test Files\s+(.+)")
 VITEST_TESTS_RE = re.compile(r"Tests\s+(.+)")
@@ -36,7 +36,7 @@ def parse_vitest_output(stdout: str, stderr: str = "") -> dict[str, Any]:
     current_file: str | None = None
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped.startswith("FAIL ") or stripped.startswith("❯ "):
+        if stripped.startswith(("FAIL ", "❯ ")):
             parts = stripped.split()
             if len(parts) >= 2 and (parts[0] == "FAIL" or parts[0] == "❯"):
                 current_file = parts[1]

@@ -16,7 +16,7 @@ func testSettingsForTools(root string) config.Settings {
 		ProjectRoot: root, WorkspaceScanDepth: 3, MaxTreeEntries: 1000, AccessMode: "safe",
 		BlockedGlobs: []string{".env", "**/.git/**", "**/*.bin"}, SecretGlobs: []string{".env", "**/.git/**"},
 		BinaryGlobs: []string{"**/*.bin"}, WritableGlobs: []string{"**/*"}, DangerouslyAllowAllWrites: true,
-		MaxCommandOutputChars: 100000, CommandTimeout: 5 * time.Second, SubprocessTimeout: 5 * time.Second,
+		DefaultInlineOutputBytes: 64 * 1024, MaxCommandOutputChars: 100000, CommandTimeout: 5 * time.Second, SubprocessTimeout: 5 * time.Second,
 		GitNetworkTimeout: 5 * time.Second, CommandJobsDir: filepath.Join(root, ".jobs"), CommandAuditLogPath: filepath.Join(root, "audit.log"),
 		CommandPolicyMode: "allowlist", CanonicalNamespace: "/",
 	}

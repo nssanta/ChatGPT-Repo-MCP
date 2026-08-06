@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .bounded_subprocess import run_bounded
 from .config import Settings
-
 
 _VERSION_ARGS = {
     "go": ("version",),
@@ -111,13 +111,12 @@ def tool_status(name: str, settings: Settings) -> dict[str, Any]:
     if path is None:
         return result
     try:
-        proc = subprocess.run(
+        proc = run_bounded(
             [path, *_VERSION_ARGS.get(name, ("--version",))],
             env=command_environment(settings),
-            text=True,
-            capture_output=True,
             timeout=3,
-            check=False,
+            max_stdout_bytes=4_096,
+            max_stderr_bytes=4_096,
         )
         output = (proc.stdout or proc.stderr).strip().splitlines()
         if proc.returncode == 0 and output:

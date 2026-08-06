@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from test_command_tools import make_settings
+
 from chatrepo_mcp import lsp_tools
 from chatrepo_mcp.security import SecurityError
-
-from test_command_tools import make_settings
 
 
 class _SimpleResult:
@@ -67,8 +67,8 @@ def test_python_diagnostics_prefers_pyright_when_available(tmp_path: Path, monke
     monkeypatch.setattr(lsp_tools.shutil, "which", lambda name: f"/{name}" if name == "pyright" else None)
 
     monkeypatch.setattr(
-        lsp_tools.subprocess,
-        "run",
+        lsp_tools,
+        "run_bounded",
         lambda *args, **kwargs: _SimpleResult(
             0,
             '{"generalDiagnostics":[{"file":"src/main.py","range":{"start":{"line":3,"character":4}},"severity":"information","rule":"reportGeneralTypeIssues","message":"type mismatch"}]}'
@@ -128,8 +128,8 @@ def test_compileall_reports_diagnostics_and_is_used_when_ruff_missing(tmp_path: 
     monkeypatch.setattr(lsp_tools, "_pyright_diagnostics", lambda *args, **kwargs: None)
 
     monkeypatch.setattr(
-        lsp_tools.subprocess,
-        "run",
+        lsp_tools,
+        "run_bounded",
         lambda *args, **kwargs: _SimpleResult(0, '  File "bad.py", line 2\n    invalid syntax\n', ""),
     )
 

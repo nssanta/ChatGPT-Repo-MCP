@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import sys
 import os
+import sys
 
 import anyio
 from mcp import ClientSession
@@ -12,12 +12,14 @@ async def main(url: str) -> None:
     headers = {}
     if token := os.getenv("MCP_BEARER_TOKEN"):
         headers["Authorization"] = f"Bearer {token}"
-    async with streamablehttp_client(url, headers=headers) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            tools = await session.list_tools()
-            names = sorted(tool.name for tool in tools.tools)
-            print({"url": url, "count": len(names), "names": names})
+    async with (
+        streamablehttp_client(url, headers=headers) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        tools = await session.list_tools()
+        names = sorted(tool.name for tool in tools.tools)
+        print({"url": url, "count": len(names), "names": names})
 
 
 if __name__ == "__main__":

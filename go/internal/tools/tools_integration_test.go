@@ -32,8 +32,8 @@ func TestRunTestPresetAndCommandRequestBounds(t *testing.T) {
 	if request.Timeout != engine.settings.CommandTimeout {
 		t.Fatalf("expected timeout default, got %v", request.Timeout)
 	}
-	if request.MaxOutput != engine.settings.MaxCommandOutputChars {
-		t.Fatalf("expected max output clamp, got %v", request.MaxOutput)
+	if request.MaxOutput != engine.settings.DefaultInlineOutputBytes {
+		t.Fatalf("expected default inline output, got %v", request.MaxOutput)
 	}
 
 	list := engine.Execute(context.Background(), "list_test_presets", map[string]any{})

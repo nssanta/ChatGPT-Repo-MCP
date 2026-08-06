@@ -1,6 +1,6 @@
 # Deploy on Ubuntu 24
 
-Persistent PTY is enabled by default but appears only with `ACCESS_MODE=full`. For shared/public deployments keep safe mode, or explicitly set `ENABLE_PTY=false`. Use `MCP_EXTRA_PATH` for toolchains outside the service user's inherited PATH and verify resolution with `doctor` after restart.
+Persistent PTY is enabled by default but appears only with `ACCESS_MODE=full`. For shared/public deployments keep safe mode, or explicitly set `ENABLE_PTY=false`. Use `MCP_EXTRA_PATH` for toolchains outside the service user's inherited PATH and verify resolution with `doctor` plus a focused `code_diagnostics`/`gh_status` call after restart. Do not rely on implicit discovery of a target repository's `.venv`.
 
 ## Requirements
 

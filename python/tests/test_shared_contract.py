@@ -8,7 +8,6 @@ import anyio
 from chatrepo_mcp import __version__
 from chatrepo_mcp.server import mcp
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_PATH = REPO_ROOT / "contracts" / "tool-schemas" / "tools.json"
 

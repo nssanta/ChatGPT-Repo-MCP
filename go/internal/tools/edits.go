@@ -5,8 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -62,6 +62,10 @@ func (e *Engine) loadWritable(path string, createIfMissing bool) (string, []byte
 	resolved, err := e.perimeter.Resolve(path, true, true)
 	if err != nil {
 		return "", nil, err
+	}
+	info, statErr := os.Stat(resolved.Absolute)
+	if statErr == nil && info.Size() > e.settings.MaxFileBytes {
+		return "", nil, fmt.Errorf("file exceeds MAX_FILE_BYTES")
 	}
 	data, err := os.ReadFile(resolved.Absolute)
 	if err != nil {
@@ -320,10 +324,8 @@ func (e *Engine) movePath(source, destination string, overwrite bool, expected *
 		return withError("move_rejected", err)
 	}
 	if expected != nil {
-		data, readErr := os.ReadFile(sourceResolved.Absolute)
-		if readErr == nil {
-			digest := sha256.Sum256(data)
-			if hex.EncodeToString(digest[:]) != *expected {
+		if digest, readErr := fileSHA256(sourceResolved.Absolute); readErr == nil {
+			if digest != *expected {
 				return failure("stale_write", "expected_sha256 does not match source")
 			}
 		}
@@ -357,10 +359,8 @@ func (e *Engine) deletePath(path string, expected *string, dryRun bool) map[stri
 		return failure("delete_rejected", "cannot delete PROJECT_ROOT")
 	}
 	if expected != nil {
-		data, readErr := os.ReadFile(resolved.Absolute)
-		if readErr == nil {
-			digest := sha256.Sum256(data)
-			if hex.EncodeToString(digest[:]) != *expected {
+		if digest, readErr := fileSHA256(resolved.Absolute); readErr == nil {
+			if digest != *expected {
 				return failure("stale_write", "expected_sha256 does not match current file")
 			}
 		}
@@ -373,6 +373,19 @@ func (e *Engine) deletePath(path string, expected *string, dryRun bool) map[stri
 	return map[string]any{"ok": true, "path": e.perimeter.Display(resolved.Absolute), "dry_run": dryRun, "applied": !dryRun, "changed": true}
 }
 
+func fileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	digest := sha256.New()
+	if _, err := io.Copy(digest, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
 func (e *Engine) batchEdits(operations []map[string]any, atomic, dryRun bool, name string) map[string]any {
 	if len(operations) == 0 {
 		return failure("invalid_batch", "operations must not be empty")
@@ -380,7 +393,10 @@ func (e *Engine) batchEdits(operations []map[string]any, atomic, dryRun bool, na
 	if len(operations) > e.settings.MaxBatchOperations {
 		return failure("too_many_operations", fmt.Sprintf("operations exceed MAX_BATCH_OPERATIONS (%d > %d)", len(operations), e.settings.MaxBatchOperations))
 	}
-	snapshots := e.snapshotOperations(operations)
+	snapshots, snapshotErr := e.snapshotOperationsChecked(operations)
+	if snapshotErr != nil {
+		return withError("batch_snapshot_failed", snapshotErr)
+	}
 	results := make([]map[string]any, 0, len(operations))
 	ok := true
 	for _, operation := range operations {
@@ -448,6 +464,11 @@ func cloneMap(source map[string]any) map[string]any {
 }
 
 func (e *Engine) snapshotOperations(operations []map[string]any) []editSnapshot {
+	snapshots, _ := e.snapshotOperationsChecked(operations)
+	return snapshots
+}
+
+func (e *Engine) snapshotOperationsChecked(operations []map[string]any) ([]editSnapshot, error) {
 	paths := make(map[string]bool)
 	for _, operation := range operations {
 		for _, key := range []string{"path", "source_path", "destination_path"} {
@@ -472,11 +493,17 @@ func (e *Engine) snapshotOperations(operations []map[string]any) []editSnapshot 
 		}
 		snapshot := editSnapshot{path: path, exists: true, mode: info.Mode(), isDir: info.IsDir()}
 		if !info.IsDir() {
-			snapshot.data, _ = os.ReadFile(path)
+			if info.Size() > e.settings.MaxFileBytes {
+				return nil, fmt.Errorf("atomic snapshot exceeds MAX_FILE_BYTES: %s", e.perimeter.Display(path))
+			}
+			snapshot.data, err = os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
 		}
 		result = append(result, snapshot)
 	}
-	return result
+	return result, nil
 }
 
 func (e *Engine) restoreSnapshots(snapshots []editSnapshot) {
@@ -505,8 +532,8 @@ func (e *Engine) applyPatch(ctx context.Context, patch string, dryRun bool, expe
 		return withError("patch_rejected", err)
 	}
 	if expectedBase != nil {
-		output, runErr := exec.CommandContext(ctx, "git", "-C", toplevel, "rev-parse", "HEAD").Output()
-		if runErr != nil || strings.TrimSpace(string(output)) != *expectedBase {
+		result := runProcess(ctx, toplevel, e.settings.SubprocessTimeout, e.commandEnvironment(nil), "git", "-C", toplevel, "rev-parse", "HEAD")
+		if result.ExitCode != 0 || strings.TrimSpace(result.Stdout) != *expectedBase {
 			return failure("stale_base", "expected_base_sha does not match HEAD")
 		}
 	}
@@ -519,18 +546,14 @@ func (e *Engine) applyPatch(ctx context.Context, patch string, dryRun bool, expe
 		}
 	}
 	arguments := []string{"-C", toplevel, "apply", "--check", "--whitespace=error-all", "-"}
-	command := exec.CommandContext(ctx, "git", arguments...)
-	command.Stdin = strings.NewReader(patch)
-	checkOutput, checkErr := command.CombinedOutput()
-	if checkErr != nil {
-		return map[string]any{"ok": false, "error_kind": "patch_apply_error", "error": strings.TrimSpace(string(checkOutput)), "dry_run": dryRun}
+	checked := runProcessInput(ctx, toplevel, e.settings.SubprocessTimeout, e.commandEnvironment(nil), strings.NewReader(patch), "git", arguments...)
+	if checked.ExitCode != 0 {
+		return map[string]any{"ok": false, "error_kind": "patch_apply_error", "error": strings.TrimSpace(checked.Stdout + "\n" + checked.Stderr), "dry_run": dryRun}
 	}
 	if !dryRun {
-		command = exec.CommandContext(ctx, "git", "-C", toplevel, "apply", "--whitespace=error-all", "-")
-		command.Stdin = strings.NewReader(patch)
-		output, applyErr := command.CombinedOutput()
-		if applyErr != nil {
-			return map[string]any{"ok": false, "error_kind": "patch_apply_error", "error": strings.TrimSpace(string(output)), "dry_run": false}
+		applied := runProcessInput(ctx, toplevel, e.settings.SubprocessTimeout, e.commandEnvironment(nil), strings.NewReader(patch), "git", "-C", toplevel, "apply", "--whitespace=error-all", "-")
+		if applied.ExitCode != 0 {
+			return map[string]any{"ok": false, "error_kind": "patch_apply_error", "error": strings.TrimSpace(applied.Stdout + "\n" + applied.Stderr), "dry_run": false}
 		}
 	}
 	return map[string]any{"ok": true, "dry_run": dryRun, "applied": !dryRun, "patch_bytes": len(patch)}

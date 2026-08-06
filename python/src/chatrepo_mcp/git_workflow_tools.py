@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from . import security, workspace
+from .bounded_subprocess import run_bounded
 from .command_tools import ConfirmationRequiredError, _audit, _redact
 from .config import Settings
 from .git_tools import GitToolError, _repo_rel, _resolve_repo_toplevel, _run_git
@@ -569,14 +570,13 @@ def git_push(
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_SSH_COMMAND"] = "ssh -oBatchMode=yes"
     try:
-        proc = subprocess.run(
+        proc = run_bounded(
             ["git", *args],
             cwd=str(toplevel),
-            check=False,
-            capture_output=True,
-            text=True,
             timeout=settings.git_network_timeout,
             env=env,
+            max_stdout_bytes=settings.max_response_chars,
+            max_stderr_bytes=settings.max_response_chars,
         )
     except subprocess.TimeoutExpired as exc:
         return {
@@ -620,6 +620,7 @@ def git_push(
             "dry_run": dry_run,
             "stdout": stdout,
             "stderr": stderr,
+            "output_truncated": proc.truncated,
         }
 
     remote_after_sha = remote_before_sha
@@ -640,6 +641,7 @@ def git_push(
         "remote_after_sha": remote_after_sha,
         "stdout": stdout,
         "stderr": stderr,
+        "output_truncated": proc.truncated,
     }
 
 
@@ -875,7 +877,10 @@ def prepare_task_worktree(
     try:
         _run_git(["worktree", "add", "-b", branch, str(worktree_path), base_sha], settings, cwd=toplevel)
     except Exception:
-        subprocess.run(["git", "branch", "-D", branch], cwd=str(toplevel), timeout=settings.subprocess_timeout, check=False, capture_output=True)
+        run_bounded(
+            ["git", "branch", "-D", branch], cwd=str(toplevel),
+            timeout=settings.subprocess_timeout, max_stdout_bytes=0, max_stderr_bytes=4_096,
+        )
         raise
     return result
 

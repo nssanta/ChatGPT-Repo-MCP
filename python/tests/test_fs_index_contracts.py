@@ -5,11 +5,11 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+
 import pytest
+from test_command_tools import make_settings
 
 from chatrepo_mcp import fs_tools, index_tools
-
-from test_command_tools import make_settings
 
 
 def test_fs_is_probably_text_recognizes_special_filenames() -> None:
@@ -191,8 +191,8 @@ def test_index_ctags_binary_detects_universal_variant(monkeypatch) -> None:
     index_tools._ctags_binary.cache_clear()
     monkeypatch.setattr(index_tools.shutil, "which", lambda name: "/usr/bin/ctags")
     monkeypatch.setattr(
-        index_tools.subprocess,
-        "run",
+        index_tools,
+        "run_bounded",
         lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="Universal Ctags"),
     )
     assert index_tools._ctags_binary() == "/usr/bin/ctags"
@@ -228,7 +228,7 @@ def test_run_ctags_file_returns_empty_when_command_fails(tmp_path: Path, monkeyp
         calls["count"] += 1
         return SimpleNamespace(returncode=1, stdout="")
 
-    monkeypatch.setattr(index_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(index_tools, "run_bounded", fake_run)
     assert index_tools._run_ctags_file(tmp_path / "x.py") == []
     assert calls["count"] == 2
 
@@ -259,7 +259,10 @@ def test_get_or_build_index_builds_and_saves_cache_when_missing(tmp_path: Path, 
     cache_path = tmp_path / "cache" / "symbols.json"
 
     monkeypatch.setattr(index_tools, "_cache_path", lambda settings, repo_rel: cache_path)
-    monkeypatch.setattr(index_tools, "_run_ctags_recursive", lambda target: [{"name": "foo", "path": "main.py"}])
+    monkeypatch.setattr(
+        index_tools, "_run_ctags_recursive",
+        lambda target, max_bytes=1_000_000: [{"name": "foo", "path": "main.py"}],
+    )
     monkeypatch.setattr(index_tools, "_normalize_tags", lambda raw_tags, base_dir, settings: [{"name": "foo", "path": "main.py", "line": 1}])
 
     symbols = index_tools._get_or_build_index(settings, tmp_path, "repo")

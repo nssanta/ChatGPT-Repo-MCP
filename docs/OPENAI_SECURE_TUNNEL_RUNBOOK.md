@@ -236,6 +236,11 @@ If the tunnel is missing from the selector, confirm that it is associated with
 the target ChatGPT workspace, not only the Platform organization, and that the
 app creator has `Tunnels Read + Use`.
 
+When a server upgrade changes tool names or schemas, first verify the live
+catalog with `scripts/check_tools.py`, then reconnect or refresh the ChatGPT app
+and start a new conversation. Existing conversations may retain their earlier
+tool catalog; merely refreshing the browser is not a reliable schema check.
+
 ## 8. Make it survive terminal close and reboot
 
 The manual commands above are only a proof. Closing either terminal or rebooting

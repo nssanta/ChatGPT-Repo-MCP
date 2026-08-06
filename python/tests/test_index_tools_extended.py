@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from chatrepo_mcp import index_tools
-from chatrepo_mcp import git_tools
 from test_command_tools import make_settings
+
+from chatrepo_mcp import git_tools, index_tools
 
 
 def test_ctags_symbol_definition_falls_back_when_lookup_fails(tmp_path, monkeypatch) -> None:
@@ -42,7 +42,9 @@ def test_document_symbols_prefers_ctags_when_available(tmp_path, monkeypatch) ->
     monkeypatch.setattr(
         index_tools,
         "_run_ctags_file",
-        lambda target_path: [{"name": "x", "kind": "function", "line": 1, "signature": "x()", "scope": None}],
+        lambda target_path, max_bytes=1_000_000: [
+            {"name": "x", "kind": "function", "line": 1, "signature": "x()", "scope": None}
+        ],
     )
 
     result = index_tools.document_symbols(settings, str(target))

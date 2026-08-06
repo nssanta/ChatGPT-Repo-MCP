@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
-
-from chatrepo_mcp import edit_tools
 from test_command_tools import make_settings
 from test_edit_tools import write_allowed_file
+
+from chatrepo_mcp import edit_tools
 
 
 def test_current_text_sha256_returns_file_sha(tmp_path: Path) -> None:

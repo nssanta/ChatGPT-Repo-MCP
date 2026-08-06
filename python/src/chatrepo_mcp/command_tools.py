@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -11,14 +11,26 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
 from . import profile as _profile_module
+from .bounded_subprocess import run_bounded
 from .config import Settings
 from .git_tools import _repo_rel, _resolve_repo_toplevel
+from .output_store import (
+    ArtifactQuotaError,
+    OutputArtifact,
+    StreamingRedactor,
+    artifact_reference,
+    inline_head_tail,
+    redact_text,
+    store_for,
+)
 from .parsers import parse_command_output
 from .profile import DEFAULT_PRESETS, load_repo_profile, resolve_presets_for_dir
+from .resource_profile import ResourceBusyError, acquire_heavy_operation
 from .runtime_env import command_environment
 from .security import SecurityError, is_blocked_relative, normalize_rel_path
 from .workspace import detect_stack, is_within_roots, resolve_roots
@@ -96,8 +108,11 @@ def _canonical(command: str) -> str:
 # import-safe without reintroducing project-specific commands.
 TEST_PRESETS: dict[str, str] = {name: str(cfg["command"]) for name, cfg in DEFAULT_PRESETS.items()}
 
-JOB_PROCS: dict[str, subprocess.Popen[str]] = {}
+JOB_PROCS: dict[str, subprocess.Popen[bytes]] = {}
+JOB_DRAIN_THREADS: dict[str, tuple[threading.Thread, threading.Thread]] = {}
+JOB_CAPTURE_ERRORS: dict[str, list[str]] = {}
 JOB_LOCK = threading.RLock()
+AUDIT_LOCK = threading.RLock()
 
 _UNRESTRICTED_MODES = {"unrestricted", "full_repo"}
 
@@ -301,9 +316,8 @@ def _check_command_policy(
             return normalized
         allowed_overrides, confirmation_overrides = _profile_command_overrides(settings)
         for prefix in (*CONFIRMATION_COMMANDS, *confirmation_overrides):
-            if normalized == prefix or normalized.startswith(prefix + " "):
-                if not confirmed:
-                    raise ConfirmationRequiredError("This command requires owner confirmation")
+            if (normalized == prefix or normalized.startswith(prefix + " ")) and not confirmed:
+                raise ConfirmationRequiredError("This command requires owner confirmation")
         for rule in (*ALLOWED_COMMANDS, *allowed_overrides):
             allowed = _canonical(rule.command)
             if normalized == allowed or (rule.allow_suffix and normalized.startswith(allowed + " ")):
@@ -336,11 +350,7 @@ def _as_text(value: str | bytes | None) -> str:
 
 
 def _redact(text: str | bytes | None) -> str:
-    text = _as_text(text)
-    redacted = text
-    for pattern in SECRET_PATTERNS:
-        redacted = pattern.sub(lambda m: f"{m.group(1)}=<redacted>" if m.lastindex else "<redacted>", redacted)
-    return redacted
+    return redact_text(_as_text(text))
 
 
 def _safe_key(value: str) -> str:
@@ -348,9 +358,9 @@ def _safe_key(value: str) -> str:
 
 
 def _utc_now() -> str:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _tail(text: str, tail_lines: int | None) -> str:
@@ -383,14 +393,13 @@ def _resolved_binaries(cwd: Path, env: dict[str, str], settings: Settings) -> di
         binaries.update(_STACK_BINARIES.get(stack, ()))
     result: dict[str, str | None] = {}
     for binary in sorted(binaries):
-        proc = subprocess.run(
+        proc = run_bounded(
             ["/bin/bash", "-lc", _bash_command(f"command -v {binary}", settings)],
             cwd=str(cwd),
             env=env,
-            text=True,
-            capture_output=True,
-            check=False,
             timeout=5,
+            max_stdout_bytes=4_096,
+            max_stderr_bytes=4_096,
         )
         result[binary] = proc.stdout.strip() or None
     _BINARY_RESOLUTION_CACHE[cache_key] = result
@@ -429,80 +438,33 @@ def _command_env(extra_env: dict[str, str] | None = None, settings: Settings | N
 def _audit(settings: Settings, payload: dict[str, Any]) -> None:
     path = settings.command_audit_log_path
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        with AUDIT_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size >= 10 * 1024 * 1024:
+                for stale in path.parent.glob(f"{path.name}.*"):
+                    suffix = stale.name.removeprefix(f"{path.name}.")
+                    if suffix.isdigit() and int(suffix) > 5:
+                        stale.unlink(missing_ok=True)
+                for index in range(5, 0, -1):
+                    source = path if index == 1 else path.with_name(f"{path.name}.{index - 1}")
+                    target = path.with_name(f"{path.name}.{index}")
+                    if source.exists():
+                        if index == 5:
+                            target.unlink(missing_ok=True)
+                        os.replace(source, target)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
     except OSError:
         return
 
 
 def _command_log_paths(settings: Settings, log_id: str) -> tuple[Path, Path, Path]:
-    root = settings.command_jobs_dir / "logs"
+    root = settings.command_jobs_dir / "artifacts"
     return root / f"{log_id}.json", root / f"{log_id}.out", root / f"{log_id}.err"
 
 
 def _lock_path(settings: Settings, concurrency_key: str) -> Path:
     return settings.command_jobs_dir / "locks" / f"{_safe_key(concurrency_key)}.json"
-
-
-def _write_command_log(
-    settings: Settings,
-    *,
-    command: str,
-    cwd: str,
-    stdout: str,
-    stderr: str,
-    result: dict[str, Any],
-) -> str | None:
-    log_id = str(uuid.uuid4())
-    meta_path, out_path, err_path = _command_log_paths(settings, log_id)
-    try:
-        meta_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(stdout, encoding="utf-8")
-        err_path.write_text(stderr, encoding="utf-8")
-        meta_path.write_text(
-            json.dumps(
-                {
-                    "log_id": log_id,
-                    "command": _redact(command),
-                    "cwd": cwd,
-                    "exit_code": result.get("exit_code"),
-                    "duration_ms": result.get("duration_ms"),
-                    "timed_out": result.get("timed_out"),
-                    "created_at": time.time(),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
-        return log_id
-    except OSError:
-        return None
-
-
-def _attach_parse_and_log(
-    result: dict[str, Any],
-    settings: Settings,
-    *,
-    command: str,
-    cwd: str,
-    stdout: str,
-    stderr: str,
-    parse_kind: str | None,
-) -> dict[str, Any]:
-    parsed = parse_command_output(command, stdout, stderr, parse_kind=parse_kind)
-    if parsed:
-        result["parsed"] = parsed
-        result["summary"] = parsed.get("summary")
-    elif result.get("ok"):
-        result["summary"] = "exit 0"
-    else:
-        result["summary"] = f"exit {result.get('exit_code')}" if result.get("exit_code") is not None else "failed"
-    log_id = _write_command_log(settings, command=command, cwd=cwd, stdout=stdout, stderr=stderr, result=result)
-    if log_id:
-        result["log_id"] = log_id
-    return result
 
 
 def run_command(
@@ -529,61 +491,176 @@ def run_command(
     """
     normalized = _check_command_policy(command, settings, confirmed=confirmed, policy_exempt=policy_exempt)
     effective_timeout_ms = min(timeout_ms or settings.command_timeout_ms, settings.command_timeout_ms)
-    output_limit = min(max_output_chars or settings.max_command_output_chars, settings.max_command_output_chars)
+    requested_output_limit = max_output_chars
+    output_limit = min(
+        settings.default_inline_output_bytes
+        if requested_output_limit is not None and requested_output_limit <= 0
+        else requested_output_limit
+        if requested_output_limit is not None
+        else settings.default_inline_output_bytes,
+        settings.max_command_output_chars,
+    )
     run_cwd = _resolve_cwd(cwd, settings)
     run_env = _command_env(env, settings)
     started = time.monotonic()
     resolved = _resolved_binaries(run_cwd, run_env, settings)
+    log_id = str(uuid.uuid4())
+    meta_path, out_path, err_path = _command_log_paths(settings, log_id)
+    store = store_for(settings)
+    stdout_artifact: OutputArtifact | None = None
+    stderr_artifact: OutputArtifact | None = None
+    _audit(settings, {
+        "timestamp": int(time.time()), "event": "command_started", "request_id": log_id,
+        "tool": "run_command", "args_fingerprint": hashlib.sha256(
+            f"{normalized}\0{run_cwd}".encode()
+        ).hexdigest(),
+    })
     try:
+        heavy_lease = acquire_heavy_operation(settings)
+    except ResourceBusyError:
+        _audit(settings, {
+            "timestamp": int(time.time()), "event": "command_finished", "request_id": log_id,
+            "tool": "run_command", "args_fingerprint": hashlib.sha256(
+                f"{normalized}\0{run_cwd}".encode()
+            ).hexdigest(),
+            "duration_ms": 0, "stdout_bytes": 0, "stderr_bytes": 0,
+            "status": "failed", "error_kind": "resource_busy",
+        })
+        raise
+    try:
+        stdout_artifact = store.open(log_id, "stdout", out_path, output_limit)
+        stderr_artifact = store.open(log_id, "stderr", err_path, output_limit)
         proc = subprocess.Popen(
             ["/bin/bash", "-lc", _bash_command(normalized, settings)],
             cwd=str(run_cwd),
             env=run_env,
-            text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
+        drain_errors: list[BaseException] = []
+
+        def drain(pipe: Any, artifact: OutputArtifact) -> None:
+            try:
+                while chunk := pipe.read(65536):
+                    artifact.write(chunk)
+            except (OSError, ValueError) as exc:
+                drain_errors.append(exc)
+                _terminate_process_group(proc.pid, grace_seconds=settings.kill_grace_ms / 1000)
+
+        stdout_thread = threading.Thread(target=drain, args=(proc.stdout, stdout_artifact), daemon=True)
+        stderr_thread = threading.Thread(target=drain, args=(proc.stderr, stderr_artifact), daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
         try:
-            raw_stdout, raw_stderr = proc.communicate(timeout=effective_timeout_ms / 1000)
+            proc.wait(timeout=effective_timeout_ms / 1000)
             timed_out = False
         except subprocess.TimeoutExpired:
             _terminate_process_group(proc.pid, grace_seconds=settings.kill_grace_ms / 1000)
-            raw_stdout, raw_stderr = proc.communicate()
+            proc.wait()
             timed_out = True
-        stdout = _redact(raw_stdout)
-        stderr = _redact(raw_stderr)
+        drain_cleanup, process_group_cleaned, forced_pipe_close = _finalize_process_drains(
+            proc, (stdout_thread, stderr_thread),
+            grace_seconds=settings.kill_grace_ms / 1000,
+        )
+        stdout_artifact.close()
+        stderr_artifact.close()
+        if drain_errors:
+            raise OSError(f"artifact capture failed: {drain_errors[0]}")
+        stdout_limit = output_limit
+        stderr_limit = output_limit
+        if stdout_artifact.bytes_written and stderr_artifact.bytes_written:
+            stdout_limit = (output_limit + 1) // 2
+            stderr_limit = output_limit - stdout_limit
+        stdout = inline_head_tail(
+            stdout_artifact.head, stdout_artifact.preview,
+            total_bytes=stdout_artifact.bytes_written, maximum=stdout_limit,
+        )
+        stderr = inline_head_tail(
+            stderr_artifact.head, stderr_artifact.preview,
+            total_bytes=stderr_artifact.bytes_written, maximum=stderr_limit,
+        )
+        stdout_tail = _tail(stdout_artifact.preview, tail_lines)
+        stderr_tail = _tail(stderr_artifact.preview, tail_lines)
         duration_ms = int((time.monotonic() - started) * 1000)
-        result = {
+        result: dict[str, Any] = {
             "ok": proc.returncode == 0 and not timed_out,
             "command": _redact(normalized),
             "exit_code": None if timed_out else proc.returncode,
-            "stdout": stdout[:output_limit],
-            "stderr": stderr[:output_limit],
-            "stdout_tail": _tail(stdout, tail_lines),
-            "stderr_tail": _tail(stderr, tail_lines),
-            "full_output_truncated": len(stdout) > output_limit or len(stderr) > output_limit,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_tail": stdout_tail,
+            "stderr_tail": stderr_tail,
+            "full_output_truncated": stdout_artifact.bytes_written > len(stdout.encode("utf-8")) or stderr_artifact.bytes_written > len(stderr.encode("utf-8")),
             "duration_ms": duration_ms,
             "timed_out": timed_out,
             "cwd": str(run_cwd),
             "resolved_binaries": resolved,
+            "log_id": log_id,
+            "stdout_bytes": stdout_artifact.bytes_written,
+            "stderr_bytes": stderr_artifact.bytes_written,
+            "stdout_sha256": stdout_artifact.sha256,
+            "stderr_sha256": stderr_artifact.sha256,
+            "drain_cleanup": drain_cleanup,
+            "forced_pipe_close": forced_pipe_close,
+            "process_group_cleaned": process_group_cleaned,
         }
         if timed_out:
             result["error_kind"] = "command_timeout"
-        result = _attach_parse_and_log(
-            result,
-            settings,
-            command=normalized,
-            cwd=str(run_cwd),
-            stdout=stdout,
-            stderr=stderr,
-            parse_kind=parse_kind,
+        parsed = parse_command_output(normalized, stdout_artifact.preview, stderr_artifact.preview, parse_kind=parse_kind)
+        if parsed:
+            result["parsed"] = parsed
+            result["summary"] = parsed.get("summary")
+        else:
+            result["summary"] = "exit 0" if result["ok"] else f"exit {result['exit_code']}"
+        store.write_aux(
+            log_id,
+            meta_path,
+            json.dumps({
+                "log_id": log_id, "command": _redact(normalized), "cwd": str(run_cwd),
+                "exit_code": result["exit_code"], "duration_ms": duration_ms, "timed_out": timed_out,
+                "created_at": time.time(), "complete": True,
+                "stdout_bytes": stdout_artifact.bytes_written, "stderr_bytes": stderr_artifact.bytes_written,
+                "stdout_sha256": stdout_artifact.sha256, "stderr_sha256": stderr_artifact.sha256,
+                "drain_cleanup": drain_cleanup, "forced_pipe_close": forced_pipe_close,
+                "process_group_cleaned": process_group_cleaned,
+            }, ensure_ascii=False, sort_keys=True).encode(),
         )
-    except OSError as exc:
+        reference = artifact_reference(
+            log_id,
+            complete=True,
+            reason="inline_limit" if result["full_output_truncated"] else "none",
+        )
+        result["artifact"] = reference
+        result["continuation"] = reference["continuation"]
+        result["receipt"] = reference["receipt"]
+        result["receipt"]["configured"]["inline_output_bytes"] = settings.default_inline_output_bytes
+        result["receipt"]["applied"]["inline_output_bytes"] = output_limit
+        result["receipt"]["requested"] = (
+            {"inline_output_bytes": requested_output_limit}
+            if requested_output_limit is not None else {}
+        )
+        result["receipt"]["returned"] = {
+            "stdout_bytes": len(stdout.encode("utf-8")),
+            "stderr_bytes": len(stderr.encode("utf-8")),
+        }
+        result["receipt"]["total"] = {
+            "stdout_bytes": stdout_artifact.bytes_written,
+            "stderr_bytes": stderr_artifact.bytes_written,
+        }
+    except (OSError, ArtifactQuotaError) as exc:
+        for artifact in (stdout_artifact, stderr_artifact):
+            if artifact is not None:
+                try:
+                    artifact.close()
+                except OSError:
+                    pass
+        if stdout_artifact is not None or stderr_artifact is not None:
+            store.abort_artifact(log_id)
         duration_ms = int((time.monotonic() - started) * 1000)
         result = {
             "ok": False,
-            "error_kind": "command_spawn_error",
+            "error_kind": "artifact_capture_failed" if isinstance(exc, ArtifactQuotaError) or stdout_artifact is not None else "command_spawn_error",
             "command": _redact(normalized),
             "exit_code": None,
             "stdout": "",
@@ -591,21 +668,27 @@ def run_command(
             "duration_ms": duration_ms,
             "timed_out": False,
             "cwd": str(run_cwd),
+            "log_id": log_id,
         }
     _audit(
         settings,
         {
             "timestamp": int(time.time()),
-            "command": _redact(normalized),
+            "event": "command_finished", "request_id": log_id, "tool": "run_command",
+            "args_fingerprint": hashlib.sha256(f"{normalized}\0{run_cwd}".encode()).hexdigest(),
             "cwd": str(run_cwd),
             "exit_code": result["exit_code"],
             "duration_ms": result["duration_ms"],
             "timed_out": result["timed_out"],
             "stdout_chars": len(str(result.get("stdout", ""))),
             "stderr_chars": len(str(result.get("stderr", ""))),
+            "stdout_bytes": result.get("stdout_bytes", 0),
+            "stderr_bytes": result.get("stderr_bytes", 0),
+            "status": "completed" if result.get("ok") else "failed",
             "policy_source": "preset" if policy_exempt else "direct",
         },
     )
+    heavy_lease.release()
     result["policy_source"] = "preset" if policy_exempt else "direct"
     return result
 
@@ -742,21 +825,23 @@ def run_test_preset(
 
 
 def _job_paths(settings: Settings, job_id: str) -> tuple[Path, Path, Path]:
-    root = settings.command_jobs_dir
+    root = settings.command_jobs_dir / "artifacts"
     return root / f"{job_id}.json", root / f"{job_id}.out", root / f"{job_id}.err"
 
 
 def _read_job_meta(settings: Settings, job_id: str) -> dict[str, Any]:
     meta_path, _, _ = _job_paths(settings, job_id)
-    if not meta_path.exists():
-        raise FileNotFoundError(f"job not found: {job_id}")
-    return json.loads(meta_path.read_text(encoding="utf-8"))
+    with JOB_LOCK:
+        if not meta_path.exists():
+            raise FileNotFoundError(f"job not found: {job_id}")
+        return json.loads(meta_path.read_text(encoding="utf-8"))
 
 
 def _write_job_meta(settings: Settings, job_id: str, meta: dict[str, Any]) -> None:
     meta_path, _, _ = _job_paths(settings, job_id)
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    data = json.dumps(meta, ensure_ascii=False, sort_keys=True).encode()
+    with JOB_LOCK:
+        store_for(settings).write_aux(job_id, meta_path, data)
 
 
 def start_command_job(
@@ -771,6 +856,7 @@ def start_command_job(
     concurrency_key: str | None = None,
     on_conflict: str = "fail",
     policy_exempt: bool = False,
+    audit_tool: str = "start_command_job",
 ) -> dict[str, Any]:
     if on_conflict not in {"fail", "attach", "wait"}:
         raise CommandPolicyError("on_conflict must be one of: fail, attach, wait")
@@ -794,23 +880,157 @@ def start_command_job(
     run_cwd = _resolve_cwd(cwd, settings)
     run_env = _command_env(env, settings)
     job_id = str(uuid.uuid4())
+    started_monotonic = time.monotonic()
     meta_path, out_path, err_path = _job_paths(settings, job_id)
     meta_path.parent.mkdir(parents=True, exist_ok=True)
-    out_handle = out_path.open("w", encoding="utf-8")
-    err_handle = err_path.open("w", encoding="utf-8")
-    proc = subprocess.Popen(
-        ["/bin/bash", "-lc", _bash_command(normalized, settings)],
-        cwd=str(run_cwd),
-        env=run_env,
-        text=True,
-        stdout=out_handle,
-        stderr=err_handle,
-        start_new_session=True,
-    )
-    out_handle.close()
-    err_handle.close()
-    with JOB_LOCK:
-        JOB_PROCS[job_id] = proc
+    store = store_for(settings)
+    fingerprint = hashlib.sha256(f"{normalized}\0{run_cwd}".encode()).hexdigest()
+    _audit(settings, {
+        "timestamp": int(time.time()), "event": "heavy_started", "request_id": job_id,
+        "tool": audit_tool, "args_fingerprint": fingerprint,
+    })
+    try:
+        heavy_lease = acquire_heavy_operation(settings)
+    except ResourceBusyError:
+        _audit(settings, {
+            "timestamp": int(time.time()), "event": "heavy_finished", "request_id": job_id,
+            "tool": audit_tool, "args_fingerprint": fingerprint,
+            "duration_ms": 0, "bytes": 0, "status": "failed",
+            "error_kind": "resource_busy",
+        })
+        raise
+    store.acquire_lifecycle(job_id)
+    out_artifact: OutputArtifact | None = None
+    err_artifact: OutputArtifact | None = None
+    proc: subprocess.Popen[bytes] | None = None
+
+    def fail_start(exc: OSError | ValueError, error_kind: str) -> None:
+        if proc is not None:
+            _terminate_process_group(proc.pid, grace_seconds=0)
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                _terminate_process_group(proc.pid, grace_seconds=0)
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
+        for output_artifact in (out_artifact, err_artifact):
+            if output_artifact is not None:
+                output_artifact.abort()
+        store.abort_artifact(job_id)
+        store.release_lifecycle(job_id)
+        heavy_lease.release()
+        _audit(settings, {
+            "timestamp": int(time.time()), "event": "heavy_finished", "request_id": job_id,
+            "tool": audit_tool, "args_fingerprint": fingerprint,
+            "duration_ms": int((time.monotonic() - started_monotonic) * 1000),
+            "bytes": 0, "status": "failed", "error_kind": error_kind,
+            "error": str(exc),
+        })
+
+    try:
+        out_artifact = store.open(job_id, "stdout", out_path, settings.max_command_output_chars)
+        err_artifact = store.open(job_id, "stderr", err_path, settings.max_command_output_chars)
+        proc = subprocess.Popen(
+            ["/bin/bash", "-lc", _bash_command(normalized, settings)],
+            cwd=str(run_cwd),
+            env=run_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except (OSError, ValueError) as exc:
+        fail_start(exc, "artifact_capture_failed" if out_artifact is not None else "command_spawn_error")
+        raise
+
+    assert proc is not None and out_artifact is not None and err_artifact is not None
+
+    def drain(pipe: Any, artifact: OutputArtifact) -> None:
+        try:
+            while chunk := pipe.read(65536):
+                artifact.write(chunk)
+            artifact.close()
+        except (OSError, ValueError) as exc:
+            with JOB_LOCK:
+                JOB_CAPTURE_ERRORS.setdefault(job_id, []).append(str(exc))
+            _terminate_process_group(proc.pid, grace_seconds=0)
+
+    out_thread = threading.Thread(target=drain, args=(proc.stdout, out_artifact), daemon=True, name=f"chatrepo-job-out-{job_id[:8]}")
+    err_thread = threading.Thread(target=drain, args=(proc.stderr, err_artifact), daemon=True, name=f"chatrepo-job-err-{job_id[:8]}")
+    def finish_heavy_audit() -> None:
+        try:
+            proc.wait()
+            try:
+                drain_cleanup, process_group_cleaned, forced_pipe_close = _finalize_process_drains(
+                    proc, (out_thread, err_thread),
+                    grace_seconds=settings.kill_grace_ms / 1000,
+                )
+            except OSError as exc:
+                with JOB_LOCK:
+                    JOB_CAPTURE_ERRORS.setdefault(job_id, []).append(str(exc))
+                drain_cleanup, process_group_cleaned, forced_pipe_close = "failed", False, True
+            with JOB_LOCK:
+                terminal = {"completed", "failed", "cancelled", "timed_out"}
+                finished_meta = _read_job_meta(settings, job_id)
+                capture_errors = JOB_CAPTURE_ERRORS.pop(job_id, [])
+                status = str(finished_meta.get("status", "running"))
+                if status not in terminal:
+                    if finished_meta.get("cancel_requested"):
+                        status = "cancelled"
+                        finished_meta["termination_reason"] = "user_cancel"
+                    elif finished_meta.get("timed_out") or finished_meta.get("termination_reason") == "timeout":
+                        status = "timed_out"
+                        finished_meta["termination_reason"] = "timeout"
+                    elif capture_errors or proc.returncode not in {0, None}:
+                        status = "failed"
+                        finished_meta["termination_reason"] = (
+                            "artifact_capture_failed" if capture_errors else "nonzero_exit"
+                        )
+                    else:
+                        status = "completed"
+                        finished_meta["termination_reason"] = "completed"
+                if capture_errors:
+                    status = "failed"
+                    finished_meta["error_kind"] = "artifact_capture_failed"
+                    finished_meta["capture_error"] = capture_errors[0]
+                    out_artifact.abort()
+                    err_artifact.abort()
+                    store.abort_artifact(job_id, preserve_manifest=True)
+                    finished_meta.pop("stdout_sha256", None)
+                    finished_meta.pop("stderr_sha256", None)
+                finished_meta.update({
+                    "status": status,
+                    "complete": not capture_errors,
+                    "exit_code": proc.returncode,
+                    "finished_at": finished_meta.get("finished_at") or _utc_now(),
+                    "stdout_bytes": 0 if capture_errors else out_artifact.bytes_written,
+                    "stderr_bytes": 0 if capture_errors else err_artifact.bytes_written,
+                    "output_truncated": (
+                        out_artifact.bytes_written > len(out_artifact.head.encode("utf-8"))
+                        or err_artifact.bytes_written > len(err_artifact.head.encode("utf-8"))
+                    ),
+                    "drain_cleanup": drain_cleanup,
+                    "forced_pipe_close": forced_pipe_close,
+                    "process_group_cleaned": process_group_cleaned,
+                })
+                if not capture_errors:
+                    finished_meta["stdout_sha256"] = out_artifact.sha256
+                    finished_meta["stderr_sha256"] = err_artifact.sha256
+                _write_job_meta(settings, job_id, finished_meta)
+                JOB_PROCS.pop(job_id, None)
+                JOB_DRAIN_THREADS.pop(job_id, None)
+            _clear_lock(settings, finished_meta.get("concurrency_key"), job_id)
+            _audit(settings, {
+                "timestamp": int(time.time()), "event": "heavy_finished", "request_id": job_id,
+                "tool": audit_tool, "args_fingerprint": fingerprint,
+                "duration_ms": int((time.monotonic() - started_monotonic) * 1000),
+                "bytes": out_artifact.bytes_written + err_artifact.bytes_written,
+                "status": str(finished_meta["status"]),
+            })
+        finally:
+            heavy_lease.release()
+            store.release_lifecycle(job_id)
+
     now = _utc_now()
     meta = {
         "job_id": job_id,
@@ -825,6 +1045,7 @@ def start_command_job(
         "timeout_ms": timeout_ms or settings.command_timeout_ms,
         "tail_lines": tail_lines,
         "status": "running",
+        "complete": False,
         "exit_code": None,
         "term_signal": None,
         "termination_reason": None,
@@ -839,7 +1060,19 @@ def start_command_job(
         "concurrency_key": concurrency_key,
         "policy_source": "preset" if policy_exempt else "direct",
     }
-    _write_job_meta(settings, job_id, meta)
+    try:
+        _write_job_meta(settings, job_id, meta)
+    except (OSError, ValueError) as exc:
+        fail_start(exc, "artifact_metadata_failed")
+        raise
+    out_thread.start()
+    err_thread.start()
+    with JOB_LOCK:
+        JOB_PROCS[job_id] = proc
+        JOB_DRAIN_THREADS[job_id] = (out_thread, err_thread)
+    threading.Thread(
+        target=finish_heavy_audit, daemon=True, name=f"chatrepo-heavy-{job_id[:8]}",
+    ).start()
     if concurrency_key:
         _write_lock(settings, concurrency_key, job_id)
     watcher = threading.Thread(
@@ -849,6 +1082,7 @@ def start_command_job(
         name=f"chatrepo-job-timeout-{job_id[:8]}",
     )
     watcher.start()
+    artifact = artifact_reference(job_id, complete=False, reason="inline_limit")
     return {
         "ok": True,
         "job_id": job_id,
@@ -860,17 +1094,24 @@ def start_command_job(
         "command": _redact(normalized),
         "concurrency_key": concurrency_key,
         "policy_source": "preset" if policy_exempt else "direct",
+        "artifact": artifact,
+        "continuation": artifact["continuation"],
+        "receipt": artifact["receipt"],
     }
 
 
 def _is_pid_running(pid: int) -> bool:
-    if not Path(f"/proc/{pid}").exists():
-        return False
-    stat_path = Path(f"/proc/{pid}/stat")
-    if stat_path.exists():
-        parts = stat_path.read_text(encoding="utf-8", errors="replace").split()
-        if len(parts) > 2 and parts[2] == "Z":
+    try:
+        if not Path(f"/proc/{pid}").exists():
             return False
+        stat_path = Path(f"/proc/{pid}/stat")
+        if stat_path.exists():
+            parts = stat_path.read_text(encoding="utf-8", errors="replace").split()
+            if len(parts) > 2 and parts[2] == "Z":
+                return False
+    except OSError:
+        # Процесс может исчезнуть между проверкой каталога и чтением stat.
+        return False
     return True
 
 
@@ -907,12 +1148,58 @@ def _terminate_process_group(pid: int, *, grace_seconds: float = 1.0) -> str:
 
 
 def _wait_process_group_cleaned(pgid: int, timeout: float = 1.0) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if not _is_process_group_running(pgid):
             return True
         time.sleep(0.025)
     return not _is_process_group_running(pgid)
+
+
+def _finalize_process_drains(
+    proc: subprocess.Popen[bytes],
+    threads: tuple[threading.Thread, threading.Thread],
+    *,
+    grace_seconds: float,
+) -> tuple[str, bool, bool]:
+    """Bound drain completion after the direct process has exited."""
+    deadline = time.monotonic() + 1
+    for thread in threads:
+        thread.join(timeout=max(deadline - time.monotonic(), 0))
+    cleanup = "not_needed"
+    forced_pipe_close = False
+    if any(thread.is_alive() for thread in threads):
+        # Лидер уже мог выйти, но его process group продолжает жить и держать pipe.
+        cleanup = _terminate_process_group(proc.pid, grace_seconds=grace_seconds)
+        deadline = time.monotonic() + 1
+        for thread in threads:
+            thread.join(timeout=max(deadline - time.monotonic(), 0))
+    if any(thread.is_alive() for thread in threads):
+        forced_pipe_close = True
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                _close_pipe_transport(pipe)
+        for thread in threads:
+            thread.join(timeout=1)
+    if any(thread.is_alive() for thread in threads):
+        raise OSError("subprocess output drains did not terminate")
+    if forced_pipe_close:
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+    return cleanup, _wait_process_group_cleaned(proc.pid), forced_pipe_close
+
+
+def _close_pipe_transport(pipe: Any) -> None:
+    """Interrupt a buffered reader without leaving it owning a stale descriptor."""
+    raw = getattr(pipe, "raw", None)
+    if raw is not None:
+        raw.close()
+    else:
+        pipe.close()
 
 
 def _watch_job_timeout(job_id: str, settings: Settings, timeout_ms: int) -> None:
@@ -926,6 +1213,8 @@ def _watch_job_timeout(job_id: str, settings: Settings, timeout_ms: int) -> None
     if not _is_process_group_running(pid):
         return
     meta["status"] = "terminating"
+    meta["timed_out"] = True
+    meta["termination_reason"] = "timeout"
     _write_job_meta(settings, job_id, meta)
     kill_status = _terminate_process_group(pid, grace_seconds=settings.kill_grace_ms / 1000)
     with JOB_LOCK:
@@ -975,7 +1264,7 @@ def _active_lock_job(settings: Settings, concurrency_key: str) -> dict[str, Any]
         job_id = str(data["job_id"])
         meta = _read_job_meta(settings, job_id)
         pid = int(meta["pid"])
-    except Exception:
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         path.unlink(missing_ok=True)
         return None
     if _is_pid_running(pid):
@@ -997,23 +1286,27 @@ def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None =
     with JOB_LOCK:
         proc = JOB_PROCS.get(job_id)
     return_code = proc.poll() if proc is not None else None
-    if proc is not None and return_code is not None:
-        with JOB_LOCK:
-            JOB_PROCS.pop(job_id, None)
-    running = return_code is None and _is_process_group_running(int(meta.get("pgid", pid)))
+    terminal_statuses = {"completed", "failed", "cancelled", "timed_out"}
+    finishing = (
+        proc is not None
+        and return_code is not None
+        and meta.get("status") not in terminal_statuses
+    )
+    running = finishing or (proc is not None and return_code is None) or (
+        proc is None and _is_process_group_running(int(meta.get("pgid", pid)))
+    )
     _, out_path, err_path = _job_paths(settings, job_id)
-    raw_stdout = out_path.read_text(encoding="utf-8", errors="replace") if out_path.exists() else ""
-    raw_stderr = err_path.read_text(encoding="utf-8", errors="replace") if err_path.exists() else ""
-    stdout = _redact(raw_stdout)
-    stderr = _redact(raw_stderr)
-    meta["stdout_bytes"] = len(raw_stdout.encode("utf-8"))
-    meta["stderr_bytes"] = len(raw_stderr.encode("utf-8"))
+    if proc is None:
+        _sanitize_legacy_artifact(out_path)
+        _sanitize_legacy_artifact(err_path)
+    stdout_bytes = out_path.stat().st_size if out_path.exists() else 0
+    stderr_bytes = err_path.stat().st_size if err_path.exists() else 0
+    stdout = _read_file_tail(out_path, settings.max_command_output_chars)
+    stderr = _read_file_tail(err_path, settings.max_command_output_chars)
+    meta["stdout_bytes"] = stdout_bytes
+    meta["stderr_bytes"] = stderr_bytes
     if stdout or stderr:
         meta["last_output_at"] = _utc_now()
-    if stdout != raw_stdout and out_path.exists():
-        out_path.write_text(stdout, encoding="utf-8")
-    if stderr != raw_stderr and err_path.exists():
-        err_path.write_text(stderr, encoding="utf-8")
     duration_ms = int((time.time() - float(meta["started_at"])) * 1000)
     already_timed_out = meta.get("status") == "timed_out"
     timed_out = already_timed_out or (
@@ -1028,6 +1321,8 @@ def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None =
         running = False
         meta["status"] = "timed_out"
         meta["kill_status"] = kill_status
+    elif meta.get("status") == "failed":
+        running = False
     elif not timed_out:
         meta["status"] = "running" if running else "completed"
         if not running:
@@ -1036,10 +1331,23 @@ def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None =
             meta["termination_reason"] = "completed" if return_code in {0, None} else "nonzero_exit"
             if return_code not in {0, None}:
                 meta["status"] = "failed"
+            with JOB_LOCK:
+                capture_errors = JOB_CAPTURE_ERRORS.pop(job_id, [])
+            if capture_errors:
+                meta["status"] = "failed"
+                meta["error_kind"] = "artifact_capture_failed"
+                meta["capture_error"] = capture_errors[0]
             meta["process_group_cleaned"] = not _is_process_group_running(int(meta.get("pgid", pid)))
     if not running:
         _clear_lock(settings, meta.get("concurrency_key"), job_id)
-    _write_job_meta(settings, job_id, meta)
+    with JOB_LOCK:
+        latest_meta = _read_job_meta(settings, job_id)
+        if latest_meta.get("status") in terminal_statuses and meta.get("status") not in terminal_statuses:
+            meta = latest_meta
+            running = False
+            timed_out = meta.get("status") == "timed_out"
+        else:
+            _write_job_meta(settings, job_id, meta)
     return {
         "ok": meta["status"] in {"running", "completed"},
         "job_id": job_id,
@@ -1067,9 +1375,37 @@ def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None =
         "stdout_bytes": meta.get("stdout_bytes", 0),
         "stderr_bytes": meta.get("stderr_bytes", 0),
         "output_truncated": meta.get("output_truncated", False),
+        "error_kind": meta.get("error_kind"),
+        "capture_error": meta.get("capture_error"),
         "stdout_tail": _tail(stdout, tail_lines),
         "stderr_tail": _tail(stderr, tail_lines),
     }
+
+
+def _read_file_tail(path: Path, maximum: int) -> str:
+    if not path.exists() or maximum <= 0:
+        return ""
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        handle.seek(max(size - maximum, 0))
+        return handle.read(maximum).decode("utf-8", errors="replace")
+
+
+def _sanitize_legacy_artifact(path: Path) -> None:
+    """Однократно обезвреживаем старые файлы, созданные до redact-before-persist."""
+    artifact_id = path.name.rsplit(".", 1)[0]
+    stream = "stdout" if path.suffix == ".out" else "stderr"
+    if not path.exists() or (path.parent / f"{artifact_id}.{stream}.meta.json").exists():
+        return
+    temporary = path.with_suffix(path.suffix + ".redacting")
+    redactor = StreamingRedactor()
+    with path.open("rb") as source, temporary.open("wb") as target:
+        while chunk := source.read(65_536):
+            target.write(redactor.feed(chunk))
+        target.write(redactor.feed(b"", final=True))
+        target.flush()
+        os.fsync(target.fileno())
+    temporary.replace(path)
 
 
 def get_job_status(job_id: str, settings: Settings) -> dict[str, Any]:
@@ -1091,26 +1427,39 @@ def get_command_log(
     if not meta_path.exists():
         raise FileNotFoundError(f"log not found: {log_id}")
     if stream == "combined":
-        path = settings.command_jobs_dir / "logs" / f"{log_id}.combined"
+        path = settings.command_jobs_dir / "artifacts" / f"{log_id}.combined"
     else:
         path = err_path if stream == "stderr" else out_path
-    text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
-    lines = text.splitlines()
-    selected = list(enumerate(lines, start=1))
-    if grep:
-        pattern = re.compile(grep)
-        selected = [(line_no, line) for line_no, line in selected if pattern.search(line)]
-    if start_line is not None:
-        selected = [(line_no, line) for line_no, line in selected if line_no >= start_line]
-    if end_line is not None:
-        selected = [(line_no, line) for line_no, line in selected if line_no <= end_line]
-    content = "\n".join(f"{line_no}: {line}" for line_no, line in selected)
+    pattern = re.compile(grep) if grep else None
+    selected: list[str] = []
+    selected_chars = 0
+    line_count = 0
+    truncated = False
+    maximum = settings.max_response_chars
+    if path.exists():
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line_count, raw_line in enumerate(handle, start=1):
+                line = raw_line.rstrip("\r\n")
+                if start_line is not None and line_count < start_line:
+                    continue
+                if end_line is not None and line_count > end_line:
+                    continue
+                if pattern and not pattern.search(line):
+                    continue
+                rendered = f"{line_count}: {line}"
+                if selected_chars + len(rendered) + (1 if selected else 0) > maximum:
+                    truncated = True
+                    continue
+                selected.append(rendered)
+                selected_chars += len(rendered) + (1 if selected_chars else 0)
+    content = "\n".join(selected)
     return {
         "ok": True,
         "log_id": log_id,
         "stream": stream,
-        "line_count": len(lines),
+        "line_count": line_count,
         "content": content,
+        "truncated": truncated,
         "meta": json.loads(meta_path.read_text(encoding="utf-8")),
     }
 
@@ -1120,8 +1469,8 @@ def summarize_command_log(log_id: str, settings: Settings, *, parser: str = "aut
     if not meta_path.exists():
         raise FileNotFoundError(f"log not found: {log_id}")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    stdout = out_path.read_text(encoding="utf-8", errors="replace") if out_path.exists() else ""
-    stderr = err_path.read_text(encoding="utf-8", errors="replace") if err_path.exists() else ""
+    stdout = _read_file_head_tail(out_path, settings.max_command_output_chars)
+    stderr = _read_file_head_tail(err_path, settings.max_command_output_chars)
     parsed = parse_command_output(str(meta.get("command", "")), stdout, stderr, parse_kind=parser)
     return {
         "ok": True,
@@ -1130,6 +1479,20 @@ def summarize_command_log(log_id: str, settings: Settings, *, parser: str = "aut
         "parsed": parsed,
         "summary": parsed.get("summary") if parsed else "no parser summary",
     }
+
+
+def _read_file_head_tail(path: Path, maximum: int) -> str:
+    if not path.exists() or maximum <= 0:
+        return ""
+    size = path.stat().st_size
+    half = max(maximum // 2, 1)
+    with path.open("rb") as handle:
+        head = handle.read(half)
+        if size <= half:
+            return head.decode("utf-8", errors="replace")
+        handle.seek(max(size - half, half))
+        tail = handle.read(half)
+    return (head + b"\n...<bounded summary sample>...\n" + tail).decode("utf-8", errors="replace")
 
 
 def command_policy_check(command: str, settings: Settings, *, confirmed: bool = False) -> dict[str, Any]:
@@ -1216,7 +1579,10 @@ def list_command_jobs(
     terminal = {"completed", "failed", "cancelled", "timed_out"}
     jobs: list[dict[str, Any]] = []
     settings.command_jobs_dir.mkdir(parents=True, exist_ok=True)
-    for path in settings.command_jobs_dir.glob("*.json"):
+    roots = (settings.command_jobs_dir, settings.command_jobs_dir / "artifacts")
+    for path in (candidate for root in roots for candidate in root.glob("*.json")):
+        if path.name.endswith((".meta.json", ".digest.json")):
+            continue
         try:
             meta = json.loads(path.read_text(encoding="utf-8"))
             job_id = str(meta["job_id"])
@@ -1246,7 +1612,7 @@ def shutdown_command_jobs(settings: Settings) -> None:
                 meta.update(status="cancelled", termination_reason="server_shutdown", finished_at=_utc_now(), process_group_cleaned=not _is_process_group_running(pid))
                 _clear_lock(settings, meta.get("concurrency_key"), job_id)
                 _write_job_meta(settings, job_id, meta)
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - shutdown remains best-effort for every job
             continue
 
 
@@ -1274,28 +1640,35 @@ def git_commit(
         if is_blocked_relative(rel, settings):
             raise GitCommitError(f"path is blocked by policy: {rel}")
         rel_paths.append(rel)
-    status = subprocess.run(
+    status = run_bounded(
         ["git", "diff", "--cached", "--name-only"],
         cwd=str(root),
-        text=True,
-        capture_output=True,
-        check=False,
         timeout=settings.subprocess_timeout,
+        max_stdout_bytes=settings.max_response_chars,
+        max_stderr_bytes=8_192,
+        artifact_settings=settings,
     )
+    if status.truncated:
+        raise GitCommitError("staged path inventory exceeds bounded response; narrow the commit scope")
     staged = [line for line in status.stdout.splitlines() if line.strip()]
     unrelated = [path for path in staged if path not in rel_paths]
     if unrelated:
         raise GitCommitError(f"unrelated staged changes exist: {', '.join(unrelated)}")
     diff_args = ["git", "diff", "--", *rel_paths] if dry_run else ["git", "diff", "--cached", "--", *rel_paths]
     if not dry_run:
-        subprocess.run(["git", "add", "--", *rel_paths], cwd=str(root), check=False, timeout=settings.subprocess_timeout)
-    diff = subprocess.run(
+        add_result = run_bounded(
+            ["git", "add", "--", *rel_paths], cwd=str(root),
+            timeout=settings.subprocess_timeout, max_stdout_bytes=8_192, max_stderr_bytes=8_192,
+        )
+        if add_result.returncode != 0:
+            raise GitCommitError(add_result.stderr or "git add failed")
+    diff = run_bounded(
         diff_args,
         cwd=str(root),
-        text=True,
-        capture_output=True,
-        check=False,
         timeout=settings.subprocess_timeout,
+        max_stdout_bytes=settings.max_response_chars,
+        max_stderr_bytes=8_192,
+        artifact_settings=settings,
     )
     if dry_run:
         return {
@@ -1304,14 +1677,17 @@ def git_commit(
             "dry_run": True,
             "paths": rel_paths,
             "staged_diff": diff.stdout,
+            "output_truncated": diff.stdout_truncated,
+            "artifact": diff.artifact,
+            "continuation": diff.artifact.get("continuation") if diff.artifact else None,
         }
-    proc = subprocess.run(
+    proc = run_bounded(
         ["git", "commit", "-m", message, "--", *rel_paths],
         cwd=str(root),
-        text=True,
-        capture_output=True,
-        check=False,
         timeout=settings.subprocess_timeout,
+        max_stdout_bytes=settings.max_response_chars,
+        max_stderr_bytes=settings.max_response_chars,
+        artifact_settings=settings,
     )
     return {
         "ok": proc.returncode == 0,
@@ -1322,4 +1698,10 @@ def git_commit(
         "stdout": proc.stdout,
         "stderr": proc.stderr,
         "staged_diff": diff.stdout,
+        "output_truncated": proc.truncated or diff.stdout_truncated,
+        "artifact": diff.artifact if diff.stdout_truncated else proc.artifact,
+        "continuation": (
+            (diff.artifact or {}).get("continuation")
+            if diff.stdout_truncated else (proc.artifact or {}).get("continuation")
+        ),
     }

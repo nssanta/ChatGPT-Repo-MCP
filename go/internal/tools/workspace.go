@@ -5,10 +5,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 var ignoredDirectories = map[string]bool{
@@ -48,12 +48,11 @@ func (e *Engine) resolveRepo(ctx context.Context, repo string) (string, error) {
 			return "", err
 		}
 	}
-	command := exec.CommandContext(ctx, "git", "-C", start, "rev-parse", "--show-toplevel")
-	output, err := command.Output()
-	if err != nil {
+	result := runProcess(ctx, start, 15*time.Second, nil, "git", "-C", start, "rev-parse", "--show-toplevel")
+	if result.ExitCode != 0 || result.TimedOut {
 		return "", fmt.Errorf("not a git repository: %s", repo)
 	}
-	toplevel := strings.TrimSpace(string(output))
+	toplevel := strings.TrimSpace(result.Stdout)
 	if _, err := e.perimeter.Resolve(toplevel, true, false); err != nil {
 		return "", fmt.Errorf("git repository escapes workspace: %w", err)
 	}
@@ -168,11 +167,11 @@ func (e *Engine) repoEntry(ctx context.Context, directory, relative string, isGi
 		"makefile_targets": makefileTargets(directory),
 	}
 	if isGit {
-		if output, err := exec.CommandContext(ctx, "git", "-C", directory, "branch", "--show-current").Output(); err == nil {
-			entry["branch"] = strings.TrimSpace(string(output))
+		if result := runProcess(ctx, directory, 5*time.Second, nil, "git", "-C", directory, "branch", "--show-current"); result.ExitCode == 0 {
+			entry["branch"] = strings.TrimSpace(result.Stdout)
 		}
-		if output, err := exec.CommandContext(ctx, "git", "-C", directory, "status", "--porcelain").Output(); err == nil {
-			entry["dirty"] = len(strings.TrimSpace(string(output))) > 0
+		if result := runProcess(ctx, directory, 5*time.Second, nil, "git", "-C", directory, "status", "--porcelain"); result.ExitCode == 0 {
+			entry["dirty"] = len(strings.TrimSpace(result.Stdout)) > 0
 		}
 	}
 	return entry

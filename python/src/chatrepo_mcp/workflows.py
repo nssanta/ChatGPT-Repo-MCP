@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import PurePosixPath
 from typing import Any
 
 from . import git_tools
+from .bounded_subprocess import BoundedProcessResult, run_bounded
 from .command_tools import GitCommitError, git_commit, run_command
 from .config import Settings
 from .profile import DEFAULT_QUALITY_RULES, load_repo_profile
 from .security import is_blocked_relative, normalize_rel_path
-
 
 # Rule id -> regex applied to newly-added diff lines. Kept stack-agnostic at
 # the RULE_PATTERNS/RULE_EXTENSIONS level: none of these are enabled by
@@ -63,16 +62,20 @@ def _rule_applies_to_path(rule: str, path: str) -> bool:
     return PurePosixPath(path).suffix.lower() in allowed_extensions
 
 
-def _run_git(settings: Settings, args: list[str], *, repo: str | None = None) -> subprocess.CompletedProcess[str]:
+def _run_git(settings: Settings, args: list[str], *, repo: str | None = None) -> BoundedProcessResult:
     cwd = git_tools._resolve_repo_toplevel(repo, settings)
-    return subprocess.run(
+    result = run_bounded(
         ["git", *args],
         cwd=str(cwd),
-        text=True,
-        capture_output=True,
-        check=False,
         timeout=settings.subprocess_timeout,
+        max_stdout_bytes=settings.max_diff_bytes,
+        max_stderr_bytes=settings.max_response_chars,
     )
+    if result.truncated:
+        raise RuntimeError(
+            "git policy-scan output exceeded its bounded preview; use run_command/get_command_log for full evidence"
+        )
+    return result
 
 
 def _diff_added_lines(

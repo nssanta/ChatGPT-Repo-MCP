@@ -2,14 +2,14 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](python/)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go/)
-[![MCP](https://img.shields.io/badge/MCP-95%20tools-black)](contracts/tool-schemas/tools.json)
+[![MCP](https://img.shields.io/badge/MCP-96%20tools-black)](contracts/tool-schemas/tools.json)
 [![Platforms](https://img.shields.io/badge/Go-Linux%20%7C%20macOS%20%7C%20Windows-5c6ac4)](docs/INSTALL.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Run it from a private Linux PC through OpenAI Secure MCP Tunnel, including
 ChatGPT connection and reboot-safe systemd services: [full runbook](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT. Choose the Python package or the standalone Go binary; both share the same 95-tool capability catalog, configuration, and access semantics. `ENABLE_PTY=true` is the default, so trusted POSIX deployments expose all 95 tools as soon as `ACCESS_MODE=full`; safe mode still exposes 89 tools without PTY.
+MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT. Choose the Python package or the standalone Go binary; both share the same 96-tool capability catalog, configuration, and access semantics. `ENABLE_PTY=true` is the default, so trusted POSIX deployments expose all 96 tools as soon as `ACCESS_MODE=full`; safe mode still exposes 90 tools without PTY.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -185,19 +185,21 @@ Call `run_test_preset("test")` at the workspace root, or `run_test_preset("test"
 
 ## Tool Groups
 
-Both implementations share a 95-tool catalog. Safe mode registers 89 tools; full mode registers all 95 on Linux/macOS because PTY is enabled by default. Call `doctor` (or `smoke_all`) for the registered count, effective PATH, tool versions, and feature capabilities. Groups:
+Both implementations share a 96-tool catalog. Safe mode registers 90 tools; full mode registers all 96 on Linux/macOS because PTY is enabled by default. Call `doctor` (or `smoke_all`) for the registered count, effective PATH, tool versions, and feature capabilities. Groups:
 
-- **Read / search** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`.
+- **Read / search** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`. `search_text` defaults to bounded `quick` mode; `mode=exhaustive` starts a durable background search that is polled and cancelled through the existing job tools.
 - **Git (read-only)** — `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_blame`, `git_grep` — all accept an optional `repo=` for polyrepo workspaces.
 - **Editing** — `write_text_file`, `replace_text_in_file`, `insert_text_in_file`, `delete_text_in_file`, `create_text_file`, `move_path`, `delete_path`, `ensure_directory`, `batch_edit_files`, `apply_change_set`, `replace_lines`, `insert_before_line` / `insert_after_line`, `insert_before_heading` / `insert_after_heading`, `append_to_file`, `apply_patch`. Omitted `dry_run` previews in safe mode and applies in full mode; explicit `dry_run=true` always previews.
-- **Commands / tests / jobs** — `run_command`, `run_commands`, `run_test_preset`, `list_test_presets`, `run_quality_gate`, `quality_gate_and_commit`, `scan_new_policy_violations`, `command_policy_check`, `start_command_job` / `list_command_jobs` / `get_command_job` / `get_job_status` / `get_command_log` / `summarize_command_log` / `cancel_command_job`, `git_worktree_guard`, `git_commit`.
+- **Commands / tests / jobs** — `run_command`, `run_commands`, `run_test_preset`, `list_test_presets`, `run_quality_gate`, `quality_gate_and_commit`, `scan_new_policy_violations`, `command_policy_check`, `start_command_job` / `list_command_jobs` / `get_command_job` / `get_job_status` / `get_command_log` / `summarize_command_log` / `cancel_command_job`, `read_artifact`, `git_worktree_guard`, `git_commit`.
 - **Persistent terminal** (gated) — `start_terminal_session`, `read_terminal_session`, `write_terminal_session`, `resize_terminal_session`, `close_terminal_session`, `list_terminal_sessions`.
 - **Git workflow** — `git_switch_branch`, `git_create_branch`, `git_add`, `git_restore`, `git_stash`, `git_fetch`, `git_pull`, `git_push`, `git_merge`, `git_revert`, `git_reset`, `git_worktree_add` / `prepare_task_worktree` / `git_worktree_list` / `git_worktree_remove`. Safe mode previews/gates risky operations; full mode executes without internal confirmation. Structured force push and hard reset still require `ALLOW_FORCE_PUSH=true` / `ALLOW_HARD_RESET=true`.
 - **GitHub** (needs `gh` installed and authenticated) — `gh_status`, `gh_pr_create`, `gh_pr_list`, `gh_pr_view`, `gh_pr_comment`, `gh_pr_merge`, `gh_checks`, `gh_run_view`, `gh_run_rerun`, `gh_issue_list`, `gh_issue_view`.
 - **Diagnostics & symbols** — `code_diagnostics` (runs `go vet` / `pyright` (or `ruff`) / `tsc --noEmit` depending on the detected stack), `symbol_definition`, `document_symbols`, `workspace_symbols` (via `ctags` when installed, otherwise a regex heuristic, always labeled with `engine`).
 - **Self-check** — `doctor`, `smoke_all`, `context_bootstrap`, `batch_call`.
 
-`batch_call` executes safe reads/previews in parallel by default (`max_concurrency=4`) while preserving result order; use `execution="sequential"` when ordering matters. Test presets automatically attach to an identical running background job instead of duplicating it. Persistent terminals are raw trusted-machine shells: they appear only in full mode, and can be removed explicitly with `ENABLE_PTY=false`.
+`batch_call` executes safe reads/previews in parallel by default (`max_concurrency=4`) while preserving result order; use `execution="sequential"` when ordering matters. Its worker concurrency is independent of the heavy-operation capacity: each heavy child still acquires the shared lease and fails fast with `resource_busy` when that capacity is full. Test presets automatically attach to an identical running background job instead of duplicating it. Persistent terminals are raw trusted-machine shells: they appear only in full mode, and can be removed explicitly with `ENABLE_PTY=false`.
+
+Potentially large outputs are streamed through redaction before they are retained. Command, Git, and GitHub responses use a 64 KiB head/tail inline preview by default (`DEFAULT_INLINE_OUTPUT_BYTES`); this does not reduce the hard capture ceilings or the complete artifact. When the complete redacted output is durable, the result includes a ready `continuation` for `read_artifact`. Its cursor is opaque: pass it back unchanged until `eof=true`. Artifacts expire automatically and are subject to the configured per-artifact, total-store, and free-disk reserves.
 
 * * *
 

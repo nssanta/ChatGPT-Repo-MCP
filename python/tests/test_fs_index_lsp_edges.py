@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import io
 from dataclasses import replace
 from pathlib import Path
 
-from chatrepo_mcp import fs_tools, index_tools, lsp_tools
-
 from test_command_tools import make_settings
+
+from chatrepo_mcp import fs_tools, index_tools, lsp_tools
 
 
 def test_repo_info_is_complete(tmp_path: Path) -> None:
@@ -52,7 +53,7 @@ def test_iter_files_works_for_direct_file_input(tmp_path: Path) -> None:
     target = tmp_path / "direct.txt"
     target.write_text("x", encoding="utf-8")
 
-    files = fs_tools._iter_files(tmp_path, target, settings, allow_hidden=True)
+    files = list(fs_tools._iter_files(tmp_path, target, settings, allow_hidden=True))
     assert files == [target]
 
 
@@ -142,12 +143,21 @@ def test_search_text_ignores_unparseable_ripgrep_lines(tmp_path: Path, monkeypat
     settings = make_settings(tmp_path)
     (tmp_path / "a.py").write_text("needle\n", encoding="utf-8")
 
-    class _Result:
+    class _Process:
         returncode = 0
-        stdout = "not-a-rg-line\nanother:bad:line"
-        stderr = ""
+        stdout = io.StringIO("not-a-rg-line\nanother:bad:line")
 
-    monkeypatch.setattr(fs_tools.subprocess, "run", lambda *args, **kwargs: _Result())
+        def wait(self, timeout=None):
+            del timeout
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+        def terminate(self):
+            self.returncode = -15
+
+    monkeypatch.setattr(fs_tools.subprocess, "Popen", lambda *args, **kwargs: _Process())
 
     result = fs_tools.search_text("needle", settings, path="a.py")
 
@@ -243,7 +253,7 @@ def test_run_ctags_file_ignores_subprocess_errors(tmp_path: Path, monkeypatch) -
     def _run(cmd, *args, **kwargs):
         raise OSError("boom")
 
-    monkeypatch.setattr(index_tools.subprocess, "run", _run)
+    monkeypatch.setattr(index_tools, "run_bounded", _run)
 
     assert index_tools._run_ctags_file(tmp_path / "x.py") == []
     assert index_tools._run_ctags_recursive(tmp_path) == []
@@ -323,7 +333,7 @@ def test_ruff_diagnostics_marks_critical_error_by_prefix(tmp_path: Path, monkeyp
 
 def test_compileall_and_tsc_handles_missing_tools_and_subprocess_failures(tmp_path: Path, monkeypatch) -> None:
     settings = make_settings(tmp_path)
-    monkeypatch.setattr(lsp_tools.shutil, "which", lambda name: None if name in ("python3", "python") else None)
+    monkeypatch.setattr(lsp_tools.shutil, "which", lambda name: None)
     assert lsp_tools._compileall_diagnostics(tmp_path, None, settings) == []
 
     monkeypatch.setattr(lsp_tools.shutil, "which", lambda name: "/usr/bin/python3" if name == "python3" else None)

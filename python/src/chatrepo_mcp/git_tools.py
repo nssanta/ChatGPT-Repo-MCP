@@ -6,11 +6,17 @@ from pathlib import Path
 from typing import Any
 
 from . import workspace
+from .bounded_subprocess import run_bounded
 from .config import Settings
+from .resource_profile import acquire_heavy_operation
 
 
 class GitToolError(RuntimeError):
     """Raised when a git command fails."""
+
+    def __init__(self, message: str, *, result: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.result = result
 
 
 def _resolve_repo_toplevel(repo: str | None, settings: Settings) -> Path:
@@ -53,30 +59,108 @@ def _run_git(
     cwd: Path | None = None,
     network: bool = False,
 ) -> str:
+    output, _, _, _ = _run_git_capture(
+        args, settings, max_bytes=max_bytes, cwd=cwd, network=network,
+    )
+    return output
+
+
+def _run_git_capture(
+    args: list[str],
+    settings: Settings,
+    *,
+    max_bytes: int | None = None,
+    cwd: Path | None = None,
+    network: bool = False,
+    persist_artifact: bool = False,
+) -> tuple[str, str, bool, dict[str, Any] | None]:
     resolved_cwd = cwd if cwd is not None else _resolve_repo_toplevel(None, settings)
     cmd = ["git", *args]
     env = None
     if network:
         env = dict(os.environ)
         env["GIT_TERMINAL_PROMPT"] = "0"
-    proc = subprocess.run(
-        cmd,
-        cwd=str(resolved_cwd),
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=settings.git_network_timeout if network else settings.subprocess_timeout,
-        env=env,
-    )
-    if proc.returncode != 0:
-        stderr = proc.stderr.strip() or proc.stdout.strip()
-        raise GitToolError(stderr or f"git command failed: {' '.join(cmd)}")
+    hard_limit = max_bytes if max_bytes is not None else settings.max_response_chars
+    limit = min(hard_limit, settings.default_inline_output_bytes) if persist_artifact else hard_limit
+    stderr_limit = limit if persist_artifact else settings.max_response_chars
+    lease = acquire_heavy_operation(settings) if persist_artifact else None
+    try:
+        proc = run_bounded(
+            cmd,
+            cwd=str(resolved_cwd),
+            timeout=settings.git_network_timeout if network else settings.subprocess_timeout,
+            env=env,
+            max_stdout_bytes=limit,
+            max_stderr_bytes=stderr_limit,
+            max_combined_bytes=limit if persist_artifact else None,
+            artifact_settings=settings if persist_artifact else None,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = getattr(exc, "result", None)
+        artifact = getattr(partial, "artifact", None)
+        result: dict[str, Any] = {
+            "ok": False,
+            "error_kind": "git_timeout",
+            "message": f"git command timed out: {' '.join(cmd)}",
+            "stdout": getattr(partial, "stdout", ""),
+            "stderr": getattr(partial, "stderr", ""),
+            "truncated": True,
+        }
+        if partial is not None and artifact is not None:
+            receipt = artifact["receipt"]
+            receipt["configured"]["inline_output_bytes"] = settings.default_inline_output_bytes
+            receipt["applied"]["inline_output_bytes"] = limit
+            receipt["returned"] = {
+                "stdout_bytes": len(partial.stdout.encode("utf-8")),
+                "stderr_bytes": len(partial.stderr.encode("utf-8")),
+            }
+            receipt["total"] = {
+                "stdout_bytes": partial.stdout_bytes,
+                "stderr_bytes": partial.stderr_bytes,
+            }
+            result["artifact"] = artifact
+            result["receipt"] = receipt
+            result["continuation"] = artifact["continuation"]
+        raise GitToolError(result["message"], result=result) from exc
+    finally:
+        if lease is not None:
+            lease.release()
+    artifact = getattr(proc, "artifact", None)
     output = proc.stdout
-    if max_bytes is not None:
-        encoded = output.encode("utf-8", errors="replace")
-        if len(encoded) > max_bytes:
-            output = encoded[:max_bytes].decode("utf-8", errors="replace") + "\n...[truncated]"
-    return output
+    stderr = proc.stderr
+    truncated = proc.stdout_truncated or proc.stderr_truncated
+    if truncated and artifact is None:
+        output += "\n...[truncated]"
+    if artifact is not None:
+        receipt = artifact["receipt"]
+        receipt["configured"]["inline_output_bytes"] = settings.default_inline_output_bytes
+        receipt["applied"]["inline_output_bytes"] = limit
+        receipt["returned"] = {
+            "stdout_bytes": len(proc.stdout.encode("utf-8")),
+            "stderr_bytes": len(proc.stderr.encode("utf-8")),
+        }
+        receipt["total"] = {
+            "stdout_bytes": proc.stdout_bytes,
+            "stderr_bytes": proc.stderr_bytes,
+        }
+    if proc.returncode != 0:
+        message = stderr.strip() or output.strip() or f"git command failed: {' '.join(cmd)}"
+        if artifact is not None:
+            error_result: dict[str, Any] = {
+                "ok": False,
+                "error_kind": "git_error",
+                "message": message,
+                "stdout": output,
+                "stderr": stderr,
+                "truncated": truncated,
+                "artifact": artifact,
+                "receipt": artifact["receipt"],
+            }
+            if truncated:
+                error_result["continuation"] = artifact["continuation"]
+            raise GitToolError(message, result=error_result)
+        raise GitToolError(message)
+    return output, stderr, truncated, artifact
 
 
 def repo_git_info(settings: Settings, repo: str | None = None) -> dict[str, Any]:
@@ -105,10 +189,21 @@ def repo_git_info(settings: Settings, repo: str | None = None) -> dict[str, Any]
 def git_status(settings: Settings, short: bool = True, repo: str | None = None) -> dict[str, Any]:
     toplevel = _resolve_repo_toplevel(repo, settings)
     args = ["status", "--short", "--branch"] if short else ["status"]
-    return {
+    status, stderr, truncated, artifact = _run_git_capture(
+        args, settings, cwd=toplevel, max_bytes=settings.max_response_chars, persist_artifact=True,
+    )
+    result = {
         "repo": _repo_rel(toplevel, settings),
-        "status": _run_git(args, settings, cwd=toplevel, max_bytes=settings.max_response_chars).strip(),
+        "status": status.strip(),
+        "stderr": stderr,
+        "truncated": truncated,
     }
+    if artifact is not None:
+        result["artifact"] = artifact
+        result["receipt"] = artifact["receipt"]
+    if truncated and artifact is not None:
+        result["continuation"] = {"tool": "read_artifact", "arguments": {"artifact_id": artifact["artifact_id"]}}
+    return result
 
 
 def git_diff(
@@ -124,10 +219,21 @@ def git_diff(
         args.insert(1, "--staged")
     if pathspec:
         args.extend(["--", pathspec])
-    return {
+    diff, stderr, truncated, artifact = _run_git_capture(
+        args, settings, cwd=toplevel, max_bytes=settings.max_diff_bytes, persist_artifact=True,
+    )
+    result = {
         "repo": _repo_rel(toplevel, settings),
-        "diff": _run_git(args, settings, cwd=toplevel, max_bytes=settings.max_diff_bytes),
+        "diff": diff,
+        "stderr": stderr,
+        "truncated": truncated,
     }
+    if artifact is not None:
+        result["artifact"] = artifact
+        result["receipt"] = artifact["receipt"]
+    if truncated and artifact is not None:
+        result["continuation"] = {"tool": "read_artifact", "arguments": {"artifact_id": artifact["artifact_id"]}}
+    return result
 
 
 def git_log(
@@ -172,11 +278,22 @@ def git_show(
 ) -> dict[str, Any]:
     toplevel = _resolve_repo_toplevel(repo, settings)
     spec = revision if not path else f"{revision}:{path}"
-    return {
+    content, stderr, truncated, artifact = _run_git_capture(
+        ["show", spec], settings, cwd=toplevel, max_bytes=settings.max_response_chars, persist_artifact=True,
+    )
+    result = {
         "repo": _repo_rel(toplevel, settings),
         "revision": spec,
-        "content": _run_git(["show", spec], settings, cwd=toplevel, max_bytes=settings.max_response_chars),
+        "content": content,
+        "stderr": stderr,
+        "truncated": truncated,
     }
+    if artifact is not None:
+        result["artifact"] = artifact
+        result["receipt"] = artifact["receipt"]
+    if truncated and artifact is not None:
+        result["continuation"] = {"tool": "read_artifact", "arguments": {"artifact_id": artifact["artifact_id"]}}
+    return result
 
 
 def git_branches(settings: Settings, all_branches: bool = True, repo: str | None = None) -> dict[str, Any]:
@@ -199,13 +316,23 @@ def git_blame(
 ) -> dict[str, Any]:
     toplevel = _resolve_repo_toplevel(repo, settings)
     range_spec = f"-L{start_line},{end_line}" if end_line is not None else f"-L{start_line},+200"
-    output = _run_git(
+    output, stderr, truncated, artifact = _run_git_capture(
         ["blame", "-w", range_spec, "--", path],
         settings,
         cwd=toplevel,
         max_bytes=settings.max_response_chars,
+        persist_artifact=True,
     )
-    return {"repo": _repo_rel(toplevel, settings), "path": path, "blame": output}
+    result = {
+        "repo": _repo_rel(toplevel, settings), "path": path, "blame": output,
+        "stderr": stderr, "truncated": truncated,
+    }
+    if artifact is not None:
+        result["artifact"] = artifact
+        result["receipt"] = artifact["receipt"]
+    if truncated and artifact is not None:
+        result["continuation"] = {"tool": "read_artifact", "arguments": {"artifact_id": artifact["artifact_id"]}}
+    return result
 
 
 def _git_grep_args(
@@ -228,26 +355,26 @@ def _git_grep_args(
     return args
 
 
-def _run_git_grep(args: list[str], settings: Settings, cwd: Path) -> str:
+def _run_git_grep(
+    args: list[str], settings: Settings, cwd: Path, *, persist_artifact: bool = False,
+) -> tuple[str, bool, dict[str, Any] | None]:
     """Run ``git grep``. Exit code 1 ("no matches") is not treated as an error."""
     cmd = ["git", *args]
-    proc = subprocess.run(
+    proc = run_bounded(
         cmd,
         cwd=str(cwd),
-        check=False,
-        capture_output=True,
-        text=True,
         timeout=settings.subprocess_timeout,
+        max_stdout_bytes=settings.max_response_chars,
+        max_stderr_bytes=settings.max_response_chars,
+        artifact_settings=settings if persist_artifact else None,
     )
     if proc.returncode not in (0, 1):
         stderr = proc.stderr.strip() or proc.stdout.strip()
         raise GitToolError(stderr or f"git command failed: {' '.join(cmd)}")
     output = proc.stdout
-    max_bytes = settings.max_response_chars
-    encoded = output.encode("utf-8", errors="replace")
-    if len(encoded) > max_bytes:
-        output = encoded[:max_bytes].decode("utf-8", errors="replace") + "\n...[truncated]"
-    return output
+    if proc.stdout_truncated:
+        output += "\n...[truncated]"
+    return output, proc.stdout_truncated, getattr(proc, "artifact", None)
 
 
 def _parse_grep_output(output: str) -> list[dict[str, Any]]:
@@ -274,6 +401,8 @@ def _git_grep_fanout(
     limit = settings.max_search_results
     aggregated: list[dict[str, Any]] = []
     searched: list[str] = []
+    output_truncated = False
+    artifacts: list[dict[str, Any]] = []
     for entry in repos:
         if len(aggregated) >= limit:
             break
@@ -281,7 +410,10 @@ def _git_grep_fanout(
         directory = root / rel if rel else root
         searched.append(rel)
         try:
-            output = _run_git_grep(args, settings, directory)
+            output, truncated, artifact = _run_git_grep(args, settings, directory, persist_artifact=True)
+            output_truncated = output_truncated or truncated
+            if artifact is not None:
+                artifacts.append(artifact)
         except (GitToolError, subprocess.SubprocessError, OSError):
             continue
         for hit in _parse_grep_output(output):
@@ -289,13 +421,22 @@ def _git_grep_fanout(
             aggregated.append(hit)
             if len(aggregated) >= limit:
                 break
-    return {
+    result = {
         "polyrepo": True,
         "repos_searched": searched,
         "query": query,
         "results": aggregated,
         "count": len(aggregated),
+        "truncated": output_truncated or len(aggregated) >= limit,
     }
+    if artifacts:
+        result["artifacts"] = artifacts
+    if output_truncated:
+        result["continuations"] = [
+            {"tool": "read_artifact", "arguments": {"artifact_id": artifact["artifact_id"]}}
+            for artifact in artifacts
+        ]
+    return result
 
 
 def git_grep(
@@ -318,14 +459,20 @@ def git_grep(
                 return _git_grep_fanout(settings, args, query, git_repos)
 
     toplevel = _resolve_repo_toplevel(repo, settings)
-    output = _run_git_grep(args, settings, toplevel)
+    output, output_truncated, artifact = _run_git_grep(args, settings, toplevel, persist_artifact=True)
     results = _parse_grep_output(output)
-    return {
+    result = {
         "repo": _repo_rel(toplevel, settings),
         "query": query,
         "results": results,
         "count": len(results),
+        "truncated": output_truncated,
     }
+    if artifact is not None:
+        result["artifact"] = artifact
+    if output_truncated and artifact is not None:
+        result["continuation"] = {"tool": "read_artifact", "arguments": {"artifact_id": artifact["artifact_id"]}}
+    return result
 
 
 def list_repos(settings: Settings) -> dict[str, Any]:
@@ -340,22 +487,20 @@ def list_repos(settings: Settings) -> dict[str, Any]:
             continue
         directory = root / entry["path"] if entry["path"] else root
         try:
-            proc = subprocess.run(
+            proc = run_bounded(
                 ["git", "branch", "--show-current"],
                 cwd=str(directory),
-                check=False,
-                capture_output=True,
-                text=True,
                 timeout=short_timeout,
+                max_stdout_bytes=4_096,
+                max_stderr_bytes=4_096,
             )
             entry["branch"] = proc.stdout.strip() if proc.returncode == 0 else None
-            status = subprocess.run(
+            status = run_bounded(
                 ["git", "status", "--porcelain"],
                 cwd=str(directory),
-                check=False,
-                capture_output=True,
-                text=True,
                 timeout=short_timeout,
+                max_stdout_bytes=1,
+                max_stderr_bytes=4_096,
             )
             entry["dirty"] = bool(status.stdout.strip()) if status.returncode == 0 else None
         except (subprocess.SubprocessError, OSError):

@@ -14,9 +14,10 @@ var raw []byte
 
 // Document is the shared, language-neutral MCP contract.
 type Document struct {
-	ContractVersion int        `json:"contractVersion"`
-	Server          ServerInfo `json:"server"`
-	Tools           []Tool     `json:"tools"`
+	ContractVersion int                        `json:"contractVersion"`
+	Server          ServerInfo                 `json:"server"`
+	ResultSchemas   map[string]json.RawMessage `json:"resultSchemas"`
+	Tools           []Tool                     `json:"tools"`
 }
 
 // ServerInfo contains release metadata covered by the contract.
@@ -55,6 +56,11 @@ func Load() (Document, error) {
 			document.Server.ToolCount,
 			len(document.Tools),
 		)
+	}
+	for _, name := range []string{"boundedOutputReceiptV1", "artifactContinuationV1", "readArtifactResultV1"} {
+		if len(document.ResultSchemas[name]) == 0 {
+			return Document{}, fmt.Errorf("tool contract is missing result schema %q", name)
+		}
 	}
 	seen := make(map[string]struct{}, len(document.Tools))
 	for _, tool := range document.Tools {

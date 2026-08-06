@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import os
 import time
-from pathlib import Path
 from dataclasses import replace
-
-from chatrepo_mcp import fs_tools
+from pathlib import Path
 
 from test_command_tools import make_settings
+
+from chatrepo_mcp import fs_tools
 
 
 def test_symlink_target_outside_root_is_hidden_in_list_dir(tmp_path: Path) -> None:
@@ -65,16 +65,29 @@ def test_search_text_raises_for_unsupported_rg_exit_code(tmp_path: Path, monkeyp
 
     calls: list[list[str]] = []
 
-    class FakeResult:
-        returncode = 2
-        stdout = ""
-        stderr = "rg failure\n"
+    class FakeStdout:
+        def __iter__(self):
+            return iter(())
 
-    def fake_run(cmd, *args, **kwargs):
+        def close(self) -> None:
+            return None
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        def wait(self, timeout=None):
+            del timeout
+            return 2
+
+        def kill(self):
+            return None
+
+    def fake_popen(cmd, *args, **kwargs):
         calls.append(list(cmd))
-        return FakeResult()
+        kwargs["stderr"].write(b"rg failure\n")
+        return FakeProcess()
 
-    monkeypatch.setattr(fs_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(fs_tools.subprocess, "Popen", fake_popen)
 
     try:
         fs_tools.search_text("hello", settings, path=".")

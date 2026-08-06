@@ -7,7 +7,6 @@ import argparse
 import json
 from pathlib import Path
 
-
 CRITICAL_THRESHOLDS = {
     "python/src/chatrepo_mcp/security.py": 90.0,
     "python/src/chatrepo_mcp/edit_tools.py": 90.0,

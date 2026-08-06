@@ -94,6 +94,17 @@ def test_env_int_parsing_respects_blank_as_default(monkeypatch) -> None:
     assert config._env_int("BLANK_INT", 12) == 12
 
 
+@pytest.mark.parametrize("value", ["0", "-1", "200001"])
+def test_from_env_rejects_unsafe_inline_output_limit(
+    tmp_path: Path, monkeypatch, value: str,
+) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEFAULT_INLINE_OUTPUT_BYTES", value)
+
+    with pytest.raises(RuntimeError, match="DEFAULT_INLINE_OUTPUT_BYTES must be positive"):
+        config.Settings.from_env()
+
+
 def test_settings_dry_run_default_and_confirmation(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
     settings = config.Settings.from_env()

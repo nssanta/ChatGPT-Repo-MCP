@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -14,7 +12,7 @@ func (e *Engine) executeGitHubTool(ctx context.Context, name string, args map[st
 	if !e.settings.GitHubToolsEnabled {
 		return failure("github_tools_disabled", "GITHUB_TOOLS_ENABLED=false")
 	}
-	if _, err := exec.LookPath("gh"); err != nil {
+	if path, _ := e.resolveExecutable("gh"); path == "" {
 		return map[string]any{"ok": false, "error_kind": "gh_unavailable", "error": "GitHub CLI is not installed", "install_hint": "https://cli.github.com/"}
 	}
 	repo := e.settings.ProjectRoot
@@ -79,27 +77,44 @@ func (e *Engine) executeGitHubTool(ctx context.Context, name string, args map[st
 }
 
 func (e *Engine) runGH(ctx context.Context, repo string, arguments ...string) map[string]any {
-	commandContext, cancel := context.WithTimeout(ctx, e.settings.GHTimeout)
-	defer cancel()
-	command := exec.CommandContext(commandContext, "gh", arguments...)
-	command.Dir = repo
-	command.Env = append(os.Environ(), "GH_PROMPT_DISABLED=1", "NO_COLOR=1")
-	output, err := command.CombinedOutput()
-	redacted := redact(string(output))
-	redacted, truncated := capText(redacted, e.settings.MaxResponseChars)
-	if commandContext.Err() == context.DeadlineExceeded {
-		return failure("gh_timeout", "GitHub CLI command timed out")
+	path, _ := e.resolveExecutable("gh")
+	if path == "" {
+		return map[string]any{"ok": false, "error_kind": "gh_unavailable", "error": "GitHub CLI is not installed", "install_hint": "https://cli.github.com/"}
 	}
-	if err != nil {
-		return map[string]any{"ok": false, "error_kind": "gh_error", "error": strings.TrimSpace(redacted), "exit_error": err.Error()}
+	inlineLimit := min(e.settings.DefaultInlineOutputBytes, e.settings.MaxResponseChars)
+	result, id, stdoutBytes, stderrBytes, persistErr := e.runArtifactProcess(ctx, "gh", repo, e.settings.GHTimeout, e.commandEnvironment(map[string]string{"GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"}), inlineLimit, path, arguments...)
+	artifact := map[string]any{"artifact_id": id, "continuation_tool": "read_artifact", "ordering": "stdout_then_stderr"}
+	if persistErr != nil {
+		if isHeavyBusyError(persistErr) {
+			return e.heavyBusyResult()
+		}
+		return map[string]any{"ok": false, "error_kind": "output_persistence_failed", "error": persistErr.Error(), "artifact": artifact}
 	}
-	return map[string]any{"ok": true, "output": strings.TrimSpace(redacted), "truncated": truncated}
+	redacted, truncated, receipt := artifactProcessOutput(result, stdoutBytes, stderrBytes, e.settings.DefaultInlineOutputBytes, inlineLimit)
+	response := map[string]any{"ok": result.ExitCode == 0 && !result.TimedOut, "output": redacted, "truncated": truncated, "artifact": artifact, "receipt": receipt}
+	if truncated {
+		response["continuation"] = artifactContinuation(id)
+	}
+	if result.TimedOut {
+		response["error_kind"] = "gh_timeout"
+		response["error"] = "GitHub CLI command timed out"
+		return response
+	}
+	if result.ExitCode != 0 {
+		response["error_kind"] = "gh_error"
+		response["error"] = strings.TrimSpace(redacted)
+		return response
+	}
+	return response
 }
 
 func (e *Engine) runGHJSON(ctx context.Context, repo string, arguments ...string) map[string]any {
 	result := e.runGH(ctx, repo, arguments...)
 	if result["ok"] == false {
 		return result
+	}
+	if result["truncated"] == true {
+		return map[string]any{"ok": false, "error_kind": "gh_json_incomplete", "error": "JSON output exceeds the inline limit; continue from the artifact instead of parsing a prefix", "artifact": result["artifact"], "receipt": result["receipt"], "continuation": result["continuation"]}
 	}
 	output := fmt.Sprint(result["output"])
 	var data any

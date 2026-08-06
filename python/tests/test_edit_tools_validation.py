@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from chatrepo_mcp import edit_tools
+import pytest
 from test_command_tools import make_settings
 from test_edit_tools import write_allowed_file
-import pytest
+
+from chatrepo_mcp import edit_tools
 
 
 def test_read_existing_text_rejects_oversize_and_binary_content(tmp_path: Path) -> None:
@@ -126,7 +127,7 @@ def test_replace_insert_delete_invalid_inputs_and_rollback(tmp_path: Path) -> No
 
 def test_update_current_mission_validation_errors(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
-    path, _ = write_allowed_file(tmp_path, "missions/CURRENT.md", "## Goal\n\nstart\n")
+    _path, _ = write_allowed_file(tmp_path, "missions/CURRENT.md", "## Goal\n\nstart\n")
 
     with pytest.raises(ValueError, match="position must be 'before_goal'"):
         edit_tools.update_current_mission("x", "y", settings, position="after")

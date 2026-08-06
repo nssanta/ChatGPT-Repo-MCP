@@ -14,12 +14,33 @@ func cleanEnvironment(t *testing.T, root string) {
 		"PROJECT_ROOT", "ACCESS_MODE", "MCP_AUTH_MODE", "MCP_BEARER_TOKEN",
 		"COMMAND_POLICY_MODE", "SECRET_GLOBS", "ALLOW_SECRET_ACCESS",
 		"CANONICAL_NAMESPACE", "TRANSPORT", "WORKSPACE_ROOTS",
-		"ENABLE_PTY",
+		"ENABLE_PTY", "PERSIST_FULL_OUTPUT", "RESOURCE_PROFILE", "RESOURCE_BUFFER_BYTES", "MAX_HEAVY_OPERATIONS",
+		"DEFAULT_INLINE_OUTPUT_BYTES", "MAX_RESPONSE_CHARS", "MAX_DIFF_BYTES", "MAX_COMMAND_OUTPUT_CHARS",
 	} {
 		t.Setenv(name, "")
 		_ = os.Unsetenv(name)
 	}
 	t.Setenv("PROJECT_ROOT", root)
+}
+
+func TestLoadRejectsDisablingFullOutputPersistence(t *testing.T) {
+	makeRoot(t)
+	t.Setenv("PERSIST_FULL_OUTPUT", "false")
+	if _, err := Load(); err == nil {
+		t.Fatal("PERSIST_FULL_OUTPUT=false was accepted")
+	}
+}
+
+func TestLoadRejectsUnsafeInlineOutputLimit(t *testing.T) {
+	makeRoot(t)
+	for _, value := range []string{"0", "-1", "200001"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("DEFAULT_INLINE_OUTPUT_BYTES", value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("DEFAULT_INLINE_OUTPUT_BYTES=%s was accepted", value)
+			}
+		})
+	}
 }
 
 func makeRoot(t *testing.T) string {
@@ -81,6 +102,9 @@ func TestLoadDefaultsAndNormalization(t *testing.T) {
 	}
 	if settings.MaxResponseChars != 1_000_000 {
 		t.Fatalf("unexpected max response chars: %d", settings.MaxResponseChars)
+	}
+	if settings.DefaultInlineOutputBytes != 64*1024 {
+		t.Fatalf("unexpected default inline output bytes: %d", settings.DefaultInlineOutputBytes)
 	}
 }
 

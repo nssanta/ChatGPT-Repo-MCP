@@ -3,8 +3,8 @@ package tools
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -79,16 +79,28 @@ func (e *Engine) commandEnvironment(overrides map[string]string) []string {
 	return environment
 }
 
-func (e *Engine) toolStatus(name string) map[string]any {
+// resolveExecutable uses the same explicit-first PATH contract exposed by
+// doctor and inherited by child processes. It intentionally never searches a
+// repository-local virtual environment: the standalone server stays portable.
+func (e *Engine) resolveExecutable(name string) (string, string) {
 	entries, _ := e.effectivePath()
-	var path, source string
+	candidates := []string{name}
+	if runtime.GOOS == "windows" && filepath.Ext(name) == "" {
+		candidates = append(candidates, name+".exe", name+".cmd", name+".bat")
+	}
 	for _, entry := range entries {
-		candidate := filepath.Join(entry.Path, name)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
-			path, source = candidate, entry.Source
-			break
+		for _, candidateName := range candidates {
+			candidate := filepath.Join(entry.Path, candidateName)
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+				return candidate, entry.Source
+			}
 		}
 	}
+	return "", "not_found"
+}
+
+func (e *Engine) toolStatus(name string) map[string]any {
+	path, source := e.resolveExecutable(name)
 	result := map[string]any{"name": name, "available": path != "", "path": nil, "source": "not_found", "version": nil, "version_error": nil}
 	if path == "" {
 		return result
@@ -98,14 +110,10 @@ func (e *Engine) toolStatus(name string) map[string]any {
 	if name == "go" {
 		args = []string{"version"}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, path, args...)
-	command.Env = e.commandEnvironment(nil)
-	output, err := command.CombinedOutput()
-	line := strings.Split(strings.TrimSpace(string(output)), "\n")[0]
-	if err != nil {
-		result["version_error"] = firstNonEmpty(line, err.Error())
+	process := runProcess(context.Background(), e.settings.ProjectRoot, 3*time.Second, e.commandEnvironment(nil), path, args...)
+	line := strings.Split(strings.TrimSpace(process.Stdout+"\n"+process.Stderr), "\n")[0]
+	if process.ExitCode != 0 {
+		result["version_error"] = firstNonEmpty(line, "version command failed")
 	} else {
 		result["version"] = line
 	}

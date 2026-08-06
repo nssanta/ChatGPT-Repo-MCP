@@ -4,10 +4,10 @@ import json
 from pathlib import Path
 
 import pytest
+from test_command_tools import make_settings
 
 from chatrepo_mcp import git_tools, github_tools
 from chatrepo_mcp.command_tools import ConfirmationRequiredError
-from test_command_tools import make_settings
 
 
 def _settings(tmp_path: Path):
@@ -27,7 +27,7 @@ def test_require_gh_ready_reports_not_authenticated(monkeypatch, tmp_path: Path)
     monkeypatch.setattr(
         github_tools,
         "_gh_available",
-        lambda: {"installed": True, "authenticated": False, "hint": "run `gh auth login` to authenticate", "version": "gh 2"},
+        lambda _settings: {"installed": True, "authenticated": False, "hint": "run `gh auth login` to authenticate", "version": "gh 2"},
     )
 
     status = github_tools._require_gh_ready()
@@ -46,7 +46,7 @@ def test_gh_available_with_empty_version_and_auth_failure(monkeypatch) -> None:
             return _Completed(1, "", "not logged in")
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(github_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(github_tools, "run_bounded", fake_run)
 
     status = github_tools._gh_available()
 
@@ -70,7 +70,7 @@ def test_gh_available_with_auth_failure_detected(monkeypatch, tmp_path: Path) ->
             return _Proc(1, "", "Could not authenticate")
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(github_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(github_tools, "run_bounded", fake_run)
 
     status = github_tools._gh_available()
 
@@ -82,7 +82,7 @@ def test_run_gh_not_installed_and_no_remote_from_resolve_error(monkeypatch, tmp_
     monkeypatch.setattr(
         github_tools,
         "_gh_available",
-        lambda: {"installed": False, "authenticated": False, "hint": github_tools.GH_INSTALL_HINT, "version": None},
+        lambda _settings: {"installed": False, "authenticated": False, "hint": github_tools.GH_INSTALL_HINT, "version": None},
     )
 
     result = github_tools._run_gh(["status"], settings)
@@ -93,7 +93,7 @@ def test_run_gh_not_installed_and_no_remote_from_resolve_error(monkeypatch, tmp_
 
 def test_run_gh_detects_not_authenticated_marker(monkeypatch, tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    monkeypatch.setattr(github_tools, "_gh_available", lambda: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"})
+    monkeypatch.setattr(github_tools, "_gh_available", lambda _settings: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2", "path": "gh"})
     monkeypatch.setattr(github_tools.git_tools, "_resolve_repo_toplevel", lambda repo, settings: tmp_path)
 
     def fake_run(cmd, *args, **kwargs):
@@ -101,7 +101,7 @@ def test_run_gh_detects_not_authenticated_marker(monkeypatch, tmp_path: Path) ->
             raise AssertionError(cmd)
         return _Completed(1, "", "Not logged in with gh")
 
-    monkeypatch.setattr(github_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(github_tools, "run_bounded", fake_run)
 
     result = github_tools._run_gh(["status"], settings)
 
@@ -221,7 +221,7 @@ def test_gh_status_auth_error_and_empty_rate_limit_core(tmp_path: Path, monkeypa
     monkeypatch.setattr(
         github_tools,
         "_gh_available",
-        lambda: {"installed": True, "authenticated": False, "hint": "run `gh auth login` to authenticate", "version": "gh 2"},
+        lambda _settings: {"installed": True, "authenticated": False, "hint": "run `gh auth login` to authenticate", "version": "gh 2"},
     )
     result = github_tools.gh_status(settings)
     assert result["ok"] is False
@@ -230,7 +230,7 @@ def test_gh_status_auth_error_and_empty_rate_limit_core(tmp_path: Path, monkeypa
     monkeypatch.setattr(
         github_tools,
         "_gh_available",
-        lambda: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"},
+        lambda _settings: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"},
     )
     monkeypatch.setattr(github_tools, "_run_gh", lambda args, settings, *, repo=None, timeout=None: {"ok": True, "stdout": json.dumps({}), "stderr": "", "exit_code": 0})
     result = github_tools.gh_status(settings)
@@ -265,7 +265,7 @@ def test_gh_pr_list_returns_invalid_json_and_success(tmp_path: Path, monkeypatch
 def test_gh_pr_comment_direct_and_reply_error_modes(tmp_path: Path, monkeypatch) -> None:
     settings = _settings(tmp_path)
     monkeypatch.setattr(github_tools, "_guard", lambda _settings: None)
-    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda: None)
+    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda _settings: None)
 
     monkeypatch.setattr(
         github_tools,
@@ -293,12 +293,12 @@ def test_gh_pr_comment_requires_ready_and_confirmation(tmp_path: Path, monkeypat
     monkeypatch.setattr(
         github_tools,
         "_require_gh_ready",
-        lambda: {"ok": False, "error_kind": "gh_not_authenticated", "install_hint": "run `gh auth login` to authenticate"},
+        lambda _settings: {"ok": False, "error_kind": "gh_not_authenticated", "install_hint": "run `gh auth login` to authenticate"},
     )
     not_ready = github_tools.gh_pr_comment(settings, 9, "nope", confirmed=True)
     assert not_ready["error_kind"] == "gh_not_authenticated"
 
-    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda: None)
+    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda _settings: None)
     with pytest.raises(ConfirmationRequiredError):
         github_tools.gh_pr_comment(settings, 9, "nope", confirmed=False)
 
@@ -306,7 +306,7 @@ def test_gh_pr_comment_requires_ready_and_confirmation(tmp_path: Path, monkeypat
 def test_gh_pr_merge_success_and_confirmation_path(tmp_path: Path, monkeypatch) -> None:
     settings = _settings(tmp_path)
     monkeypatch.setattr(github_tools, "_guard", lambda _settings: None)
-    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda: None)
+    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda _settings: None)
     monkeypatch.setattr(github_tools, "_run_gh", lambda args, settings, *, repo=None: {"ok": True, "stdout": "merged", "stderr": "", "exit_code": 0})
 
     merged = github_tools.gh_pr_merge(settings, 1, method="merge", confirmed=True)
@@ -393,7 +393,7 @@ def test_gh_run_view_run_id_skips_failed_logs_when_disabled(tmp_path: Path, monk
 def test_gh_run_rerun_success_and_confirmation_required(tmp_path: Path, monkeypatch) -> None:
     settings = _settings(tmp_path)
     monkeypatch.setattr(github_tools, "_guard", lambda _settings: None)
-    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda: None)
+    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda _settings: None)
     monkeypatch.setattr(
         github_tools,
         "_run_gh",

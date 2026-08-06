@@ -9,24 +9,26 @@ import dataclasses
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from chatrepo_mcp.command_tools import ConfirmationRequiredError
 from chatrepo_mcp.config import Settings
 from chatrepo_mcp.git_tools import GitToolError
 from chatrepo_mcp.git_workflow_tools import (
     git_add,
     git_create_branch,
-    git_push,
-    git_pull,
-    git_restore,
-    git_stash,
     git_fetch,
-    git_reset,
     git_merge,
+    git_pull,
+    git_push,
+    git_reset,
+    git_restore,
     git_revert,
+    git_stash,
+    git_switch_branch,
     git_worktree_add,
     git_worktree_list,
     git_worktree_remove,
-    git_switch_branch,
 )
 
 
@@ -336,11 +338,8 @@ def test_git_restore_discards_working_tree_only_with_confirmation(tmp_path: Path
     settings = make_settings(tmp_path)
     (tmp_path / "README.md").write_text("dirty", encoding="utf-8")
 
-    try:
+    with pytest.raises(ConfirmationRequiredError, match="discard"):
         git_restore(settings, ["README.md"], staged=False, confirmed=False)
-        assert False, "expected ConfirmationRequiredError for unstaged restore"
-    except Exception as exc:
-        assert isinstance(exc, Exception) and "discard" in str(exc)
 
     result = git_restore(settings, ["README.md"], staged=False, confirmed=True)
 
@@ -354,11 +353,8 @@ def test_git_stash_pop_requires_confirmation(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     settings = make_settings(tmp_path)
 
-    try:
+    with pytest.raises(ConfirmationRequiredError, match=r"git_stash\(action='pop'\)"):
         git_stash(settings, action="pop", repo=None, confirmed=False)
-        assert False, "expected ConfirmationRequiredError for pop without confirmation"
-    except Exception as exc:
-        assert "git_stash(action='pop')" in str(exc)
 
     # With confirmed=True pop is attempted; repo has no stash but should fail
     # with a structured GitToolError, proving the command path was executed.
@@ -418,11 +414,8 @@ def test_git_pull_rebase_requires_confirmation(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     settings = make_settings(tmp_path)
 
-    try:
+    with pytest.raises(ConfirmationRequiredError):
         git_pull(settings, rebase=True, confirmed=False)
-        assert False, "expected ConfirmationRequiredError for rebase pulls"
-    except Exception as exc:
-        assert isinstance(exc, ConfirmationRequiredError)
 
 
 def test_git_pull_conflict_returns_structured_output(tmp_path: Path, monkeypatch) -> None:

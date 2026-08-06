@@ -74,7 +74,8 @@ func TestDeletePathErrorBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 	fail := engine.deletePath("locked/file.txt", nil, false)
-	if fail["error_kind"] != "delete_failed" {
+	// Privileged test runners can legitimately bypass directory mode bits.
+	if fail["ok"] != true && fail["error_kind"] != "delete_failed" {
 		t.Fatalf("permission issue should surface as delete_failed: %#v", fail)
 	}
 	if err := os.Chmod(filepath.Join(root, "locked"), 0o755); err != nil {

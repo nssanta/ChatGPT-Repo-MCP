@@ -1,6 +1,6 @@
 # Installation
 
-The server preserves inherited PATH and probes existing standard toolchain directories, including `/usr/local/go/bin`. For service-only toolchains, set `MCP_EXTRA_PATH`. Persistent PTY is enabled by default but registered only with `ACCESS_MODE=full` on Linux/macOS; set `ENABLE_PTY=false` to disable it explicitly. The Go Windows build omits those six tools.
+The server preserves inherited PATH and probes existing standard toolchain directories, including `/usr/local/go/bin`. For service-only toolchains, set `MCP_EXTRA_PATH`; doctor, diagnostics, GitHub tools, commands, and PTY all use that same effective PATH. A target repository's `.venv` is never discovered implicitly. Persistent PTY is enabled by default but registered only with `ACCESS_MODE=full` on Linux/macOS; set `ENABLE_PTY=false` to disable it explicitly. The Go Windows build omits those six tools.
 
 ChatRepo MCP ships two independent implementations from the same repository.
 Install one of them; do not run both on the same host and port.

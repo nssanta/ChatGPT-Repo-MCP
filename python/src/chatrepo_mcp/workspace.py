@@ -158,7 +158,11 @@ def makefile_targets(directory: Path) -> list[str]:
         return []
 
     try:
-        text = makefile_path.read_text(encoding="utf-8", errors="ignore")
+        with makefile_path.open("rb") as handle:
+            raw = handle.read(1_000_001)
+        if len(raw) > 1_000_000:
+            return []
+        text = raw.decode("utf-8", errors="ignore")
     except OSError:
         return []
 

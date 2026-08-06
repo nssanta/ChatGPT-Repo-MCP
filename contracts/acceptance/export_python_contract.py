@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Export the Python implementation's public MCP tool contract."""
 
 from __future__ import annotations
@@ -11,13 +10,15 @@ from pathlib import Path
 
 import anyio
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYTHON_SRC = REPO_ROOT / "python" / "src"
 sys.path.insert(0, str(PYTHON_SRC))
 os.environ.setdefault("PROJECT_ROOT", str(REPO_ROOT))
 
-from chatrepo_mcp.server import mcp  # noqa: E402
+from bounded_output_contract import (
+    BOUNDED_OUTPUT_RESULT_SCHEMAS,
+)
+from chatrepo_mcp.server import mcp
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,18 +34,20 @@ def parse_args() -> argparse.Namespace:
 async def export_contract() -> dict[str, object]:
     tools = await mcp.list_tools()
     version = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    live_tools = [
+        tool.model_dump(by_alias=True, exclude_none=True)
+        for tool in sorted(tools, key=lambda item: item.name)
+    ]
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "contractVersion": 1,
+        "contractVersion": 2,
         "server": {
             "name": "chatrepo-mcp",
             "version": version,
-            "toolCount": len(tools),
+            "toolCount": len(live_tools),
         },
-        "tools": [
-            tool.model_dump(by_alias=True, exclude_none=True)
-            for tool in sorted(tools, key=lambda item: item.name)
-        ],
+        "resultSchemas": BOUNDED_OUTPUT_RESULT_SCHEMAS,
+        "tools": live_tools,
     }
 
 

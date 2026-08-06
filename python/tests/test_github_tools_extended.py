@@ -50,7 +50,7 @@ def test_gh_available_authenticated(monkeypatch) -> None:
         raise AssertionError(f"unexpected gh call: {cmd}")
 
     monkeypatch.setattr(github_tools.shutil, "which", which_binary)
-    monkeypatch.setattr(github_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(github_tools, "run_bounded", fake_run)
 
     result = github_tools._gh_available()
 
@@ -64,7 +64,7 @@ def test_require_gh_ready_blocks_when_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(
         github_tools,
         "_gh_available",
-        lambda: {"installed": False, "authenticated": False, "hint": github_tools.GH_INSTALL_HINT, "version": None},
+        lambda _settings: {"installed": False, "authenticated": False, "hint": github_tools.GH_INSTALL_HINT, "version": None},
     )
 
     status = github_tools._require_gh_ready()
@@ -77,14 +77,14 @@ def test_run_gh_translates_no_remote_to_structured_error(tmp_path: Path, monkeyp
     monkeypatch.setattr(
         github_tools,
         "_gh_available",
-        lambda: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"},
+        lambda _settings: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"},
     )
     monkeypatch.setattr(github_tools.git_tools, "_resolve_repo_toplevel", lambda repo, settings: tmp_path)
 
     def fake_run(cmd, *args, **kwargs):
         return _FakeCompleted(1, stdout="", stderr="could not determine repository")
 
-    monkeypatch.setattr(github_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(github_tools, "run_bounded", fake_run)
 
     result = github_tools._run_gh(["pr", "view"], _settings(), repo=None)
 
@@ -97,14 +97,14 @@ def test_run_gh_reports_timeout(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         github_tools,
         "_gh_available",
-        lambda: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"},
+        lambda _settings: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"},
     )
     monkeypatch.setattr(github_tools.git_tools, "_resolve_repo_toplevel", lambda repo, settings: tmp_path)
 
     def raise_timeout(*args, **kwargs):
         raise github_tools.subprocess.TimeoutExpired(["gh", "run"], 10)
 
-    monkeypatch.setattr(github_tools.subprocess, "run", raise_timeout)
+    monkeypatch.setattr(github_tools, "run_bounded", raise_timeout)
 
     result = github_tools._run_gh(["run", "list"], _settings(), repo=None)
 
@@ -125,7 +125,7 @@ def test_json_or_error_returns_bad_output_when_invalid() -> None:
 def test_github_pr_create_blocks_when_head_not_pushed(monkeypatch) -> None:
     settings = _settings()
     monkeypatch.setattr(github_tools, "_guard", lambda _settings: None)
-    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda: None)
+    monkeypatch.setattr(github_tools, "_require_gh_ready", lambda _settings: None)
     monkeypatch.setattr(github_tools, "_branch_push_status", lambda _settings, _repo, _branch=None: {"pushed": False, "branch": "feature", "ahead": 1, "upstream": None, "reason": "1 not pushed"})
 
     result = github_tools.gh_pr_create(settings, "title", "body", dry_run=True)
@@ -138,7 +138,7 @@ def test_github_pr_create_blocks_when_head_not_pushed(monkeypatch) -> None:
 def test_gh_status_includes_rate_limit_payload(monkeypatch) -> None:
     payload = {"resources": {"core": {"limit": 5000, "remaining": 4998, "reset": 1710000000}}}
 
-    monkeypatch.setattr(github_tools, "_gh_available", lambda: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"})
+    monkeypatch.setattr(github_tools, "_gh_available", lambda _settings: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"})
     monkeypatch.setattr(
         github_tools,
         "_run_gh",
@@ -179,12 +179,12 @@ def test_run_gh_marks_unauthenticated_as_structured_error(tmp_path: Path, monkey
     monkeypatch.setattr(
         github_tools,
         "_gh_available",
-        lambda: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"},
+        lambda _settings: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"},
     )
     monkeypatch.setattr(github_tools.git_tools, "_resolve_repo_toplevel", lambda repo, settings: tmp_path)
     monkeypatch.setattr(
-        github_tools.subprocess,
-        "run",
+        github_tools,
+        "run_bounded",
         lambda *args, **kwargs: _FakeCompleted(1, stdout="", stderr="You are not logged in"),
     )
 
@@ -198,12 +198,12 @@ def test_run_gh_marks_command_failed_otherwise(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setattr(
         github_tools,
         "_gh_available",
-        lambda: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"},
+        lambda _settings: {"installed": True, "authenticated": True, "hint": "", "version": "gh 2"},
     )
     monkeypatch.setattr(github_tools.git_tools, "_resolve_repo_toplevel", lambda repo, settings: tmp_path)
     monkeypatch.setattr(
-        github_tools.subprocess,
-        "run",
+        github_tools,
+        "run_bounded",
         lambda *args, **kwargs: _FakeCompleted(1, stdout="boom", stderr="exit code 1"),
     )
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -33,7 +32,7 @@ func (e *Engine) executeGitTool(ctx context.Context, name string, args map[strin
 		if pathspec := optionalString(args, "pathspec"); pathspec != nil {
 			arguments = append(arguments, "--", *pathspec)
 		}
-		return e.gitOutputCapped(ctx, repo, name, e.settings.MaxDiffBytes, arguments...)
+		return e.gitOutputCapped(ctx, repo, name, min(e.settings.DefaultInlineOutputBytes, e.settings.MaxDiffBytes), arguments...)
 	case "git_log":
 		limit := min(max(intArg(args, "limit", 20), 1), e.settings.MaxLogCommits)
 		arguments := []string{"log", "--date=iso-strict", "--pretty=format:%H%x09%h%x09%an%x09%ad%x09%s", "-n", strconv.Itoa(limit)}
@@ -60,7 +59,7 @@ func (e *Engine) executeGitTool(ctx context.Context, name string, args map[strin
 		if path := optionalString(args, "path"); path != nil {
 			arguments = append(arguments, "--", *path)
 		}
-		return e.gitOutputCapped(ctx, repo, name, e.settings.MaxDiffBytes, arguments...)
+		return e.gitOutputCapped(ctx, repo, name, min(e.settings.DefaultInlineOutputBytes, e.settings.MaxDiffBytes), arguments...)
 	case "git_branches":
 		arguments := []string{"branch", "--format=%(refname:short)%09%(objectname:short)%09%(upstream:short)%09%(HEAD)"}
 		if boolArg(args, "all_branches", true) {
@@ -77,7 +76,7 @@ func (e *Engine) executeGitTool(ctx context.Context, name string, args map[strin
 			arguments = append(arguments, "-L", fmt.Sprintf("%d,+100", start))
 		}
 		arguments = append(arguments, "--", stringArg(args, "path", ""))
-		return e.gitOutputCapped(ctx, repo, name, e.settings.MaxResponseChars, arguments...)
+		return e.gitOutputCapped(ctx, repo, name, min(e.settings.DefaultInlineOutputBytes, e.settings.MaxResponseChars), arguments...)
 	case "git_grep":
 		return e.gitGrep(ctx, repo, args)
 	case "git_switch_branch":
@@ -128,30 +127,76 @@ func (e *Engine) gitInfo(ctx context.Context, repo string) map[string]any {
 }
 
 func (e *Engine) runGit(ctx context.Context, repo string, timeout time.Duration, arguments ...string) (string, error) {
-	commandContext, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	command := exec.CommandContext(commandContext, "git", append([]string{"-C", repo}, arguments...)...)
-	output, err := command.CombinedOutput()
-	if commandContext.Err() == context.DeadlineExceeded {
-		return string(output), fmt.Errorf("git command timed out")
+	result := runProcess(ctx, repo, timeout, e.commandEnvironment(nil), "git", append([]string{"-C", repo}, arguments...)...)
+	output := result.Stdout
+	if strings.TrimSpace(result.Stderr) != "" {
+		output += "\n" + result.Stderr
 	}
-	if err != nil {
-		return string(output), fmt.Errorf("git %s failed: %s", arguments[0], strings.TrimSpace(string(output)))
+	if result.TimedOut {
+		return output, fmt.Errorf("git command timed out")
 	}
-	return string(output), nil
+	if result.ExitCode != 0 {
+		return output, fmt.Errorf("git %s failed: %s", arguments[0], strings.TrimSpace(output))
+	}
+	return output, nil
 }
 
 func (e *Engine) gitOutput(ctx context.Context, repo, tool string, arguments ...string) map[string]any {
-	return e.gitOutputCapped(ctx, repo, tool, e.settings.MaxResponseChars, arguments...)
+	return e.gitOutputCapped(ctx, repo, tool, min(e.settings.DefaultInlineOutputBytes, e.settings.MaxResponseChars), arguments...)
 }
 
 func (e *Engine) gitOutputCapped(ctx context.Context, repo, tool string, limit int, arguments ...string) map[string]any {
-	output, err := e.runGit(ctx, repo, e.settings.SubprocessTimeout, arguments...)
-	if err != nil {
-		return map[string]any{"ok": false, "error_kind": "git_error", "error": err.Error(), "tool": tool}
+	result, id, stdoutBytes, stderrBytes, persistErr := e.runArtifactProcess(ctx, tool, repo, e.settings.SubprocessTimeout, e.commandEnvironment(nil), limit, "git", append([]string{"-C", repo}, arguments...)...)
+	artifact := map[string]any{"artifact_id": id, "continuation_tool": "read_artifact", "ordering": "stdout_then_stderr"}
+	if persistErr != nil {
+		if isHeavyBusyError(persistErr) {
+			return e.heavyBusyResult()
+		}
+		return map[string]any{"ok": false, "error_kind": "output_persistence_failed", "error": persistErr.Error(), "tool": tool, "artifact": artifact}
 	}
-	output, truncated := capText(output, limit)
-	return map[string]any{"ok": true, "repo": e.perimeter.Display(repo), "output": output, "truncated": truncated}
+	output, truncated, receipt := artifactProcessOutput(result, stdoutBytes, stderrBytes, e.settings.DefaultInlineOutputBytes, limit)
+	response := map[string]any{"ok": result.ExitCode == 0 && !result.TimedOut, "repo": e.perimeter.Display(repo), "output": output, "truncated": truncated, "artifact": artifact, "receipt": receipt}
+	if truncated {
+		response["continuation"] = artifactContinuation(id)
+	}
+	if result.TimedOut {
+		response["error_kind"] = "git_timeout"
+		response["error"] = "git command timed out"
+		response["tool"] = tool
+		return response
+	}
+	if result.ExitCode != 0 {
+		response["error_kind"] = "git_error"
+		response["error"] = strings.TrimSpace(output)
+		response["tool"] = tool
+		return response
+	}
+	return response
+}
+
+func (e *Engine) gitActionArtifact(ctx context.Context, repo, tool string, timeout time.Duration, arguments ...string) map[string]any {
+	inlineLimit := min(e.settings.DefaultInlineOutputBytes, e.settings.MaxResponseChars)
+	result, id, stdoutBytes, stderrBytes, persistErr := e.runArtifactProcess(ctx, tool, repo, timeout, e.commandEnvironment(nil), inlineLimit, "git", append([]string{"-C", repo}, arguments...)...)
+	artifact := map[string]any{"artifact_id": id, "continuation_tool": "read_artifact", "ordering": "stdout_then_stderr"}
+	if persistErr != nil {
+		if isHeavyBusyError(persistErr) {
+			return e.heavyBusyResult()
+		}
+		return map[string]any{"ok": false, "error_kind": "output_persistence_failed", "error": persistErr.Error(), "artifact": artifact}
+	}
+	output, truncated, receipt := artifactProcessOutput(result, stdoutBytes, stderrBytes, e.settings.DefaultInlineOutputBytes, inlineLimit)
+	base := map[string]any{"ok": result.ExitCode == 0 && !result.TimedOut, "output": output, "truncated": truncated, "artifact": artifact, "receipt": receipt}
+	if truncated {
+		base["continuation"] = artifactContinuation(id)
+	}
+	if result.TimedOut {
+		base["error_kind"] = "git_timeout"
+		base["error"] = "git command timed out"
+	} else if result.ExitCode != 0 {
+		base["error_kind"] = "git_error"
+		base["error"] = strings.TrimSpace(output)
+	}
+	return base
 }
 
 func (e *Engine) gitGrep(ctx context.Context, repo string, args map[string]any) map[string]any {
@@ -347,11 +392,12 @@ func (e *Engine) gitFetch(ctx context.Context, repo string, args map[string]any)
 	if boolArg(args, "prune", false) {
 		arguments = append(arguments, "--prune")
 	}
-	output, err := e.runGit(ctx, repo, e.settings.GitNetworkTimeout, arguments...)
-	if err != nil {
-		return withError("git_fetch_failed", err)
+	result := e.gitActionArtifact(ctx, repo, "git_fetch", e.settings.GitNetworkTimeout, arguments...)
+	result["remote"] = stringArg(args, "remote", "origin")
+	if result["ok"] == false {
+		result["error_kind"] = "git_fetch_failed"
 	}
-	return map[string]any{"ok": true, "remote": stringArg(args, "remote", "origin"), "output": strings.TrimSpace(output)}
+	return result
 }
 
 func (e *Engine) gitPull(ctx context.Context, repo string, args map[string]any) map[string]any {
@@ -376,13 +422,15 @@ func (e *Engine) gitPull(ctx context.Context, repo string, args map[string]any) 
 		arguments = append(arguments, "--rebase")
 	}
 	arguments = append(arguments, stringArg(args, "remote", "origin"), branch)
-	output, err := e.runGit(ctx, repo, e.settings.GitNetworkTimeout, arguments...)
-	if err != nil {
+	result := e.gitActionArtifact(ctx, repo, "git_pull", e.settings.GitNetworkTimeout, arguments...)
+	if result["ok"] == false {
 		_, _ = e.runGit(ctx, repo, e.settings.SubprocessTimeout, "merge", "--abort")
 		_, _ = e.runGit(ctx, repo, e.settings.SubprocessTimeout, "rebase", "--abort")
-		return withError("pull_conflict", err)
+		result["error_kind"] = "pull_conflict"
+		return result
 	}
-	return map[string]any{"ok": true, "branch": branch, "output": strings.TrimSpace(output)}
+	result["branch"] = branch
+	return result
 }
 
 func (e *Engine) gitPush(ctx context.Context, repo string, args map[string]any) map[string]any {
@@ -414,11 +462,12 @@ func (e *Engine) gitPush(ctx context.Context, repo string, args map[string]any) 
 		arguments = append(arguments, "--force-with-lease")
 	}
 	arguments = append(arguments, stringArg(args, "remote", "origin"), branch)
-	output, err := e.runGit(ctx, repo, e.settings.GitNetworkTimeout, arguments...)
-	if err != nil {
-		return withError("git_push_failed", err)
+	result := e.gitActionArtifact(ctx, repo, "git_push", e.settings.GitNetworkTimeout, arguments...)
+	if result["ok"] == false {
+		result["error_kind"] = "git_push_failed"
 	}
-	return map[string]any{"ok": true, "branch": branch, "dry_run": dryRun, "applied": !dryRun, "output": strings.TrimSpace(output)}
+	result["branch"], result["dry_run"], result["applied"] = branch, dryRun, !dryRun
+	return result
 }
 
 func (e *Engine) gitMerge(ctx context.Context, repo string, args map[string]any) map[string]any {
@@ -440,11 +489,14 @@ func (e *Engine) gitMerge(ctx context.Context, repo string, args map[string]any)
 		arguments = append(arguments, "-m", *message)
 	}
 	arguments = append(arguments, branch)
-	output, err := e.runGit(ctx, repo, e.settings.SubprocessTimeout, arguments...)
-	if err != nil {
-		return map[string]any{"ok": false, "error_kind": "merge_conflict", "error": err.Error(), "conflicts": e.conflicts(ctx, repo)}
+	result := e.gitActionArtifact(ctx, repo, "git_merge", e.settings.SubprocessTimeout, arguments...)
+	if result["ok"] == false {
+		result["error_kind"] = "merge_conflict"
+		result["conflicts"] = e.conflicts(ctx, repo)
+		return result
 	}
-	return map[string]any{"ok": true, "branch": branch, "output": strings.TrimSpace(output)}
+	result["branch"] = branch
+	return result
 }
 
 func (e *Engine) gitRevert(ctx context.Context, repo string, args map[string]any) map[string]any {
@@ -456,12 +508,13 @@ func (e *Engine) gitRevert(ctx context.Context, repo string, args map[string]any
 		arguments = append(arguments, "--no-commit")
 	}
 	arguments = append(arguments, stringArg(args, "revision", ""))
-	output, err := e.runGit(ctx, repo, e.settings.SubprocessTimeout, arguments...)
-	if err != nil {
+	result := e.gitActionArtifact(ctx, repo, "git_revert", e.settings.SubprocessTimeout, arguments...)
+	if result["ok"] == false {
 		_, _ = e.runGit(ctx, repo, e.settings.SubprocessTimeout, "revert", "--abort")
-		return map[string]any{"ok": false, "error_kind": "revert_conflict", "error": err.Error()}
+		result["error_kind"] = "revert_conflict"
+		return result
 	}
-	return map[string]any{"ok": true, "output": strings.TrimSpace(output)}
+	return result
 }
 
 func (e *Engine) gitReset(ctx context.Context, repo string, args map[string]any) map[string]any {
@@ -475,11 +528,12 @@ func (e *Engine) gitReset(ctx context.Context, repo string, args map[string]any)
 	if mode == "hard" && !e.settings.AllowHardReset {
 		return failure("hard_reset_disabled", "ALLOW_HARD_RESET=true is required")
 	}
-	output, err := e.runGit(ctx, repo, e.settings.SubprocessTimeout, "reset", "--"+mode, stringArg(args, "target", "HEAD~1"))
-	if err != nil {
-		return withError("git_reset_failed", err)
+	result := e.gitActionArtifact(ctx, repo, "git_reset", e.settings.SubprocessTimeout, "reset", "--"+mode, stringArg(args, "target", "HEAD~1"))
+	if result["ok"] == false {
+		result["error_kind"] = "git_reset_failed"
 	}
-	return map[string]any{"ok": true, "mode": mode, "output": strings.TrimSpace(output)}
+	result["mode"] = mode
+	return result
 }
 
 func (e *Engine) gitWorktreeAdd(ctx context.Context, repo string, args map[string]any) map[string]any {
@@ -497,11 +551,12 @@ func (e *Engine) gitWorktreeAdd(ctx context.Context, repo string, args map[strin
 	} else {
 		arguments = append(arguments, directory, branch)
 	}
-	output, err := e.runGit(ctx, repo, e.settings.SubprocessTimeout, arguments...)
-	if err != nil {
-		return withError("worktree_add_failed", err)
+	result := e.gitActionArtifact(ctx, repo, "git_worktree_add", e.settings.SubprocessTimeout, arguments...)
+	if result["ok"] == false {
+		result["error_kind"] = "worktree_add_failed"
 	}
-	return map[string]any{"ok": true, "path": e.perimeter.Display(directory), "branch": branch, "output": strings.TrimSpace(output)}
+	result["path"], result["branch"] = e.perimeter.Display(directory), branch
+	return result
 }
 
 func (e *Engine) prepareTaskWorktree(ctx context.Context, repo string, args map[string]any) map[string]any {

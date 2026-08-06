@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .resource_profile import resolve_resource_limits
 
 # `python -m chatrepo_mcp` is the documented local entrypoint.  Load the
 # adjacent .env before Settings.from_env() is evaluated by server.py.
@@ -86,6 +87,18 @@ class Settings:
     kill_grace_ms: int = 5_000
     enable_pty: bool = True
     max_terminal_sessions: int = 4
+    artifact_total_bytes: int = 10_737_418_240
+    artifact_max_bytes: int = 5_368_709_120
+    artifact_disk_reserve_bytes: int = 2_147_483_648
+    artifact_ttl_seconds: int = 604_800
+    resource_profile: str = "auto"
+    resource_profile_applied: str = "small"
+    resource_detected_memory_bytes: int | None = None
+    resource_buffer_bytes: int = 16 * 1024**2
+    max_heavy_operations: int = 2
+    persist_full_output: bool = True
+    # Ограничиваем обычный inline-ответ, но не объём сохраняемого артефакта.
+    default_inline_output_bytes: int = 65_536
 
     @property
     def full_access(self) -> bool:
@@ -102,7 +115,7 @@ class Settings:
         return self.full_access or confirmed is True
 
     @staticmethod
-    def from_env() -> "Settings":
+    def from_env() -> Settings:
         raw_project_root = os.getenv("PROJECT_ROOT", "").strip()
         if not raw_project_root:
             raise RuntimeError("PROJECT_ROOT is required")
@@ -140,7 +153,23 @@ class Settings:
             raise RuntimeError(
                 "COMMAND_POLICY_MODE must be one of: allowlist, guarded, unrestricted, full_repo"
             )
-        return Settings(
+        resource_profile = os.getenv("RESOURCE_PROFILE", "auto").strip().lower()
+        custom_buffer_raw = os.getenv("RESOURCE_BUFFER_BYTES")
+        custom_heavy_raw = os.getenv("MAX_HEAVY_OPERATIONS")
+        try:
+            resource_limits = resolve_resource_limits(
+                resource_profile,
+                custom_buffer_bytes=int(custom_buffer_raw) if custom_buffer_raw else None,
+                custom_heavy_operations=int(custom_heavy_raw) if custom_heavy_raw else None,
+            )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        persist_full_output = _env_bool("PERSIST_FULL_OUTPUT", True)
+        if not persist_full_output:
+            raise RuntimeError(
+                "PERSIST_FULL_OUTPUT=false is unsupported: bounded durable output is mandatory"
+            )
+        settings = Settings(
             app_name=os.getenv("APP_NAME", "chatrepo-mcp"),
             host=os.getenv("HOST", "127.0.0.1"),
             port=_env_int("PORT", 8000),
@@ -211,8 +240,19 @@ class Settings:
                 if part.strip()
             ),
             kill_grace_ms=_env_int("KILL_GRACE_MS", 5_000),
-            enable_pty=_env_bool("ENABLE_PTY", True),
+            enable_pty=os.name == "posix" and _env_bool("ENABLE_PTY", True),
             max_terminal_sessions=_env_int("MAX_TERMINAL_SESSIONS", 4),
+            artifact_total_bytes=_env_int("ARTIFACT_TOTAL_BYTES", 10_737_418_240),
+            artifact_max_bytes=_env_int("ARTIFACT_MAX_BYTES", 5_368_709_120),
+            artifact_disk_reserve_bytes=_env_int("ARTIFACT_DISK_RESERVE_BYTES", 2_147_483_648),
+            artifact_ttl_seconds=_env_int("ARTIFACT_TTL_SECONDS", 604_800),
+            resource_profile=resource_profile,
+            resource_profile_applied=resource_limits.profile,
+            resource_detected_memory_bytes=resource_limits.detected_memory_bytes,
+            resource_buffer_bytes=resource_limits.buffer_bytes,
+            max_heavy_operations=resource_limits.heavy_operations,
+            persist_full_output=persist_full_output,
+            default_inline_output_bytes=_env_int("DEFAULT_INLINE_OUTPUT_BYTES", 65_536),
             git_network_timeout=_env_int("GIT_NETWORK_TIMEOUT", 60),
             protected_branches=_env_csv("PROTECTED_BRANCHES", "main,master"),
             allow_force_push=_env_bool("ALLOW_FORCE_PUSH", False),
@@ -228,3 +268,14 @@ class Settings:
             allow_secret_access=allow_secret_access,
             allow_hard_reset=_env_bool("ALLOW_HARD_RESET", False),
         )
+        inline_hard_limit = min(
+            settings.max_response_chars,
+            settings.max_diff_bytes,
+            settings.max_command_output_chars,
+        )
+        if not 0 < settings.default_inline_output_bytes <= inline_hard_limit:
+            raise RuntimeError(
+                "DEFAULT_INLINE_OUTPUT_BYTES must be positive and no greater than "
+                f"the smallest configured output ceiling ({inline_hard_limit})"
+            )
+        return settings

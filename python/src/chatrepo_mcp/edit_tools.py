@@ -4,11 +4,11 @@ import difflib
 import hashlib
 import re
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from . import git_tools
+from .bounded_subprocess import BoundedProcessResult, run_bounded
 from .config import Settings
 from .profile import load_repo_profile
 from .security import (
@@ -78,7 +78,8 @@ def _unified_diff(path: str, old_text: str, new_text: str) -> str:
 
 
 def _read_existing_text(path: Path, settings: Settings) -> str:
-    data = path.read_bytes()
+    with path.open("rb") as handle:
+        data = handle.read(settings.max_write_file_bytes + 1)
     if b"\x00" in data:
         raise WritePolicyError(f"binary files are not writable: {path.name}")
     if len(data) > settings.max_write_file_bytes:
@@ -948,29 +949,27 @@ def _run_git_apply(
     *,
     check: bool,
     cwd: Path,
-) -> subprocess.CompletedProcess[str]:
+) -> BoundedProcessResult:
     args = ["git", "apply"]
     if check:
         args.append("--check")
-    return subprocess.run(
+    return run_bounded(
         args,
         cwd=str(cwd),
-        input=patch,
-        text=True,
-        capture_output=True,
-        check=False,
+        input_text=patch,
         timeout=settings.subprocess_timeout,
+        max_stdout_bytes=settings.max_response_chars,
+        max_stderr_bytes=settings.max_response_chars,
     )
 
 
 def _git_head(settings: Settings, *, cwd: Path) -> str:
-    proc = subprocess.run(
+    proc = run_bounded(
         ["git", "rev-parse", "HEAD"],
         cwd=str(cwd),
-        text=True,
-        capture_output=True,
-        check=False,
         timeout=settings.subprocess_timeout,
+        max_stdout_bytes=256,
+        max_stderr_bytes=settings.max_response_chars,
     )
     if proc.returncode != 0:
         raise PatchApplyError(proc.stderr.strip() or "git rev-parse HEAD failed")

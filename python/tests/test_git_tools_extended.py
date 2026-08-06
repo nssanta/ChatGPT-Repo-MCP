@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
+import os
 import subprocess
+from dataclasses import replace
+from pathlib import Path
+
+from test_command_tools import make_settings
 
 from chatrepo_mcp import git_tools
 from chatrepo_mcp.git_tools import GitToolError
-from test_command_tools import make_settings
-
+from chatrepo_mcp.output_store import read_artifact
 
 
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -75,10 +78,13 @@ def test_run_git_grep_returncode_one_is_non_fatal(tmp_path: Path, monkeypatch) -
         stdout = ""
         stderr = ""
 
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: FakeResult())
+    FakeResult.stdout_truncated = False
+    monkeypatch.setattr(git_tools, "run_bounded", lambda *args, **kwargs: FakeResult())
 
-    output = git_tools._run_git_grep(["grep", "x"], settings, tmp_path)
+    output, truncated, artifact = git_tools._run_git_grep(["grep", "x"], settings, tmp_path)
     assert output == ""
+    assert truncated is False
+    assert artifact is None
 
 
 def test_run_git_grep_propagates_fatal_error(tmp_path: Path, monkeypatch) -> None:
@@ -90,13 +96,68 @@ def test_run_git_grep_propagates_fatal_error(tmp_path: Path, monkeypatch) -> Non
         stdout = ""
         stderr = "fatal: boom"
 
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: FakeResult())
+    FakeResult.stdout_truncated = False
+    monkeypatch.setattr(git_tools, "run_bounded", lambda *args, **kwargs: FakeResult())
 
     try:
         git_tools._run_git_grep(["grep", "x"], settings, tmp_path)
         assert False, "expected GitToolError"
     except GitToolError as exc:
         assert "fatal: boom" in str(exc)
+
+
+def test_failed_git_capture_keeps_redacted_artifact_receipt(tmp_path: Path) -> None:
+    _git("init", "-q", cwd=tmp_path)
+    settings = make_settings(tmp_path)
+
+    try:
+        git_tools._run_git_capture(["show", "does-not-exist"], settings, cwd=tmp_path, persist_artifact=True)
+        assert False, "expected GitToolError"
+    except GitToolError as exc:
+        assert exc.result is not None
+        assert exc.result["error_kind"] == "git_error"
+        assert exc.result["artifact"]["artifact_id"]
+        assert exc.result["receipt"]["applied"]["source_complete"] is True
+
+
+def test_failed_git_two_stream_preview_and_full_artifact(tmp_path: Path, monkeypatch) -> None:
+    binary = tmp_path / "git"
+    binary.write_text(
+        """#!/bin/sh
+printf 'OUT_HEAD:'
+i=0; while [ "$i" -lt 600 ]; do printf 'o'; i=$((i+1)); done
+printf ':OUT_TAIL'
+printf 'ERR_HEAD:' >&2
+i=0; while [ "$i" -lt 600 ]; do printf 'e' >&2; i=$((i+1)); done
+printf ':ERR_TAIL' >&2
+exit 7
+""",
+        encoding="utf-8",
+    )
+    binary.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    settings = replace(
+        make_settings(tmp_path), default_inline_output_bytes=256,
+        artifact_disk_reserve_bytes=0,
+    )
+
+    try:
+        git_tools._run_git_capture(["status"], settings, cwd=tmp_path, persist_artifact=True)
+        assert False, "expected GitToolError"
+    except GitToolError as exc:
+        assert exc.result is not None
+        result = exc.result
+        assert result["truncated"] is True
+        assert len(result["stdout"].encode()) + len(result["stderr"].encode()) <= 256
+        for marker in ("OUT_HEAD:", ":OUT_TAIL"):
+            assert marker in result["stdout"]
+        for marker in ("ERR_HEAD:", ":ERR_TAIL"):
+            assert marker in result["stderr"]
+        assert result["continuation"]["tool"] == "read_artifact"
+        page = read_artifact(result["artifact"]["artifact_id"], settings, max_bytes=4096)
+        full = "".join(record["data"] for record in page["payload"]["records"])
+        for marker in ("OUT_HEAD:", ":OUT_TAIL", "ERR_HEAD:", ":ERR_TAIL"):
+            assert marker in full
 
 
 def test_git_grep_polyrepo_aggregates_results_from_multiple_repos_and_limits(tmp_path: Path) -> None:

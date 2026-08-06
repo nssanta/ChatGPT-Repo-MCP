@@ -24,7 +24,8 @@ func testSettings(root string) config.Settings {
 		MaxFileBytes: 1_000_000, MaxResponseChars: 100_000, MaxReadFiles: 25, MaxSearchResults: 100,
 		MaxTreeEntries: 1000, MaxDiffBytes: 100_000, MaxLogCommits: 100, MaxWriteFileBytes: 1_000_000,
 		MaxBatchOperations: 50, MaxCombinedDiffChars: 100_000, MaxPatchBytes: 100_000,
-		MaxCommandOutputChars: 100_000, CommandTimeout: 5 * time.Second, SubprocessTimeout: 5 * time.Second,
+		DefaultInlineOutputBytes: 64 * 1024,
+		MaxCommandOutputChars:    100_000, CommandTimeout: 5 * time.Second, SubprocessTimeout: 5 * time.Second,
 		GitNetworkTimeout: 5 * time.Second, GHTimeout: 5 * time.Second,
 		CommandAuditLogPath: filepath.Join(root, ".audit", "commands.log"), CommandJobsDir: filepath.Join(root, ".jobs"),
 		CommandPolicyMode: "allowlist", DeniedWords: []string{"sudo", "su"},
@@ -190,6 +191,21 @@ func TestAllContractToolsHaveDispatcherRoute(t *testing.T) {
 		if result["error_kind"] == "unknown_tool" || result["error_kind"] == "unknown_read_tool" || result["error_kind"] == "unknown_edit_tool" || result["error_kind"] == "unknown_command_tool" || result["error_kind"] == "unknown_git_tool" || result["error_kind"] == "unknown_github_tool" {
 			t.Errorf("%s has no dispatcher route: %#v", tool.Name, result)
 		}
+	}
+}
+
+func TestResourceBufferDTOIsExplicitlyDiagnosticOnly(t *testing.T) {
+	engine, _ := newTestEngine(t)
+	engine.settings.ResourceBufferBytes = 32 * 1024 * 1024
+	repo := engine.Execute(context.Background(), "repo_info", map[string]any{})
+	configResult := repo["config"].(map[string]any)
+	if configResult["resource_buffer_enforced"] != false || configResult["resource_buffer_semantics"] != "diagnostic_estimate_only" {
+		t.Fatalf("repo_info buffer truth: %#v", configResult)
+	}
+	doctor := engine.Execute(context.Background(), "doctor", map[string]any{})
+	limits := doctor["resource_limits"].(map[string]any)
+	if limits["buffer_enforced"] != false || limits["buffer_semantics"] != "diagnostic_estimate_only" {
+		t.Fatalf("doctor buffer truth: %#v", limits)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/nssanta/ChatGPT-Repo-MCP/go/internal/config"
 	"github.com/nssanta/ChatGPT-Repo-MCP/go/internal/security"
@@ -18,26 +19,84 @@ import (
 
 // Engine dispatches contract tools to focused implementations.
 type Engine struct {
-	settings    config.Settings
-	perimeter   *security.Perimeter
-	toolNames   []string
-	jobsMu      sync.RWMutex
-	jobs        map[string]*job
-	terminalsMu sync.RWMutex
-	terminals   map[string]*terminalSession
+	settings     config.Settings
+	perimeter    *security.Perimeter
+	toolNames    []string
+	jobsMu       sync.RWMutex
+	jobs         map[string]*job
+	terminalsMu  sync.RWMutex
+	terminals    map[string]*terminalSession
+	artifactOnce sync.Once
+	artifacts    *artifactStore
+	artifactErr  error
+	heavySlots   chan struct{}
+}
+
+type heavyOperationLease struct {
+	slots chan struct{}
+	once  sync.Once
+}
+
+type heavyOperationBusyError struct{ capacity int }
+
+func (err heavyOperationBusyError) Error() string {
+	return fmt.Sprintf("resource_busy: maximum %d heavy operations are already running", err.capacity)
+}
+
+func (e *Engine) acquireHeavyOperation() (*heavyOperationLease, bool) {
+	if e.heavySlots == nil {
+		return &heavyOperationLease{}, true
+	}
+	select {
+	case e.heavySlots <- struct{}{}:
+		return &heavyOperationLease{slots: e.heavySlots}, true
+	default:
+		return nil, false
+	}
+}
+
+func (lease *heavyOperationLease) Release() {
+	if lease == nil || lease.slots == nil {
+		return
+	}
+	lease.once.Do(func() { <-lease.slots })
+}
+
+func (e *Engine) heavyBusyResult() map[string]any {
+	return map[string]any{"ok": false, "error_kind": "resource_busy", "error": fmt.Sprintf("maximum %d heavy operations are already running", e.settings.MaxHeavyOperations), "capacity": e.settings.MaxHeavyOperations, "retry_hint": "wait for a running operation to finish"}
+}
+
+func (e *Engine) heavyBusyError() error {
+	return heavyOperationBusyError{capacity: e.settings.MaxHeavyOperations}
+}
+
+func isHeavyBusyError(err error) bool {
+	_, ok := err.(heavyOperationBusyError)
+	return ok
+}
+
+func (e *Engine) artifactStore() (*artifactStore, error) {
+	e.artifactOnce.Do(func() {
+		e.artifacts, e.artifactErr = newArtifactStore(e.settings.CommandJobsDir, e.settings.ArtifactTotalBytes, e.settings.ArtifactMaxBytes, e.settings.ArtifactTTL, e.settings.ArtifactDiskReserveBytes)
+	})
+	return e.artifacts, e.artifactErr
 }
 
 // New creates a tool engine. toolNames is used by doctor and smoke_all.
 func New(settings config.Settings, toolNames []string) *Engine {
 	names := append([]string(nil), toolNames...)
 	sort.Strings(names)
-	return &Engine{
+	engine := &Engine{
 		settings:  settings,
 		perimeter: security.New(settings),
 		toolNames: names,
 		jobs:      make(map[string]*job),
 		terminals: make(map[string]*terminalSession),
 	}
+	if settings.MaxHeavyOperations > 0 {
+		engine.heavySlots = make(chan struct{}, settings.MaxHeavyOperations)
+	}
+	return engine
 }
 
 // ToolNames returns the registered runtime tool catalog for readiness output.
@@ -93,6 +152,7 @@ func (e *Engine) Execute(ctx context.Context, name string, args map[string]any) 
 		"insert_after_heading", "append_to_file", "apply_patch", "update_current_mission":
 		result = e.executeEditTool(ctx, name, args)
 	case "run_command", "run_commands", "run_test_preset", "list_test_presets",
+		"read_artifact",
 		"run_quality_gate", "quality_gate_and_commit", "scan_new_policy_violations",
 		"command_policy_check", "get_command_log", "summarize_command_log",
 		"git_worktree_guard", "start_command_job", "get_command_job", "get_job_status",
@@ -253,7 +313,52 @@ func capText(text string, limit int) (string, bool) {
 	if limit <= 0 || len(text) <= limit {
 		return text, false
 	}
-	return text[:limit] + "\n...[truncated]", true
+	return headTailText(text, limit), true
+}
+
+const inlineOmissionMarker = "\n… [output omitted; read artifact] …\n"
+
+// headTailText preserves useful context from both ends while ensuring the
+// inline response never exceeds its caller's byte budget.
+func headTailText(text string, limit int) string {
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	if limit <= len(inlineOmissionMarker) {
+		return utf8Prefix(text, limit)
+	}
+	remaining := limit - len(inlineOmissionMarker)
+	head := utf8Prefix(text, remaining/2)
+	tail := utf8Suffix(text, remaining-len(head))
+	return head + inlineOmissionMarker + tail
+}
+
+func utf8Prefix(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(text) <= limit {
+		return text
+	}
+	end := limit
+	for end > 0 && !utf8.RuneStart(text[end]) {
+		end--
+	}
+	return text[:end]
+}
+
+func utf8Suffix(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(text) <= limit {
+		return text
+	}
+	start := len(text) - limit
+	for start < len(text) && !utf8.RuneStart(text[start]) {
+		start++
+	}
+	return text[start:]
 }
 
 func binaryStatus(name string) map[string]any {

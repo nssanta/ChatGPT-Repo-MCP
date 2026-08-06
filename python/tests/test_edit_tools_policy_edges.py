@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from test_edit_tools import make_settings
+
 from chatrepo_mcp.edit_tools import (
     PatchApplyError,
     StaleWriteError,
@@ -16,8 +19,7 @@ from chatrepo_mcp.edit_tools import (
     structured_error,
     write_text_file,
 )
-
-from test_edit_tools import make_settings
+from chatrepo_mcp.security import SecurityError
 
 
 def test_validation_paths_raise_expected_errors(tmp_path: Path) -> None:
@@ -53,33 +55,21 @@ def test_resolve_path_rejects_root_non_file_and_symlink_rules(tmp_path: Path) ->
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "target.txt").write_text("ok\n", encoding="utf-8")
 
-    try:
+    with pytest.raises(WritePolicyError, match="repo file"):
         resolve_write_path(".", settings)
-        raise AssertionError("expected root path rejection")
-    except Exception as exc:
-        assert "repo file" in str(exc)
 
-    try:
+    with pytest.raises(WritePolicyError, match="not a file"):
         resolve_write_path("docs", settings)
-        raise AssertionError("expected not file")
-    except Exception as exc:
-        assert "not a file" in str(exc)
 
     outside = tmp_path.parent / "outside_target.txt"
     outside.write_text("outside", encoding="utf-8")
     link = tmp_path / "docs" / "link.txt"
     link.symlink_to(outside)
-    try:
+    with pytest.raises(SecurityError, match="path escapes allowed roots"):
         resolve_write_path("docs/link.txt", settings)
-        raise AssertionError("expected symlink rejection")
-    except Exception as exc:
-        assert "path escapes allowed roots" in str(exc)
 
-    try:
+    with pytest.raises(WritePolicyError, match="must not be repository root"):
         resolve_write_dir_path(".", settings)
-        raise AssertionError("expected directory root rejection")
-    except Exception as exc:
-        assert "must not be repository root" in str(exc)
 
 
 def test_structured_error_classifies_more_error_kinds() -> None:

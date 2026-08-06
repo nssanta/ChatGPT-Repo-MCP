@@ -2,7 +2,7 @@
 
 ## Runtime managers (v0.3)
 
-Both implementations derive one effective executable PATH from `MCP_EXTRA_PATH`, inherited PATH, an active virtualenv, and existing standard toolchain directories. Doctor and every command/PTY child use that same environment.
+Both implementations derive one effective executable PATH from `MCP_EXTRA_PATH`, inherited PATH, the server process's active virtualenv, and existing standard toolchain directories. Doctor, diagnostics, GitHub tools, and every command/PTY child use that same environment. The server never searches a target repository's `.venv` implicitly.
 
 Command jobs and POSIX terminal sessions are UUID-owned resources with shared logs. Each process receives its own process group; cancel, timeout, idle timeout, and orderly shutdown terminate the group with TERM followed by KILL. Preset locks prevent duplicate tests. PTY defaults on but remains gated by full access; `ENABLE_PTY=false` explicitly removes its tools.
 
@@ -22,7 +22,7 @@ ChatGPT (Developer Mode)
 Reverse Proxy (Caddy or Nginx)
         │
         ▼
-Shared MCP catalog (95 tools; 89 default)
+Shared MCP catalog (96 tools; 90 default)
         │
         ├── Python FastMCP package
         └── Go MCP binary
@@ -41,6 +41,8 @@ One workspace folder on disk (single repo or polyrepo)
 Both servers expose the same names, input schemas, annotations, `.env`
 configuration, and structured behavior. `contracts/tool-schemas/tools.json` is
 the checked-in public API; language-specific acceptance tests reject drift.
+Operational details for streaming, receipts, artifact paging, quotas, and
+resource profiles live in [BOUNDED_OUTPUT.md](BOUNDED_OUTPUT.md).
 
 ## Core design decisions
 
@@ -75,11 +77,11 @@ Git information is obtained through `git` CLI commands executed with:
 
 `ACCESS_MODE=safe` uses scoped paths, allowlisted commands by default, preview writes, hashes, and confirmation gates. `ACCESS_MODE=full` forces unrestricted bash/filesystem, applies writes by default, enables move/delete, and treats structural confirmations as granted. Safe mode blocks raw `git push`; full mode intentionally permits it because it is real shell access. Separate structural interlocks remain for secret tools, force push, and hard reset.
 
-Command output is redacted for common secret patterns and command executions are audit-logged without raw secrets.
+Command, job, terminal, Git/GitHub, and exhaustive-search output is redacted before persistence or bounded in-memory retention. Direct command, Git, and GitHub responses use a configurable 64 KiB head/tail preview by default, independently of their hard capture ceilings. Full redacted output is stored as a quota-managed artifact; bounded inline receipts state whether the inline view is complete and provide an opaque `read_artifact` continuation when it is not. Heavy operations write start/finish audit records without raw arguments or secrets.
 
 ### 5) Text/code search through ripgrep
 
-Search-heavy tools rely on `rg`, because it is fast and scales well for large trees.
+Search-heavy tools rely on `rg`, because it is fast and scales well for large trees. Quick search streams matches and terminates at its global result cap. Exhaustive search reuses the durable background-job lifecycle instead of buffering the repository-wide result in the server process. `recent_changes` walks file metadata and retains only a bounded top-N heap.
 
 ### 6) Secret-aware file access
 
@@ -157,9 +159,10 @@ generated copy of the shared contract so release binaries need no runtime schema
 Tool outputs are structured and concise enough for the model to reason over them:
 
 - metadata as JSON-style dictionaries
-- textual content capped by bytes/characters
+- textual content capped by bytes/characters, with truthful completeness receipts
 - search results as lists of `{path, line, text}`
 - diffs capped to prevent context overload
+- durable redacted artifacts paged through the single `read_artifact` tool
 
 ## Future ideas
 

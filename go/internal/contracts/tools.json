@@ -1,10 +1,268 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "contractVersion": 1,
+  "contractVersion": 2,
   "server": {
     "name": "chatrepo-mcp",
     "version": "0.3.0",
-    "toolCount": 95
+    "toolCount": 96
+  },
+  "resultSchemas": {
+    "boundedOutputReceiptV1": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "partial",
+            "failed"
+          ]
+        },
+        "completeness": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial",
+            "unknown"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "none",
+            "inline_limit",
+            "source_active",
+            "result_limit",
+            "scan_timeout",
+            "policy_filtered",
+            "source_changed",
+            "artifact_quota",
+            "unknown"
+          ]
+        },
+        "requested": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "applied": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "returned": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "total": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "status",
+        "completeness",
+        "reason",
+        "returned"
+      ]
+    },
+    "artifactContinuationV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tool": {
+          "type": "string",
+          "const": "read_artifact"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "artifact_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cursor": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "artifact_id"
+          ]
+        }
+      },
+      "required": [
+        "tool",
+        "arguments"
+      ]
+    },
+    "readArtifactResultV1": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "text",
+                "records",
+                "base64"
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "records": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "stream": {
+                    "type": "string",
+                    "enum": [
+                      "stdout",
+                      "stderr",
+                      "combined",
+                      "data"
+                    ]
+                  },
+                  "data": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "stream",
+                  "data"
+                ]
+              }
+            },
+            "base64": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "byte_range": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "start": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "end": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "start",
+            "end"
+          ]
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "eof": {
+          "type": "boolean"
+        },
+        "next_cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "mime_type": {
+              "type": "string"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "expires_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ordering": {
+              "type": "string",
+              "enum": [
+                "stdout_then_stderr",
+                "capture_order",
+                "source_order"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "mime_type",
+            "size_bytes",
+            "sha256",
+            "created_at",
+            "expires_at",
+            "ordering"
+          ]
+        },
+        "receipt": {
+          "$ref": "#/resultSchemas/boundedOutputReceiptV1"
+        }
+      },
+      "required": [
+        "ok",
+        "artifact_id",
+        "payload",
+        "byte_range",
+        "has_more",
+        "eof",
+        "next_cursor",
+        "metadata",
+        "receipt"
+      ]
+    }
   },
   "tools": [
     {
@@ -3474,6 +3732,52 @@
       }
     },
     {
+      "name": "read_artifact",
+      "description": "Read a bounded page from a durable tool-output artifact.",
+      "inputSchema": {
+        "properties": {
+          "artifact_id": {
+            "description": "Opaque artifact id returned by another tool receipt.",
+            "minLength": 1,
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Opaque continuation cursor from the previous page.",
+            "title": "Cursor"
+          },
+          "max_bytes": {
+            "default": 65536,
+            "description": "Maximum artifact bytes to return in this page.",
+            "maximum": 262144,
+            "minimum": 1,
+            "title": "Max Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifact_id"
+        ],
+        "title": "read_artifact_toolArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Read Artifact",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "read_multiple_files",
       "description": "Read several repo files at once. Useful when comparing modules or gathering context.",
       "inputSchema": {
@@ -3885,6 +4189,7 @@
           "max_output_chars": {
             "anyOf": [
               {
+                "minimum": 1,
                 "type": "integer"
               },
               {
@@ -4234,7 +4539,7 @@
     },
     {
       "name": "search_text",
-      "description": "Search text across the repository or within a specific file/directory.",
+      "description": "Search text with a bounded quick path or a durable exhaustive background job.",
       "inputSchema": {
         "properties": {
           "query": {
@@ -4275,6 +4580,16 @@
             "default": 100,
             "title": "Limit",
             "type": "integer"
+          },
+          "mode": {
+            "default": "quick",
+            "description": "quick returns a bounded inline result; exhaustive starts a durable background search job.",
+            "enum": [
+              "quick",
+              "exhaustive"
+            ],
+            "title": "Mode",
+            "type": "string"
           }
         },
         "required": [

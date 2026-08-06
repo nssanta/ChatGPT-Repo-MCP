@@ -2,8 +2,10 @@ SHELL := /usr/bin/env bash
 
 PYTHON ?= python3
 PYTHON_ENV ?= .venv/bin/python
+PYTHON_BIN_DIR := $(dir $(abspath $(PYTHON_ENV)))
 GO ?= go
 GO_DIR := go
+GO_MODULE_TOOLCHAIN := go$(shell awk '$$1 == "go" { print $$2; exit }' $(GO_DIR)/go.mod)
 PYTHON_DIR := python
 VERSION := $(shell tr -d '[:space:]' < VERSION)
 
@@ -24,23 +26,23 @@ contracts-check:
 	PROJECT_ROOT=$(CURDIR) ACCESS_MODE=full ENABLE_PTY=true PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) scripts/check_contracts.py
 
 acceptance: build
-	$(PYTHON_ENV) contracts/acceptance/run_dual_server.py
+	PATH=$(PYTHON_BIN_DIR):$$PATH $(PYTHON_ENV) contracts/acceptance/run_dual_server.py
 
 ## Install the Python implementation with all development dependencies.
 python-install:
 	$(PYTHON_ENV) -m pip install -e './$(PYTHON_DIR)[dev]'
 
 python-test:
-	PROJECT_ROOT=$(CURDIR) PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) -m pytest -q $(PYTHON_DIR)/tests
+	PATH=$(PYTHON_BIN_DIR):$$PATH PROJECT_ROOT=$(CURDIR) PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) -m pytest -q $(PYTHON_DIR)/tests
 
 python-lint:
-	ruff check $(PYTHON_DIR) contracts/acceptance scripts
+	$(PYTHON_ENV) -m ruff check $(PYTHON_DIR) contracts/acceptance scripts
 
 python-typecheck:
-	MYPYPATH=$(PYTHON_DIR)/src mypy --config-file $(PYTHON_DIR)/pyproject.toml $(PYTHON_DIR)/src
+	MYPYPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) -m mypy --config-file $(PYTHON_DIR)/pyproject.toml $(PYTHON_DIR)/src
 
 python-coverage:
-	PROJECT_ROOT=$(CURDIR) PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) -m coverage run --source=$(PYTHON_DIR)/src/chatrepo_mcp -m pytest -q $(PYTHON_DIR)/tests
+	PATH=$(PYTHON_BIN_DIR):$$PATH PROJECT_ROOT=$(CURDIR) PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) -m coverage run --source=$(PYTHON_DIR)/src/chatrepo_mcp -m pytest -q $(PYTHON_DIR)/tests
 	$(PYTHON_ENV) -m coverage report --fail-under=80
 	$(PYTHON_ENV) -m coverage json -o python-coverage.json
 	$(PYTHON_ENV) scripts/check_python_coverage.py python-coverage.json --overall 80
@@ -60,10 +62,10 @@ go-race:
 	$(GO) -C $(GO_DIR) test -race ./...
 
 go-coverage:
-	$(GO) -C $(GO_DIR) test -coverprofile=coverage.out ./...
-	$(GO) -C $(GO_DIR) tool cover -func=coverage.out | $(PYTHON) scripts/check_go_coverage.py --minimum 80
-	$(GO) -C $(GO_DIR) test -coverprofile=coverage-security.out ./internal/security
-	$(GO) -C $(GO_DIR) tool cover -func=coverage-security.out | $(PYTHON) scripts/check_go_coverage.py --minimum 90
+	GOTOOLCHAIN=$(GO_MODULE_TOOLCHAIN) $(GO) -C $(GO_DIR) test -coverprofile=coverage.out ./...
+	GOTOOLCHAIN=$(GO_MODULE_TOOLCHAIN) $(GO) -C $(GO_DIR) tool cover -func=coverage.out | $(PYTHON) scripts/check_go_coverage.py --minimum 80
+	GOTOOLCHAIN=$(GO_MODULE_TOOLCHAIN) $(GO) -C $(GO_DIR) test -coverprofile=coverage-security.out ./internal/security
+	GOTOOLCHAIN=$(GO_MODULE_TOOLCHAIN) $(GO) -C $(GO_DIR) tool cover -func=coverage-security.out | $(PYTHON) scripts/check_go_coverage.py --minimum 90
 
 ## Build the Go binary into bin/chatrepo-mcp.
 build:

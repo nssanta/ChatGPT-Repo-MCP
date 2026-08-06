@@ -2,26 +2,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from chatrepo_mcp import lsp_tools
 from test_command_tools import make_settings
 
-
-class _Result:
-    def __init__(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
+from chatrepo_mcp import lsp_tools
+from chatrepo_mcp.bounded_subprocess import BoundedProcessResult
 
 
 def test_run_returns_none_on_subprocess_error(monkeypatch) -> None:
-    monkeypatch.setattr(lsp_tools.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("boom")))
+    monkeypatch.setattr(lsp_tools, "run_bounded", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("boom")))
 
     assert lsp_tools._run(["echo", "hi"], Path("/tmp")) is None
 
 
 def test_pyright_diagnostics_invalid_json(monkeypatch) -> None:
     monkeypatch.setattr(lsp_tools.shutil, "which", lambda name: "/usr/bin/pyright")
-    monkeypatch.setattr(lsp_tools.subprocess, "run", lambda *args, **kwargs: _Result(0, "{not json"))
+    monkeypatch.setattr(
+        lsp_tools,
+        "run_bounded",
+        lambda *args, **kwargs: BoundedProcessResult(
+            args=["pyright"], returncode=0, stdout="{not json", stderr="",
+            stdout_bytes=9, stderr_bytes=0,
+            stdout_truncated=False, stderr_truncated=False,
+        ),
+    )
 
     result = lsp_tools._pyright_diagnostics(Path("/tmp"), None, make_settings(Path("/tmp")))
 
