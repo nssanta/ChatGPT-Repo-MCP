@@ -4,7 +4,7 @@
   "server": {
     "name": "chatrepo-mcp",
     "version": "0.3.0",
-    "toolCount": 96
+    "toolCount": 98
   },
   "resultSchemas": {
     "boundedOutputReceiptV1": {
@@ -1354,6 +1354,146 @@
       },
       "annotations": {
         "title": "Cancel Command Job",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "cancel_heavy_operation",
+      "description": "Cancel one synchronous heavy operation by its observable operation id.",
+      "inputSchema": {
+        "properties": {
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "title": "cancel_heavy_operation_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "CancelHeavyOperationSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "operation_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Operation Id"
+              },
+              "cancel_requested": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Cancel Requested"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "operation_id",
+              "cancel_requested",
+              "ok"
+            ],
+            "title": "CancelHeavyOperationSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/CancelHeavyOperationSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "operation_id": {
+            "type": "string"
+          },
+          "cancel_requested": {
+            "type": "boolean"
+          }
+        },
+        "title": "CancelHeavyOperationResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Cancel Heavy Operation",
         "readOnlyHint": false,
         "destructiveHint": true,
         "openWorldHint": false
@@ -12292,6 +12432,155 @@
       },
       "annotations": {
         "title": "List Directory",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_heavy_operations",
+      "description": "List every operation currently occupying the shared heavy-operation pool.",
+      "inputSchema": {
+        "properties": {},
+        "title": "list_heavy_operations_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ListHeavyOperationsSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "capacity": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Capacity"
+              },
+              "used": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Used"
+              },
+              "operations": {
+                "anyOf": [
+                  {
+                    "items": {},
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Operations"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "capacity",
+              "used",
+              "operations",
+              "ok"
+            ],
+            "title": "ListHeavyOperationsSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ListHeavyOperationsSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "capacity": {
+            "type": "integer"
+          },
+          "used": {
+            "type": "integer"
+          },
+          "operations": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        "title": "ListHeavyOperationsResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "List Heavy Operations",
         "readOnlyHint": true,
         "destructiveHint": false,
         "openWorldHint": false

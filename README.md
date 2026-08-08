@@ -2,14 +2,14 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](python/)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go/)
-[![MCP](https://img.shields.io/badge/MCP-96%20tools-black)](contracts/tool-schemas/tools.json)
+[![MCP](https://img.shields.io/badge/MCP-98%20tools-black)](contracts/tool-schemas/tools.json)
 [![Platforms](https://img.shields.io/badge/Go-Linux%20%7C%20macOS%20%7C%20Windows-5c6ac4)](docs/INSTALL.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Run it from a private Linux PC through OpenAI Secure MCP Tunnel, including
 ChatGPT connection and reboot-safe systemd services: [full runbook](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT. Choose the Python package or the standalone Go binary; both share the same 96-tool capability catalog, configuration, and access semantics. Every tool publishes canonical input and additive output schemas, so MCP clients receive typed structured results without losing the existing JSON text representation. `ENABLE_PTY=true` is the default, so trusted POSIX deployments expose all 96 tools as soon as `ACCESS_MODE=full`; safe mode still exposes 90 tools without PTY.
+MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT. Choose the Python package or the standalone Go binary; both share the same 98-tool capability catalog, configuration, and access semantics. Every tool publishes canonical input and additive output schemas, so MCP clients receive typed structured results without losing the existing JSON text representation. `ENABLE_PTY=true` is the default, so trusted POSIX deployments expose all 98 tools as soon as `ACCESS_MODE=full`; safe mode still exposes 92 tools without PTY.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -185,7 +185,7 @@ Call `run_test_preset("test")` at the workspace root, or `run_test_preset("test"
 
 ## Tool Groups
 
-Both implementations share a 96-tool catalog. Safe mode registers 90 tools; full mode registers all 96 on Linux/macOS because PTY is enabled by default. Call `doctor` (or `smoke_all`) for the registered count, effective PATH, tool versions, and feature capabilities. Groups:
+Both implementations share a 98-tool catalog. Safe mode registers 92 tools; full mode registers all 98 on Linux/macOS because PTY is enabled by default. Call `doctor` (or `smoke_all`) for the registered count, effective PATH, tool versions, feature capabilities, and active heavy operations. Use `list_heavy_operations` to inspect shared-pool holders and `cancel_heavy_operation` for cancellable synchronous work; background jobs and terminal sessions advertise their specialized cancellation tool and id. Groups:
 
 - **Read / search** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`. `search_text` defaults to bounded `quick` mode; `mode=exhaustive` starts a durable background search that is polled and cancelled through the existing job tools.
 - **Git (read-only)** — `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_blame`, `git_grep` — all accept an optional `repo=` for polyrepo workspaces.

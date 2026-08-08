@@ -37,7 +37,7 @@ def _example_value(annotation: Any) -> Any:
 def test_every_full_tool_has_exact_additive_union_schema() -> None:
     tools = _tools_by_name()
 
-    assert len(TOOL_RESULT_MODELS) == 96
+    assert len(TOOL_RESULT_MODELS) == 98
     assert set(tools) <= set(TOOL_RESULT_MODELS)
     for name, tool in tools.items():
         schema = tool.outputSchema

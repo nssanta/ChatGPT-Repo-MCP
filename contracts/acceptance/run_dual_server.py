@@ -195,6 +195,11 @@ async def verify_saturated_mixed_batch(url: str, runtime: str, capacity: int) ->
             if started.get("ok") is not True:
                 raise AssertionError(f"{runtime} could not saturate heavy capacity: {started!r}")
             jobs.append(started["job_id"])
+        heavy = await call(url, "list_heavy_operations", {})
+        assert heavy["ok"] is True
+        assert heavy["used"] == capacity
+        assert {item["cancel_tool"] for item in heavy["operations"]} == {"cancel_command_job"}
+        assert {item["cancel_id"] for item in heavy["operations"]} == set(jobs)
         result = await call(url, "batch_call", {
             "calls": [
                 {"tool": "file_metadata", "args": {"path": "hello.txt"}},
@@ -211,6 +216,7 @@ async def verify_saturated_mixed_batch(url: str, runtime: str, capacity: int) ->
         assert busy["ok"] is False
         assert busy["error_kind"] == "resource_busy"
         assert busy["capacity"] == capacity
+        assert len(busy["operations"]) == capacity
         assert "applied_capacity" not in busy
     finally:
         await asyncio.gather(*(
@@ -300,7 +306,7 @@ async def verify(python_url: str, go_url: str, fixture: Path) -> None:
         go_schema = json.dumps(go_meta["tools"], indent=2, sort_keys=True).splitlines()
         difference = "\n".join(difflib.unified_diff(python_schema, go_schema, "python", "go", n=3))
         raise AssertionError(f"Python/Go live tool schemas differ:\n{difference}")
-    assert len(python_meta["tools"]) == 90
+    assert len(python_meta["tools"]) == 92
 
     for name, arguments in (
         ("list_dir", {"path": ".", "include_hidden": False}),
@@ -669,7 +675,7 @@ def main() -> None:
                 f"http://127.0.0.1:{poly_python_port}/mcp",
                 f"http://127.0.0.1:{poly_go_port}/mcp",
             ))
-    print("dual-server acceptance ok: 90 safe tools, full canonical tools, and core behavior")
+    print("dual-server acceptance ok: 92 safe tools, full canonical tools, and core behavior")
 
 
 if __name__ == "__main__":

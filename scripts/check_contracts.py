@@ -121,8 +121,8 @@ async def main() -> None:
     ]
     if contract.get("contractVersion") != 3:
         raise SystemExit("canonical contractVersion must be 3; run `make contracts`")
-    if len(live) != 96:
-        raise SystemExit(f"canonical public surface must contain exactly 96 tools, got {len(live)}")
+    if len(live) != 98:
+        raise SystemExit(f"canonical public surface must contain exactly 98 tools, got {len(live)}")
     for tool in live:
         schema = tool.get("outputSchema")
         if not isinstance(schema, dict) or schema.get("type") != "object":

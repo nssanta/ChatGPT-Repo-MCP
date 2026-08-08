@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/nssanta/ChatGPT-Repo-MCP/go/internal/config"
@@ -30,11 +31,25 @@ type Engine struct {
 	artifacts    *artifactStore
 	artifactErr  error
 	heavySlots   chan struct{}
+	heavyMu      sync.RWMutex
+	heavyOps     map[string]*heavyOperation
 }
 
 type heavyOperationLease struct {
-	slots chan struct{}
-	once  sync.Once
+	engine *Engine
+	id     string
+	once   sync.Once
+}
+
+type heavyOperationSpec struct {
+	Tool, CWD, RequestID, CancelTool, CancelID string
+}
+
+type heavyOperation struct {
+	Spec            heavyOperationSpec
+	StartedAt       time.Time
+	Cancel          context.CancelFunc
+	CancelRequested bool
 }
 
 type heavyOperationBusyError struct{ capacity int }
@@ -43,27 +58,124 @@ func (err heavyOperationBusyError) Error() string {
 	return fmt.Sprintf("resource_busy: maximum %d heavy operations are already running", err.capacity)
 }
 
-func (e *Engine) acquireHeavyOperation() (*heavyOperationLease, bool) {
+func (e *Engine) acquireHeavyOperation(specs ...heavyOperationSpec) (*heavyOperationLease, bool) {
 	if e.heavySlots == nil {
 		return &heavyOperationLease{}, true
 	}
 	select {
 	case e.heavySlots <- struct{}{}:
-		return &heavyOperationLease{slots: e.heavySlots}, true
+		spec := heavyOperationSpec{Tool: "unknown"}
+		if len(specs) > 0 {
+			spec = specs[0]
+		}
+		id := randomID()
+		if spec.RequestID == "" {
+			spec.RequestID = id
+		}
+		e.heavyMu.Lock()
+		e.heavyOps[id] = &heavyOperation{Spec: spec, StartedAt: time.Now().UTC()}
+		e.heavyMu.Unlock()
+		return &heavyOperationLease{engine: e, id: id}, true
 	default:
 		return nil, false
 	}
 }
 
 func (lease *heavyOperationLease) Release() {
-	if lease == nil || lease.slots == nil {
+	if lease == nil || lease.engine == nil {
 		return
 	}
-	lease.once.Do(func() { <-lease.slots })
+	lease.once.Do(func() {
+		lease.engine.heavyMu.Lock()
+		delete(lease.engine.heavyOps, lease.id)
+		lease.engine.heavyMu.Unlock()
+		<-lease.engine.heavySlots
+	})
+}
+
+func (lease *heavyOperationLease) ID() string {
+	if lease == nil {
+		return ""
+	}
+	return lease.id
+}
+
+func (lease *heavyOperationLease) SetCancel(cancel context.CancelFunc) {
+	if lease == nil || lease.engine == nil || cancel == nil {
+		return
+	}
+	invoke := false
+	lease.engine.heavyMu.Lock()
+	if operation := lease.engine.heavyOps[lease.id]; operation != nil {
+		operation.Cancel = cancel
+		invoke = operation.CancelRequested
+	}
+	lease.engine.heavyMu.Unlock()
+	if invoke {
+		cancel()
+	}
+}
+
+func (e *Engine) heavyCapacity() int {
+	if e.heavySlots == nil {
+		return 0
+	}
+	return cap(e.heavySlots)
+}
+
+func (e *Engine) heavyOperationSnapshots() []map[string]any {
+	now := time.Now().UTC()
+	e.heavyMu.RLock()
+	operations := make([]map[string]any, 0, len(e.heavyOps))
+	for id, operation := range e.heavyOps {
+		item := map[string]any{
+			"operation_id": id, "tool": operation.Spec.Tool,
+			"repo": e.settings.ProjectRoot, "cwd": e.perimeter.Display(operation.Spec.CWD),
+			"request_id":  operation.Spec.RequestID,
+			"started_at":  operation.StartedAt.Format(time.RFC3339Nano),
+			"age_ms":      max(now.Sub(operation.StartedAt).Milliseconds(), int64(0)),
+			"cancellable": operation.Cancel != nil,
+		}
+		if operation.Spec.CancelTool != "" {
+			item["cancel_tool"] = operation.Spec.CancelTool
+		}
+		if operation.Spec.CancelID != "" {
+			item["cancel_id"] = operation.Spec.CancelID
+		}
+		operations = append(operations, item)
+	}
+	e.heavyMu.RUnlock()
+	sort.Slice(operations, func(i, j int) bool {
+		return operations[i]["started_at"].(string) < operations[j]["started_at"].(string)
+	})
+	return operations
+}
+
+func (e *Engine) listHeavyOperations() map[string]any {
+	operations := e.heavyOperationSnapshots()
+	return map[string]any{"ok": true, "capacity": e.heavyCapacity(), "used": len(operations), "operations": operations}
+}
+
+func (e *Engine) cancelHeavyOperation(id string) map[string]any {
+	e.heavyMu.Lock()
+	operation := e.heavyOps[id]
+	if operation == nil {
+		e.heavyMu.Unlock()
+		return map[string]any{"ok": false, "error_kind": "heavy_operation_not_found", "error": "heavy operation was not found", "operation_id": id}
+	}
+	if operation.Cancel == nil {
+		e.heavyMu.Unlock()
+		return map[string]any{"ok": false, "error_kind": "specialized_cancel_required", "error": "use the operation's cancel_tool and cancel_id", "operation_id": id}
+	}
+	operation.CancelRequested = true
+	cancel := operation.Cancel
+	e.heavyMu.Unlock()
+	cancel()
+	return map[string]any{"ok": true, "operation_id": id, "cancel_requested": true}
 }
 
 func (e *Engine) heavyBusyResult() map[string]any {
-	return map[string]any{"ok": false, "error_kind": "resource_busy", "error": fmt.Sprintf("maximum %d heavy operations are already running", e.settings.MaxHeavyOperations), "capacity": e.settings.MaxHeavyOperations, "retry_hint": "wait for a running operation to finish"}
+	return map[string]any{"ok": false, "error_kind": "resource_busy", "error": fmt.Sprintf("maximum %d heavy operations are already running", e.heavyCapacity()), "capacity": e.heavyCapacity(), "operations": e.heavyOperationSnapshots(), "retry_hint": "inspect list_heavy_operations; cancel a safe operation or wait for one to finish"}
 }
 
 func (e *Engine) heavyBusyError() error {
@@ -92,6 +204,7 @@ func New(settings config.Settings, toolNames []string) *Engine {
 		toolNames: names,
 		jobs:      make(map[string]*job),
 		terminals: make(map[string]*terminalSession),
+		heavyOps:  make(map[string]*heavyOperation),
 	}
 	if settings.MaxHeavyOperations > 0 {
 		engine.heavySlots = make(chan struct{}, settings.MaxHeavyOperations)
@@ -141,7 +254,7 @@ func (e *Engine) Execute(ctx context.Context, name string, args map[string]any) 
 	switch name {
 	case "repo_info", "list_dir", "tree", "read_text_file", "read_multiple_files",
 		"file_metadata", "find_files", "search_text", "symbol_search", "recent_changes",
-		"todo_scan", "dependency_map", "list_repos", "doctor", "smoke_all",
+		"todo_scan", "dependency_map", "list_repos", "list_heavy_operations", "doctor", "smoke_all",
 		"context_bootstrap", "batch_call", "symbol_definition", "document_symbols",
 		"workspace_symbols", "code_diagnostics":
 		result = e.executeReadTool(ctx, name, args)
@@ -156,7 +269,7 @@ func (e *Engine) Execute(ctx context.Context, name string, args map[string]any) 
 		"run_quality_gate", "quality_gate_and_commit", "scan_new_policy_violations",
 		"command_policy_check", "get_command_log", "summarize_command_log",
 		"git_worktree_guard", "start_command_job", "get_command_job", "get_job_status",
-		"list_command_jobs", "cancel_command_job", "git_commit":
+		"list_command_jobs", "cancel_command_job", "cancel_heavy_operation", "git_commit":
 		result = e.executeCommandTool(ctx, name, args)
 	case "git_status", "git_diff", "git_log", "git_show", "git_branches", "git_blame",
 		"git_grep", "git_switch_branch", "git_create_branch", "git_add", "git_restore",

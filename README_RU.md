@@ -2,7 +2,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](python/)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go/)
-[![MCP](https://img.shields.io/badge/MCP-96%20tools-black)](contracts/tool-schemas/tools.json)
+[![MCP](https://img.shields.io/badge/MCP-98%20tools-black)](contracts/tool-schemas/tools.json)
 [![Platforms](https://img.shields.io/badge/Go-Linux%20%7C%20macOS%20%7C%20Windows-5c6ac4)](docs/INSTALL.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -10,7 +10,7 @@
 подключения к ChatGPT и автозапуска после reboot есть
 [полный runbook на английском](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP-сервер, который превращает **любую папку или репозиторий** в рабочую среду для автономного кодинг-агента внутри ChatGPT. Пользователь выбирает Python-пакет или самостоятельный Go-бинарник; обе версии используют единый каталог из 96 инструментов. Каждый тул публикует канонические входную и additive-выходную схемы, поэтому MCP-клиенты получают типизированный structured result без потери прежнего JSON-текста. `ENABLE_PTY=true` теперь является дефолтом: на POSIX достаточно включить `ACCESS_MODE=full`, чтобы получить все 96 инструментов; safe-режим публикует 90 без PTY.
+MCP-сервер, который превращает **любую папку или репозиторий** в рабочую среду для автономного кодинг-агента внутри ChatGPT. Пользователь выбирает Python-пакет или самостоятельный Go-бинарник; обе версии используют единый каталог из 98 инструментов. Каждый тул публикует канонические входную и additive-выходную схемы, поэтому MCP-клиенты получают типизированный structured result без потери прежнего JSON-текста. `ENABLE_PTY=true` теперь является дефолтом: на POSIX достаточно включить `ACCESS_MODE=full`, чтобы получить все 98 инструментов; safe-режим публикует 92 без PTY.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -186,7 +186,7 @@ WORKSPACE_ROOTS=/home/you/code/shared-protos
 
 ## Группы тулов
 
-Обе реализации используют каталог из 96 тулов. Safe-режим регистрирует 90, а full-режим на Linux/macOS — все 96, поскольку PTY включён по умолчанию. `doctor` показывает реальное число, effective PATH, версии toolchain и feature capabilities.
+Обе реализации используют каталог из 98 тулов. Safe-режим регистрирует 92, а full-режим на Linux/macOS — все 98, поскольку PTY включён по умолчанию. `doctor` показывает реальное число, effective PATH, версии toolchain, feature capabilities и активные heavy operations. `list_heavy_operations` показывает владельцев общего пула, а `cancel_heavy_operation` отменяет поддерживаемые синхронные операции; для jobs и terminal sessions список указывает штатный cancel tool и id.
 
 - **Чтение / поиск** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`. `search_text` по умолчанию работает в ограниченном режиме `quick`; `mode=exhaustive` запускает долговечный фоновый поиск, который опрашивается и отменяется через существующие job-инструменты.
 - **Git (только чтение)** — `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_blame`, `git_grep` — все принимают опциональный `repo=` для polyrepo-workspace.

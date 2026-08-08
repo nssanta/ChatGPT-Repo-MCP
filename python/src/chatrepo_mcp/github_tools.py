@@ -187,7 +187,7 @@ def _run_gh(
     inline_limit = min(getattr(settings, "default_inline_output_bytes", 65_536), settings.max_diff_bytes)
     cmd = [binary, *args]
     try:
-        lease = acquire_heavy_operation(settings)
+        lease = acquire_heavy_operation(settings, tool="gh", cwd=str(toplevel))
         try:
             proc = run_bounded(
                 cmd,

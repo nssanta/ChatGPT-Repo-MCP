@@ -516,7 +516,9 @@ def run_command(
         ).hexdigest(),
     })
     try:
-        heavy_lease = acquire_heavy_operation(settings)
+        heavy_lease = acquire_heavy_operation(
+            settings, tool="run_command", cwd=str(run_cwd), request_id=log_id,
+        )
     except ResourceBusyError:
         _audit(settings, {
             "timestamp": int(time.time()), "event": "command_finished", "request_id": log_id,
@@ -538,6 +540,10 @@ def run_command(
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
+        def cancel_process() -> None:
+            _terminate_process_group(proc.pid, grace_seconds=settings.kill_grace_ms / 1000)
+
+        heavy_lease.set_cancel(cancel_process)
         drain_errors: list[BaseException] = []
 
         def drain(pipe: Any, artifact: OutputArtifact) -> None:
@@ -890,7 +896,14 @@ def start_command_job(
         "tool": audit_tool, "args_fingerprint": fingerprint,
     })
     try:
-        heavy_lease = acquire_heavy_operation(settings)
+        heavy_lease = acquire_heavy_operation(
+            settings,
+            tool=audit_tool,
+            cwd=str(run_cwd),
+            request_id=job_id,
+            cancel_tool="cancel_command_job",
+            cancel_id=job_id,
+        )
     except ResourceBusyError:
         _audit(settings, {
             "timestamp": int(time.time()), "event": "heavy_finished", "request_id": job_id,

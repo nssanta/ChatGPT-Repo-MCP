@@ -190,7 +190,14 @@ def start_terminal_session(
         "tool": "start_terminal_session", "args_fingerprint": fingerprint,
     })
     try:
-        heavy_lease = acquire_heavy_operation(settings)
+        heavy_lease = acquire_heavy_operation(
+            settings,
+            tool="start_terminal_session",
+            cwd=str(run_cwd),
+            request_id=session_id,
+            cancel_tool="close_terminal_session",
+            cancel_id=session_id,
+        )
     except ResourceBusyError:
         _audit(settings, {
             "timestamp": int(time.time()), "event": "terminal_finished", "request_id": session_id,

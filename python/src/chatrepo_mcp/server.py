@@ -113,7 +113,11 @@ from .index_tools import document_symbols, symbol_definition, workspace_symbols
 from .lsp_tools import code_diagnostics
 from .output_store import read_artifact
 from .profile import list_test_presets, load_repo_profile
-from .resource_profile import ResourceBusyError
+from .resource_profile import (
+    ResourceBusyError,
+    cancel_heavy_operation,
+    list_heavy_operations,
+)
 from .result_models import result_model_for_tool
 from .runtime_env import effective_path, tool_status
 from .terminal_tools import (
@@ -675,7 +679,8 @@ def _resource_busy_result(exc: ResourceBusyError) -> dict[str, Any]:
         "error_kind": "resource_busy",
         "error": str(exc),
         "capacity": exc.capacity,
-        "retry_hint": "Retry after another heavy operation finishes.",
+        "operations": exc.operations,
+        "retry_hint": "Inspect list_heavy_operations, cancel a safe operation, or Retry after one finishes.",
     }
 
 
@@ -798,6 +803,24 @@ def _capability_matrix() -> dict[str, dict[str, Any]]:
 
 
 @_tool(
+    name="list_heavy_operations",
+    annotations={**READ_ONLY, "title": "List Heavy Operations"},
+)
+def list_heavy_operations_tool() -> dict:
+    """List every operation currently occupying the shared heavy-operation pool."""
+    return list_heavy_operations(settings)
+
+
+@_tool(
+    name="cancel_heavy_operation",
+    annotations={**WRITE_ACTION, "title": "Cancel Heavy Operation"},
+)
+def cancel_heavy_operation_tool(operation_id: str) -> dict:
+    """Cancel one synchronous heavy operation by its observable operation id."""
+    return cancel_heavy_operation(settings, operation_id)
+
+
+@_tool(
     name="doctor",
     annotations={**READ_ONLY, "title": "Doctor"},
 )
@@ -862,6 +885,7 @@ def doctor_tool() -> dict:
         **_write_config_info(),
         "tools": tools,
         "tool_count": len(tools),
+        "heavy_operations": list_heavy_operations(settings),
         "effective_path": path_entries,
         "path_warnings": path_warnings,
         "toolchains": [matrix.get(name, {"name": name, "available": False, "source": "not_found"}) for name in ("go", "python3", "node")],

@@ -128,6 +128,8 @@ func (e *Engine) executeCommandTool(ctx context.Context, name string, args map[s
 		return e.getJob(stringArg(args, "job_id", ""), 0, true)
 	case "list_command_jobs":
 		return e.listJobs(args)
+	case "cancel_heavy_operation":
+		return e.cancelHeavyOperation(stringArg(args, "operation_id", ""))
 	case "cancel_command_job":
 		return e.cancelJob(stringArg(args, "job_id", ""))
 	case "get_command_log":
@@ -197,12 +199,15 @@ func (e *Engine) runCommand(ctx context.Context, request commandRequest) map[str
 	if err != nil {
 		return withError("invalid_cwd", err)
 	}
-	heavyLease, acquired := e.acquireHeavyOperation()
+	logID := randomID()
+	heavyLease, acquired := e.acquireHeavyOperation(heavyOperationSpec{Tool: "run_command", CWD: directory, RequestID: logID})
 	if !acquired {
 		return e.heavyBusyResult()
 	}
 	defer heavyLease.Release()
-	logID := randomID()
+	runContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	heavyLease.SetCancel(cancel)
 	store, err := e.artifactStore()
 	if err != nil {
 		return outputPersistenceError(err)
@@ -212,7 +217,7 @@ func (e *Engine) runCommand(ctx context.Context, request commandRequest) map[str
 		return outputPersistenceError(err)
 	}
 	e.writeCommandAudit("start", logID, "run_command", normalized, directory, 0, 0, 0, "running")
-	result := e.runShell(ctx, normalized, directory, request.Timeout, request.Env, capture)
+	result := e.runShell(runContext, normalized, directory, request.Timeout, request.Env, capture)
 	if err := capture.Close(); err != nil {
 		return outputPersistenceError(err)
 	}
@@ -530,11 +535,11 @@ func (e *Engine) startJobRequest(parent context.Context, args map[string]any, po
 			}
 		}
 	}
-	heavyLease, acquired := e.acquireHeavyOperation()
+	id := randomID()
+	heavyLease, acquired := e.acquireHeavyOperation(heavyOperationSpec{Tool: "start_command_job", CWD: directory, RequestID: id, CancelTool: "cancel_command_job", CancelID: id})
 	if !acquired {
 		return e.heavyBusyResult()
 	}
-	id := randomID()
 	jobContext, cancel := context.WithTimeout(context.Background(), request.Timeout)
 	entry := &job{ID: id, LogID: randomID(), Command: normalized, CWD: directory, Status: "running", StartedAt: time.Now().UTC(), ExitCode: -1, ConcurrencyKey: request.ConcurrencyKey, cancel: cancel, heavyLease: heavyLease, done: make(chan struct{})}
 	e.jobsMu.Lock()

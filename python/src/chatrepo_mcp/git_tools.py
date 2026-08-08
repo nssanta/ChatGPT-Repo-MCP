@@ -83,7 +83,9 @@ def _run_git_capture(
     hard_limit = max_bytes if max_bytes is not None else settings.max_response_chars
     limit = min(hard_limit, settings.default_inline_output_bytes) if persist_artifact else hard_limit
     stderr_limit = limit if persist_artifact else settings.max_response_chars
-    lease = acquire_heavy_operation(settings) if persist_artifact else None
+    lease = acquire_heavy_operation(
+        settings, tool="git", cwd=str(resolved_cwd),
+    ) if persist_artifact else None
     try:
         proc = run_bounded(
             cmd,

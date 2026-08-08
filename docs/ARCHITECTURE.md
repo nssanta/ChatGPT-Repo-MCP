@@ -22,7 +22,7 @@ ChatGPT (Developer Mode)
 Reverse Proxy (Caddy or Nginx)
         │
         ▼
-Shared MCP catalog (96 tools; 90 default)
+Shared MCP catalog (98 tools; 92 default)
         │
         ├── Python FastMCP package
         └── Go MCP binary

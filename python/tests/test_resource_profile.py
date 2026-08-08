@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from chatrepo_mcp.config import Settings
@@ -7,6 +9,8 @@ from chatrepo_mcp.resource_profile import (
     ResourceBusyError,
     _effective_memory_bytes,
     acquire_heavy_operation,
+    cancel_heavy_operation,
+    list_heavy_operations,
     resolve_resource_limits,
 )
 
@@ -141,3 +145,41 @@ def test_heavy_operation_limiter_is_fail_fast_and_releases(tmp_path) -> None:
     replacement = acquire_heavy_operation(_Settings())
     replacement.release()
     second.release()
+
+
+def test_heavy_operations_are_listed_and_cancelled(tmp_path) -> None:
+    class _Settings:
+        project_root = tmp_path
+        max_heavy_operations = 1
+
+    cancelled = threading.Event()
+    lease = acquire_heavy_operation(
+        _Settings(), tool="run_command", cwd=str(tmp_path), request_id="request-1",
+    )
+    lease.set_cancel(cancelled.set)
+    status = list_heavy_operations(_Settings())
+    operation = status["operations"][0]
+    assert status["capacity"] == 1 and status["used"] == 1
+    assert operation["operation_id"] == lease.operation_id
+    assert operation["tool"] == "run_command"
+    assert operation["request_id"] == "request-1"
+    assert operation["cancellable"] is True
+    assert "age_ms" in operation
+
+    result = cancel_heavy_operation(_Settings(), lease.operation_id)
+    assert result == {"ok": True, "operation_id": lease.operation_id, "cancel_requested": True}
+    assert cancelled.wait(1)
+    lease.release()
+    assert list_heavy_operations(_Settings())["used"] == 0
+
+
+def test_resource_busy_error_includes_active_operations(tmp_path) -> None:
+    class _Settings:
+        project_root = tmp_path
+        max_heavy_operations = 1
+
+    lease = acquire_heavy_operation(_Settings(), tool="search_text", request_id="search-1")
+    with pytest.raises(ResourceBusyError) as caught:
+        acquire_heavy_operation(_Settings(), tool="run_command")
+    assert caught.value.operations[0]["tool"] == "search_text"
+    lease.release()

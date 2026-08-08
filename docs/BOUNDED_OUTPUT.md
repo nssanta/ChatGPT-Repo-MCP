@@ -69,7 +69,17 @@ process-wide buffer limit. Runtime DTOs report this explicitly with
 `resource_buffer_enforced=false` and
 `resource_buffer_semantics=diagnostic_estimate_only`. When the heavy limit is
 occupied, the public result reports `resource_busy`; that enforced limit is
-never silently bypassed.
+never silently bypassed. `resource_busy` includes the same safe holder summary
+as `list_heavy_operations`: operation id, tool, repository/cwd, request id,
+start time, age, and cancellation capability. Commands, environment values,
+and secrets are not included.
+
+`cancel_heavy_operation` cancels synchronous work that publishes a cancellation
+hook, including bounded commands and searches. Background jobs and persistent
+terminal sessions remain owned by their existing lifecycle tools; their heavy
+operation records provide `cancel_tool` and `cancel_id` for
+`cancel_command_job` or `close_terminal_session`. `doctor` embeds the current
+heavy-pool snapshot under its resource diagnostics.
 
 ## Audit and incident diagnosis
 

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .resource_profile import ResourceBusyError, acquire_heavy_operation
+from .resource_profile import HeavyOperationLease, ResourceBusyError, acquire_heavy_operation
 from .security import (
     display_path,
     is_allowed_relative,
@@ -334,6 +334,7 @@ def _search_text_impl(
     case_sensitive: bool = False,
     limit: int = 100,
     mode: str = "quick",
+    heavy_lease: HeavyOperationLease | None = None,
 ) -> dict[str, Any]:
     if mode not in {"quick", "exhaustive"}:
         raise ValueError("mode must be quick or exhaustive")
@@ -420,6 +421,8 @@ def _search_text_impl(
                 encoding="utf-8",
                 errors="replace",
             )
+            if heavy_lease is not None:
+                heavy_lease.set_cancel(proc.kill)
             assert proc.stdout is not None
             timed_out = threading.Event()
 
@@ -522,7 +525,9 @@ def search_text(
         "tool": "search_text", "args_fingerprint": fingerprint,
     })
     try:
-        lease = acquire_heavy_operation(settings)
+        lease = acquire_heavy_operation(
+            settings, tool="search_text", cwd=str(settings.project_root), request_id=request_id,
+        )
     except ResourceBusyError:
         _audit(settings, {
             "timestamp": int(time.time()), "event": "heavy_finished", "request_id": request_id,
@@ -534,7 +539,7 @@ def search_text(
     try:
         result = _search_text_impl(
             query, settings, path=path, paths=paths, regex=regex,
-            case_sensitive=case_sensitive, limit=limit, mode=mode,
+            case_sensitive=case_sensitive, limit=limit, mode=mode, heavy_lease=lease,
         )
     except (OSError, RuntimeError, TimeoutError, ValueError):
         _audit(settings, {

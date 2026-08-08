@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -19,37 +21,145 @@ class ResourceLimits:
 
 
 class HeavyOperationLease:
-    def __init__(self, semaphore: threading.BoundedSemaphore) -> None:
-        self._semaphore = semaphore
+    def __init__(
+        self,
+        limiter: _HeavyLimiter,
+        operation_id: str,
+    ) -> None:
+        self._limiter = limiter
+        self.operation_id = operation_id
         self._released = False
         self._lock = threading.Lock()
+
+    def set_cancel(self, callback: Callable[[], None]) -> None:
+        self._limiter.set_cancel(self.operation_id, callback)
 
     def release(self) -> None:
         with self._lock:
             if not self._released:
                 self._released = True
-                self._semaphore.release()
+                self._limiter.release(self.operation_id)
 
 
 class ResourceBusyError(RuntimeError):
-    def __init__(self, capacity: int) -> None:
+    def __init__(self, capacity: int, operations: list[dict[str, object]] | None = None) -> None:
         self.capacity = capacity
+        self.operations = operations or []
         super().__init__(f"heavy operation limit reached: {capacity}")
 
 
-_HEAVY_LIMITERS: dict[tuple[str, int], threading.BoundedSemaphore] = {}
+class _HeavyLimiter:
+    def __init__(self, capacity: int) -> None:
+        self.capacity = capacity
+        self.semaphore = threading.BoundedSemaphore(capacity)
+        self.lock = threading.RLock()
+        self.operations: dict[str, dict[str, object]] = {}
+
+    def snapshot(self) -> list[dict[str, object]]:
+        now = time.monotonic()
+        with self.lock:
+            return [
+                {
+                    "operation_id": operation_id,
+                    "tool": item["tool"],
+                    "repo": item["repo"],
+                    "cwd": item["cwd"],
+                    "request_id": item["request_id"],
+                    "started_at": item["started_at"],
+                    "age_ms": max(0, int((now - float(str(item["started_monotonic"]))) * 1000)),
+                    "cancellable": item["cancel"] is not None,
+                    **({"cancel_tool": item["cancel_tool"]} if item["cancel_tool"] else {}),
+                    **({"cancel_id": item["cancel_id"]} if item["cancel_id"] else {}),
+                }
+                for operation_id, item in self.operations.items()
+            ]
+
+    def set_cancel(self, operation_id: str, callback: Callable[[], None]) -> None:
+        invoke = False
+        with self.lock:
+            item = self.operations.get(operation_id)
+            if item is None:
+                return
+            item["cancel"] = callback
+            invoke = bool(item["cancel_requested"])
+        if invoke:
+            callback()
+
+    def cancel(self, operation_id: str) -> bool | None:
+        callback: Callable[[], None] | None
+        with self.lock:
+            item = self.operations.get(operation_id)
+            if item is None:
+                return None
+            callback = item["cancel"]  # type: ignore[assignment]
+            if callback is None:
+                return False
+            item["cancel_requested"] = True
+        callback()
+        return True
+
+    def release(self, operation_id: str) -> None:
+        with self.lock:
+            removed = self.operations.pop(operation_id, None)
+        if removed is not None:
+            self.semaphore.release()
+
+
+_HEAVY_LIMITERS: dict[tuple[str, int], _HeavyLimiter] = {}
 _HEAVY_LIMITERS_LOCK = threading.Lock()
 
 
-def acquire_heavy_operation(settings: object) -> HeavyOperationLease:
+def _heavy_limiter(settings: object) -> _HeavyLimiter:
     capacity = max(int(getattr(settings, "max_heavy_operations", 2)), 1)
     root = str(getattr(settings, "project_root", ""))
     key = (root, capacity)
     with _HEAVY_LIMITERS_LOCK:
-        semaphore = _HEAVY_LIMITERS.setdefault(key, threading.BoundedSemaphore(capacity))
-    if not semaphore.acquire(blocking=False):
-        raise ResourceBusyError(capacity)
-    return HeavyOperationLease(semaphore)
+        return _HEAVY_LIMITERS.setdefault(key, _HeavyLimiter(capacity))
+
+
+def acquire_heavy_operation(
+    settings: object,
+    *,
+    tool: str = "unknown",
+    cwd: str | None = None,
+    request_id: str | None = None,
+    cancel_tool: str | None = None,
+    cancel_id: str | None = None,
+) -> HeavyOperationLease:
+    limiter = _heavy_limiter(settings)
+    if not limiter.semaphore.acquire(blocking=False):
+        raise ResourceBusyError(limiter.capacity, limiter.snapshot())
+    operation_id = str(uuid.uuid4())
+    root = str(getattr(settings, "project_root", ""))
+    with limiter.lock:
+        limiter.operations[operation_id] = {
+            "tool": tool,
+            "repo": root,
+            "cwd": cwd or root,
+            "request_id": request_id or operation_id,
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "started_monotonic": time.monotonic(),
+            "cancel": None,
+            "cancel_requested": False,
+            "cancel_tool": cancel_tool,
+            "cancel_id": cancel_id,
+        }
+    return HeavyOperationLease(limiter, operation_id)
+
+
+def list_heavy_operations(settings: object) -> dict[str, object]:
+    limiter = _heavy_limiter(settings)
+    operations = limiter.snapshot()
+    return {"ok": True, "capacity": limiter.capacity, "used": len(operations), "operations": operations}
+
+
+def cancel_heavy_operation(settings: object, operation_id: str) -> dict[str, object]:
+    outcome = _heavy_limiter(settings).cancel(operation_id)
+    if outcome is None:
+        return {"ok": False, "error_kind": "heavy_operation_not_found", "error": "heavy operation was not found", "operation_id": operation_id}
+    if outcome is False:
+        return {"ok": False, "error_kind": "specialized_cancel_required", "error": "use the operation's cancel_tool and cancel_id", "operation_id": operation_id}
+    return {"ok": True, "operation_id": operation_id, "cancel_requested": True}
 
 
 def _safe_cgroup_dir(mount_root: str, mount_point: str, cgroup_path: str) -> str | None:

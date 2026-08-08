@@ -73,6 +73,8 @@ func (e *Engine) executeReadTool(ctx context.Context, name string, args map[stri
 	case "list_repos":
 		entries := e.workspaceEntries(ctx)
 		return map[string]any{"ok": true, "repos": entries, "count": len(entries)}
+	case "list_heavy_operations":
+		return e.listHeavyOperations()
 	case "doctor":
 		return e.doctor(ctx)
 	case "smoke_all":
@@ -447,13 +449,17 @@ func (e *Engine) searchText(ctx context.Context, query, path string, paths []str
 		}
 		resolvedTargets = append(resolvedTargets, resolved.Absolute)
 	}
-	heavyLease, acquired := e.acquireHeavyOperation()
+	requestID := randomID()
+	heavyLease, acquired := e.acquireHeavyOperation(heavyOperationSpec{Tool: "search_text", CWD: strings.Join(resolvedTargets, ","), RequestID: requestID})
 	if !acquired {
 		return e.heavyBusyResult()
 	}
 	defer heavyLease.Release()
+	searchContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	heavyLease.SetCancel(cancel)
 	if _, err := exec.LookPath("rg"); err == nil {
-		return e.searchWithRipgrep(ctx, query, resolvedTargets, regexMode, caseSensitive, limit)
+		return e.searchWithRipgrep(searchContext, query, resolvedTargets, regexMode, caseSensitive, limit)
 	}
 	return e.searchFallback(query, resolvedTargets, regexMode, caseSensitive, limit)
 }
@@ -731,7 +737,7 @@ func (e *Engine) doctor(ctx context.Context) map[string]any {
 		"ok": true, "implementation": "go", "tool_count": len(e.toolNames), "tools": e.toolNames,
 		"namespace": e.settings.CanonicalNamespace, "access_mode": e.settings.AccessMode,
 		"capabilities": capabilities, "effective_path": paths, "path_warnings": warnings,
-		"resource_limits": map[string]any{"profile": e.settings.ResourceProfile, "profile_applied": e.settings.ResourceProfileApplied, "buffer_bytes": e.settings.ResourceBufferBytes, "buffer_enforced": false, "buffer_semantics": "diagnostic_estimate_only", "heavy_operations": e.settings.MaxHeavyOperations, "detected_memory_bytes": e.settings.DetectedMemoryBytes, "persist_full_output": e.settings.PersistFullOutput},
+		"resource_limits": map[string]any{"profile": e.settings.ResourceProfile, "profile_applied": e.settings.ResourceProfileApplied, "buffer_bytes": e.settings.ResourceBufferBytes, "buffer_enforced": false, "buffer_semantics": "diagnostic_estimate_only", "heavy_operations": e.settings.MaxHeavyOperations, "active_heavy_operations": e.listHeavyOperations(), "detected_memory_bytes": e.settings.DetectedMemoryBytes, "persist_full_output": e.settings.PersistFullOutput},
 		"toolchains":      []any{capabilities["go"], capabilities["python3"], capabilities["node"]},
 		"repos":           e.workspaceEntries(ctx),
 	}
@@ -954,16 +960,19 @@ func runProcessInput(parent context.Context, directory string, timeout time.Dura
 }
 
 func (e *Engine) runArtifactProcess(parent context.Context, tool, directory string, timeout time.Duration, env []string, limit int, binary string, arguments ...string) (processResult, string, int64, int64, error) {
-	heavyLease, acquired := e.acquireHeavyOperation()
+	id := randomID()
+	heavyLease, acquired := e.acquireHeavyOperation(heavyOperationSpec{Tool: tool, CWD: directory, RequestID: id})
 	if !acquired {
 		return processResult{}, "", 0, 0, e.heavyBusyError()
 	}
 	defer heavyLease.Release()
+	operationContext, operationCancel := context.WithCancel(parent)
+	defer operationCancel()
+	heavyLease.SetCancel(operationCancel)
 	store, err := e.artifactStore()
 	if err != nil {
 		return processResult{}, "", 0, 0, err
 	}
-	id := randomID()
 	capture, err := newCommandCapture(e.settings.CommandJobsDir, id, limit, store)
 	if err != nil {
 		return processResult{}, "", 0, 0, err
@@ -971,7 +980,7 @@ func (e *Engine) runArtifactProcess(parent context.Context, tool, directory stri
 	started := time.Now()
 	safeCommand := binary + " " + strings.Join(arguments, " ")
 	e.writeCommandAudit("start", id, tool, safeCommand, directory, 0, 0, 0, "running")
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	ctx, cancel := context.WithTimeout(operationContext, timeout)
 	defer cancel()
 	command := exec.Command(binary, arguments...)
 	command.Dir = directory

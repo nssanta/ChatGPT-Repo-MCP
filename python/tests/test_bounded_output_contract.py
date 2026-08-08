@@ -73,6 +73,6 @@ def test_public_catalog_is_v3_with_structured_outputs_for_every_tool() -> None:
     contract = _contract()
 
     assert contract["contractVersion"] == 3
-    assert contract["server"]["toolCount"] == 96
-    assert len(contract["tools"]) == 96
+    assert contract["server"]["toolCount"] == 98
+    assert len(contract["tools"]) == 98
     assert all(tool.get("outputSchema", {}).get("type") == "object" for tool in contract["tools"])

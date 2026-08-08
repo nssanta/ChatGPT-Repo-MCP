@@ -3,7 +3,7 @@
 `tool-schemas/tools.json` is the canonical public tool surface shared by the
 Python and Go servers. It records tool names, descriptions, JSON input schemas,
 JSON output schemas, and MCP annotations. Contract v3 requires every one of the
-96 canonical tools to publish a concrete additive `outputSchema`; an untyped
+98 canonical tools to publish a concrete additive `outputSchema`; an untyped
 `{"type":"object"}` placeholder is rejected by the generation checks.
 
 Regenerate it through the Python contract exporter with:

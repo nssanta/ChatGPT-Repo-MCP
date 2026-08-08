@@ -76,7 +76,8 @@ func (e *Engine) startTerminal(args map[string]any) map[string]any {
 	if active >= e.settings.MaxTerminalSessions {
 		return failure("terminal_limit", "maximum terminal sessions reached")
 	}
-	heavyLease, acquired := e.acquireHeavyOperation()
+	sessionID := randomID()
+	heavyLease, acquired := e.acquireHeavyOperation(heavyOperationSpec{Tool: "start_terminal_session", RequestID: sessionID, CancelTool: "close_terminal_session", CancelID: sessionID})
 	if !acquired {
 		return e.heavyBusyResult()
 	}
@@ -107,7 +108,7 @@ func (e *Engine) startTerminal(args map[string]any) map[string]any {
 		return withError("terminal_spawn_error", err)
 	}
 	now := time.Now().UTC()
-	session := &terminalSession{ID: randomID(), LogID: randomID(), CWD: directory, Shell: shell, Status: "running", PID: command.Process.Pid, PGID: command.Process.Pid, Cols: cols, Rows: rows, CreatedAt: now, LastActivity: now, IdleTimeout: time.Duration(intArg(args, "idle_timeout_ms", 1800000)) * time.Millisecond, heavyLease: heavyLease, process: command, pty: ptmx, done: make(chan struct{})}
+	session := &terminalSession{ID: sessionID, LogID: randomID(), CWD: directory, Shell: shell, Status: "running", PID: command.Process.Pid, PGID: command.Process.Pid, Cols: cols, Rows: rows, CreatedAt: now, LastActivity: now, IdleTimeout: time.Duration(intArg(args, "idle_timeout_ms", 1800000)) * time.Millisecond, heavyLease: heavyLease, process: command, pty: ptmx, done: make(chan struct{})}
 	store, storeErr := e.artifactStore()
 	if storeErr != nil {
 		heavyLease.Release()
