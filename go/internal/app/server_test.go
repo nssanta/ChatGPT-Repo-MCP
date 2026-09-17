@@ -20,7 +20,7 @@ func appSettings(root string) config.Settings {
 		MaxReadFiles: 25, MaxSearchResults: 100, MaxTreeEntries: 1000, MaxDiffBytes: 100_000,
 		MaxLogCommits: 100, MaxWriteFileBytes: 1_000_000, MaxBatchOperations: 50,
 		MaxCombinedDiffChars: 100_000, MaxPatchBytes: 100_000, MaxCommandOutputChars: 100_000,
-		CommandTimeout: time.Second, SubprocessTimeout: time.Second, GitNetworkTimeout: time.Second,
+		CommandTimeout: time.Second, CommandJobTimeout: time.Hour, SubprocessTimeout: time.Second, GitNetworkTimeout: time.Second,
 		GHTimeout: time.Second, CommandJobsDir: tTemp(root, "jobs"), CommandAuditLogPath: tTemp(root, "audit.log"),
 		CommandPolicyMode: "allowlist", AllowedHosts: []string{"localhost", "127.0.0.1"},
 	}

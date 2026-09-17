@@ -59,6 +59,8 @@ def test_from_env_full_access_enables_full_mode_defaults(tmp_path: Path, monkeyp
     assert settings.filesystem_unrestricted is True
     assert settings.confirmation_granted(None) is True
     assert settings.enable_pty is True
+    assert settings.command_timeout_ms == 300_000
+    assert settings.command_job_timeout_ms == 14_400_000
 
 
 def test_from_env_rejects_empty_secret_globs_in_safe_mode(tmp_path: Path, monkeypatch) -> None:
@@ -102,6 +104,28 @@ def test_from_env_rejects_unsafe_inline_output_limit(
     monkeypatch.setenv("DEFAULT_INLINE_OUTPUT_BYTES", value)
 
     with pytest.raises(RuntimeError, match="DEFAULT_INLINE_OUTPUT_BYTES must be positive"):
+        config.Settings.from_env()
+
+
+def test_from_env_parses_independent_command_timeouts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("COMMAND_TIMEOUT_MS", "600000")
+    monkeypatch.setenv("COMMAND_JOB_TIMEOUT_MS", "43200000")
+
+    settings = config.Settings.from_env()
+
+    assert settings.command_timeout_ms == 600_000
+    assert settings.command_job_timeout_ms == 43_200_000
+
+
+@pytest.mark.parametrize("name", ["COMMAND_TIMEOUT_MS", "COMMAND_JOB_TIMEOUT_MS"])
+def test_from_env_rejects_non_positive_command_timeouts(
+    tmp_path: Path, monkeypatch, name: str,
+) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv(name, "0")
+
+    with pytest.raises(RuntimeError, match=name):
         config.Settings.from_env()
 
 

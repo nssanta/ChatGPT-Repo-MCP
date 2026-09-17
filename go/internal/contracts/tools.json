@@ -15380,7 +15380,7 @@
               }
             ],
             "default": null,
-            "description": "Optional timeout in milliseconds, capped by server configuration.",
+            "description": "Optional foreground timeout in milliseconds, capped by COMMAND_TIMEOUT_MS.",
             "title": "Timeout Ms"
           },
           "cwd": {
@@ -15687,7 +15687,7 @@
               }
             ],
             "default": null,
-            "description": "Optional timeout in milliseconds, capped by server configuration.",
+            "description": "Optional foreground timeout in milliseconds, capped by COMMAND_TIMEOUT_MS.",
             "title": "Timeout Ms"
           },
           "tail_lines": {
@@ -16074,7 +16074,7 @@
               }
             ],
             "default": null,
-            "description": "Optional timeout in milliseconds, capped by server configuration.",
+            "description": "Optional foreground timeout in milliseconds, capped by COMMAND_TIMEOUT_MS.",
             "title": "Timeout Ms"
           },
           "tail_lines": {
@@ -17025,7 +17025,7 @@
       "inputSchema": {
         "properties": {
           "command": {
-            "description": "Long-running repo-local command to start in the background. Poll with get_command_job.",
+            "description": "Long-running repo-local command to start in the background. Poll with get_command_job. timeout_ms is capped by COMMAND_JOB_TIMEOUT_MS.",
             "title": "Command",
             "type": "string"
           },
@@ -17039,7 +17039,7 @@
               }
             ],
             "default": null,
-            "description": "Optional timeout in milliseconds, capped by server configuration.",
+            "description": "Optional background-job timeout in milliseconds, capped by COMMAND_JOB_TIMEOUT_MS.",
             "title": "Timeout Ms"
           },
           "cwd": {

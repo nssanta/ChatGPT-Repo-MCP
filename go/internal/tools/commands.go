@@ -23,6 +23,7 @@ type job struct {
 	Command             string
 	CWD                 string
 	Status              string
+	Timeout             time.Duration
 	StartedAt           time.Time
 	FinishedAt          time.Time
 	ExitCode            int
@@ -152,9 +153,17 @@ func (e *Engine) executeCommandTool(ctx context.Context, name string, args map[s
 }
 
 func (e *Engine) commandRequestFromArgs(args map[string]any, exempt bool) commandRequest {
-	timeout := time.Duration(intArg(args, "timeout_ms", int(e.settings.CommandTimeout/time.Millisecond))) * time.Millisecond
-	if timeout <= 0 || timeout > e.settings.CommandTimeout {
-		timeout = e.settings.CommandTimeout
+	return e.commandRequestFromArgsWithLimit(args, exempt, e.settings.CommandTimeout)
+}
+
+func (e *Engine) commandJobRequestFromArgs(args map[string]any, exempt bool) commandRequest {
+	return e.commandRequestFromArgsWithLimit(args, exempt, e.settings.CommandJobTimeout)
+}
+
+func (e *Engine) commandRequestFromArgsWithLimit(args map[string]any, exempt bool, limit time.Duration) commandRequest {
+	timeout := time.Duration(intArg(args, "timeout_ms", int(limit/time.Millisecond))) * time.Millisecond
+	if timeout <= 0 || timeout > limit {
+		timeout = limit
 	}
 	environment := make(map[string]string)
 	if raw, ok := args["env"].(map[string]any); ok {
@@ -263,7 +272,8 @@ func (e *Engine) runCommand(ctx context.Context, request commandRequest) map[str
 	response := map[string]any{
 		"ok": result.ExitCode == 0 && !result.TimedOut, "command": normalized,
 		"cwd": e.perimeter.Display(directory), "exit_code": result.ExitCode,
-		"stdout": result.Stdout, "stderr": result.Stderr, "timed_out": result.TimedOut,
+		"timeout_ms": request.Timeout.Milliseconds(),
+		"stdout":     result.Stdout, "stderr": result.Stderr, "timed_out": result.TimedOut,
 		"duration_ms": time.Since(started).Milliseconds(), "log_id": logID,
 		"summary":      parseCommandSummary(normalized, capture.stdout.Head(), capture.stderr.Head(), request.ParseKind),
 		"stdout_bytes": capture.stdout.Total(), "stderr_bytes": capture.stderr.Total(),
@@ -474,6 +484,11 @@ func (e *Engine) runTestPreset(ctx context.Context, args map[string]any) map[str
 	requestArgs := cloneMap(args)
 	requestArgs["command"] = command
 	requestArgs["cwd"] = cwd
+	if _, requested := requestArgs["timeout_ms"]; !requested {
+		if configured, ok := configuration["timeout_ms"]; ok {
+			requestArgs["timeout_ms"] = configured
+		}
+	}
 	if boolArg(args, "background", false) {
 		directory, _ := e.resolveCommandCWD(cwd)
 		fingerprint := sha256.Sum256([]byte(directory + "\x00" + preset + "\x00" + strings.Join(strings.Fields(command), " ")))
@@ -505,7 +520,7 @@ func (e *Engine) startInternalJob(parent context.Context, args map[string]any) m
 }
 
 func (e *Engine) startJobRequest(parent context.Context, args map[string]any, policyExempt bool) map[string]any {
-	request := e.commandRequestFromArgs(args, policyExempt)
+	request := e.commandJobRequestFromArgs(args, policyExempt)
 	normalized, kind, err := e.checkCommandPolicy(request.Command, request.Confirmed, request.PolicyExempt)
 	if err != nil {
 		return map[string]any{"ok": false, "error_kind": kind, "error": err.Error()}
@@ -541,7 +556,7 @@ func (e *Engine) startJobRequest(parent context.Context, args map[string]any, po
 		return e.heavyBusyResult()
 	}
 	jobContext, cancel := context.WithTimeout(context.Background(), request.Timeout)
-	entry := &job{ID: id, LogID: randomID(), Command: normalized, CWD: directory, Status: "running", StartedAt: time.Now().UTC(), ExitCode: -1, ConcurrencyKey: request.ConcurrencyKey, cancel: cancel, heavyLease: heavyLease, done: make(chan struct{})}
+	entry := &job{ID: id, LogID: randomID(), Command: normalized, CWD: directory, Status: "running", Timeout: request.Timeout, StartedAt: time.Now().UTC(), ExitCode: -1, ConcurrencyKey: request.ConcurrencyKey, cancel: cancel, heavyLease: heavyLease, done: make(chan struct{})}
 	e.jobsMu.Lock()
 	e.jobs[id] = entry
 	e.jobsMu.Unlock()
@@ -715,6 +730,7 @@ func (e *Engine) jobResult(entry *job, tailLines int, concise bool) map[string]a
 		"log_id": entry.LogID, "status": entry.Status, "command": entry.Command,
 		"cwd": e.perimeter.Display(entry.CWD), "exit_code": entry.ExitCode,
 		"started_at": entry.StartedAt.Format(time.RFC3339Nano), "timed_out": entry.TimedOut,
+		"timeout_ms":      entry.Timeout.Milliseconds(),
 		"concurrency_key": entry.ConcurrencyKey,
 		"artifact":        map[string]any{"artifact_id": entry.LogID, "kind": "command_output", "ordering": "stdout_then_stderr", "continuation_tool": "read_artifact"},
 		"receipt":         receipt,

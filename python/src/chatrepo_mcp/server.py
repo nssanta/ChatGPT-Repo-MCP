@@ -290,7 +290,11 @@ TailLines = Annotated[
 ]
 TimeoutMs = Annotated[
     int | None,
-    Field(description="Optional timeout in milliseconds, capped by server configuration."),
+    Field(description="Optional foreground timeout in milliseconds, capped by COMMAND_TIMEOUT_MS."),
+]
+JobTimeoutMs = Annotated[
+    int | None,
+    Field(description="Optional background-job timeout in milliseconds, capped by COMMAND_JOB_TIMEOUT_MS."),
 ]
 ParseKind = Literal[
     "auto",
@@ -651,6 +655,7 @@ def _write_config_info() -> dict:
         "max_patch_bytes": settings.max_patch_bytes,
         "max_command_output_chars": settings.max_command_output_chars,
         "command_timeout_ms": settings.command_timeout_ms,
+        "command_job_timeout_ms": settings.command_job_timeout_ms,
         "command_audit_log_path": str(settings.command_audit_log_path),
         "mcp_auth_mode": settings.mcp_auth_mode,
         "resource_profile": settings.resource_profile,
@@ -1805,9 +1810,9 @@ def git_worktree_guard_tool(
 def start_command_job_tool(
     command: Annotated[
         str,
-        Field(description="Long-running repo-local command to start in the background. Poll with get_command_job."),
+        Field(description="Long-running repo-local command to start in the background. Poll with get_command_job. timeout_ms is capped by COMMAND_JOB_TIMEOUT_MS."),
     ],
-    timeout_ms: TimeoutMs = None,
+    timeout_ms: JobTimeoutMs = None,
     cwd: OptionalRepoPath = None,
     env: Annotated[
         dict[str, str] | None,

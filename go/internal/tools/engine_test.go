@@ -25,7 +25,7 @@ func testSettings(root string) config.Settings {
 		MaxTreeEntries: 1000, MaxDiffBytes: 100_000, MaxLogCommits: 100, MaxWriteFileBytes: 1_000_000,
 		MaxBatchOperations: 50, MaxCombinedDiffChars: 100_000, MaxPatchBytes: 100_000,
 		DefaultInlineOutputBytes: 64 * 1024,
-		MaxCommandOutputChars:    100_000, CommandTimeout: 5 * time.Second, SubprocessTimeout: 5 * time.Second,
+		MaxCommandOutputChars:    100_000, CommandTimeout: 5 * time.Second, CommandJobTimeout: 4 * time.Hour, SubprocessTimeout: 5 * time.Second,
 		GitNetworkTimeout: 5 * time.Second, GHTimeout: 5 * time.Second,
 		CommandAuditLogPath: filepath.Join(root, ".audit", "commands.log"), CommandJobsDir: filepath.Join(root, ".jobs"),
 		CommandPolicyMode: "allowlist", DeniedWords: []string{"sudo", "su"},

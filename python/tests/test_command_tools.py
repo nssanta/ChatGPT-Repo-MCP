@@ -94,6 +94,7 @@ def make_settings(tmp_path: Path) -> Settings:
             "**/*.tar",
             "**/*.gz",
         ),
+        command_job_timeout_ms=240000,
     )
 
 
@@ -364,6 +365,34 @@ def test_command_timeout_is_structured(tmp_path: Path) -> None:
     assert result["timed_out"] is True
     assert result["exit_code"] is None
     assert result["error_kind"] == "command_timeout"
+
+
+def test_command_and_job_timeouts_have_independent_caps(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    settings = settings.__class__(
+        **{
+            **settings.__dict__,
+            "command_policy_mode": "full_repo",
+            "command_timeout_ms": 50,
+            "command_job_timeout_ms": 500,
+        }
+    )
+
+    foreground = run_command("sleep 1", settings, timeout_ms=1000)
+    started = start_command_job("sleep 0.2", settings, timeout_ms=1000)
+    import time
+
+    deadline = time.time() + 2
+    background = get_job_status(started["job_id"], settings)
+    while background["status"] in {"running", "terminating"} and time.time() < deadline:
+        time.sleep(0.02)
+        background = get_job_status(started["job_id"], settings)
+
+    assert foreground["timeout_ms"] == 50
+    assert foreground["timed_out"] is True
+    assert started["timeout_ms"] == 500
+    assert background["timeout_ms"] == 500
+    assert background["status"] == "completed"
 
 
 def test_background_command_job_can_be_polled(tmp_path: Path) -> None:

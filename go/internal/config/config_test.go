@@ -16,6 +16,7 @@ func cleanEnvironment(t *testing.T, root string) {
 		"CANONICAL_NAMESPACE", "TRANSPORT", "WORKSPACE_ROOTS",
 		"ENABLE_PTY", "PERSIST_FULL_OUTPUT", "RESOURCE_PROFILE", "RESOURCE_BUFFER_BYTES", "MAX_HEAVY_OPERATIONS",
 		"DEFAULT_INLINE_OUTPUT_BYTES", "MAX_RESPONSE_CHARS", "MAX_DIFF_BYTES", "MAX_COMMAND_OUTPUT_CHARS",
+		"COMMAND_TIMEOUT_MS", "COMMAND_JOB_TIMEOUT_MS",
 	} {
 		t.Setenv(name, "")
 		_ = os.Unsetenv(name)
@@ -106,6 +107,12 @@ func TestLoadDefaultsAndNormalization(t *testing.T) {
 	if settings.DefaultInlineOutputBytes != 64*1024 {
 		t.Fatalf("unexpected default inline output bytes: %d", settings.DefaultInlineOutputBytes)
 	}
+	if settings.CommandTimeout != 5*time.Minute {
+		t.Fatalf("unexpected command timeout: %v", settings.CommandTimeout)
+	}
+	if settings.CommandJobTimeout != 4*time.Hour {
+		t.Fatalf("unexpected command job timeout: %v", settings.CommandJobTimeout)
+	}
 }
 
 func TestLoadParsesDotEnvFallbackAndOverrides(t *testing.T) {
@@ -114,7 +121,7 @@ func TestLoadParsesDotEnvFallbackAndOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	envPath := filepath.Join(root, ".env")
-	if err := os.WriteFile(envPath, []byte("MCP_AUTH_MODE=none\nCOMMAND_TIMEOUT_MS=123\n"), 0o644); err != nil {
+	if err := os.WriteFile(envPath, []byte("MCP_AUTH_MODE=none\nCOMMAND_TIMEOUT_MS=123\nCOMMAND_JOB_TIMEOUT_MS=456\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("MCP_AUTH_MODE", "bearer")
@@ -130,6 +137,9 @@ func TestLoadParsesDotEnvFallbackAndOverrides(t *testing.T) {
 	if settings.CommandTimeout != 123*time.Millisecond {
 		t.Fatalf("COMMAND_TIMEOUT_MS parse broken: %v", settings.CommandTimeout)
 	}
+	if settings.CommandJobTimeout != 456*time.Millisecond {
+		t.Fatalf("COMMAND_JOB_TIMEOUT_MS parse broken: %v", settings.CommandJobTimeout)
+	}
 }
 
 func TestLoadBoolAndIntParsingFallback(t *testing.T) {
@@ -139,6 +149,7 @@ func TestLoadBoolAndIntParsingFallback(t *testing.T) {
 	t.Setenv("ALLOW_FORCE_PUSH", "on")
 	t.Setenv("MAX_FILE_BYTES", "n/a")
 	t.Setenv("COMMAND_TIMEOUT_MS", "invalid")
+	t.Setenv("COMMAND_JOB_TIMEOUT_MS", "invalid")
 	t.Setenv("COMMAND_POLICY_MODE", "guarded")
 
 	settings, err := Load()
@@ -151,6 +162,21 @@ func TestLoadBoolAndIntParsingFallback(t *testing.T) {
 	// intEnv fallbacks should preserve safe defaults on invalid integer values.
 	if settings.MaxFileBytes != 5_000_000 {
 		t.Fatalf("invalid int env did not fall back: %d", settings.MaxFileBytes)
+	}
+	if settings.CommandTimeout != 5*time.Minute || settings.CommandJobTimeout != 4*time.Hour {
+		t.Fatalf("invalid timeout env did not fall back: command=%v job=%v", settings.CommandTimeout, settings.CommandJobTimeout)
+	}
+}
+
+func TestLoadRejectsNonPositiveCommandTimeouts(t *testing.T) {
+	for _, name := range []string{"COMMAND_TIMEOUT_MS", "COMMAND_JOB_TIMEOUT_MS"} {
+		t.Run(name, func(t *testing.T) {
+			makeRoot(t)
+			t.Setenv(name, "0")
+			if _, err := Load(); err == nil {
+				t.Fatalf("%s=0 was accepted", name)
+			}
+		})
 	}
 }
 

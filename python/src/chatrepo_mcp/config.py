@@ -80,6 +80,7 @@ class Settings:
     github_tools_enabled: bool
     secret_globs: tuple[str, ...]
     binary_globs: tuple[str, ...]
+    command_job_timeout_ms: int = 14_400_000
     access_mode: str = "safe"
     allow_secret_access: bool = False
     allow_hard_reset: bool = False
@@ -215,6 +216,7 @@ class Settings:
             max_patch_bytes=_env_int("MAX_PATCH_BYTES", 500_000),
             max_command_output_chars=_env_int("MAX_COMMAND_OUTPUT_CHARS", 200_000),
             command_timeout_ms=_env_int("COMMAND_TIMEOUT_MS", 300_000),
+            command_job_timeout_ms=_env_int("COMMAND_JOB_TIMEOUT_MS", 14_400_000),
             command_audit_log_path=Path(
                 os.getenv("COMMAND_AUDIT_LOG_PATH", "~/.local/state/chatrepo-mcp/commands.log")
             ).expanduser(),
@@ -278,4 +280,8 @@ class Settings:
                 "DEFAULT_INLINE_OUTPUT_BYTES must be positive and no greater than "
                 f"the smallest configured output ceiling ({inline_hard_limit})"
             )
+        if settings.command_timeout_ms <= 0:
+            raise RuntimeError("COMMAND_TIMEOUT_MS must be a positive integer")
+        if settings.command_job_timeout_ms <= 0:
+            raise RuntimeError("COMMAND_JOB_TIMEOUT_MS must be a positive integer")
         return settings

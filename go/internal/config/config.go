@@ -53,6 +53,7 @@ type Settings struct {
 	DefaultInlineOutputBytes     int
 	MaxCommandOutputChars        int
 	CommandTimeout               time.Duration
+	CommandJobTimeout            time.Duration
 	SubprocessTimeout            time.Duration
 	GitNetworkTimeout            time.Duration
 	GHTimeout                    time.Duration
@@ -201,6 +202,7 @@ func Load() (Settings, error) {
 		DefaultInlineOutputBytes:     intEnv("DEFAULT_INLINE_OUTPUT_BYTES", 64*1024),
 		MaxCommandOutputChars:        intEnv("MAX_COMMAND_OUTPUT_CHARS", 200_000),
 		CommandTimeout:               time.Duration(intEnv("COMMAND_TIMEOUT_MS", 300_000)) * time.Millisecond,
+		CommandJobTimeout:            time.Duration(intEnv("COMMAND_JOB_TIMEOUT_MS", 14_400_000)) * time.Millisecond,
 		SubprocessTimeout:            time.Duration(intEnv("SUBPROCESS_TIMEOUT", 15)) * time.Second,
 		GitNetworkTimeout:            time.Duration(intEnv("GIT_NETWORK_TIMEOUT", 60)) * time.Second,
 		GHTimeout:                    time.Duration(intEnv("GH_TIMEOUT", 60)) * time.Second,
@@ -246,6 +248,12 @@ func Load() (Settings, error) {
 			"DEFAULT_INLINE_OUTPUT_BYTES must be positive and no greater than the smallest configured output ceiling (%d)",
 			inlineHardLimit,
 		)
+	}
+	if settings.CommandTimeout <= 0 {
+		return Settings{}, errors.New("COMMAND_TIMEOUT_MS must be a positive integer")
+	}
+	if settings.CommandJobTimeout <= 0 {
+		return Settings{}, errors.New("COMMAND_JOB_TIMEOUT_MS must be a positive integer")
 	}
 	return settings, nil
 }

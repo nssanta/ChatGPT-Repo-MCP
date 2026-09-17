@@ -97,7 +97,9 @@ Then call `doctor` and `smoke_all` from ChatGPT. `smoke_all.ok` should be `true`
 
 Destructive/service-style commands return `confirmation_required` in `guarded` mode and are not executed until called again with `confirmed=true`.
 
-For long E2E runs, prefer `start_command_job` and poll with `get_command_job` instead of holding one MCP call open.
+For long E2E runs, prefer `start_command_job` and poll with `get_command_job` instead of holding one MCP call open. Foreground commands and background jobs have separate server-owned timeout ceilings: `COMMAND_TIMEOUT_MS` applies to `run_command`/`run_commands`, while `COMMAND_JOB_TIMEOUT_MS` applies to `start_command_job`. A per-call `timeout_ms` may request a shorter timeout, but it is capped by the corresponding server setting.
+
+Defaults are 5 minutes for foreground commands and 4 hours for background jobs. Both are operator-configurable; for example, a machine that legitimately needs longer commands or jobs can raise `COMMAND_TIMEOUT_MS` and/or `COMMAND_JOB_TIMEOUT_MS` independently. Changes take effect after the MCP server is restarted with the updated configuration.
 
 ## Auth Env
 
@@ -108,6 +110,7 @@ MCP_AUTH_MODE=bearer
 MCP_BEARER_TOKEN=<secret>
 ACCESS_MODE=safe
 COMMAND_TIMEOUT_MS=300000
+COMMAND_JOB_TIMEOUT_MS=14400000
 ```
 
 Do not commit this file.

@@ -117,6 +117,13 @@ AUDIT_LOCK = threading.RLock()
 _UNRESTRICTED_MODES = {"unrestricted", "full_repo"}
 
 
+def _effective_timeout_ms(requested: int | None, configured_limit: int) -> int:
+    """Resolve a request timeout against the server-owned positive cap."""
+    if requested is None or requested <= 0 or requested > configured_limit:
+        return configured_limit
+    return requested
+
+
 def _split_segments(command: str) -> list[str]:
     """Split a shell command string into segments on ``; | && ||``."""
     return [segment.strip() for segment in _SHELL_SPLIT_RE.split(command) if segment.strip()]
@@ -490,7 +497,7 @@ def run_command(
     always use the default `policy_exempt=False`.
     """
     normalized = _check_command_policy(command, settings, confirmed=confirmed, policy_exempt=policy_exempt)
-    effective_timeout_ms = min(timeout_ms or settings.command_timeout_ms, settings.command_timeout_ms)
+    effective_timeout_ms = _effective_timeout_ms(timeout_ms, settings.command_timeout_ms)
     requested_output_limit = max_output_chars
     output_limit = min(
         settings.default_inline_output_bytes
@@ -593,6 +600,7 @@ def run_command(
             "ok": proc.returncode == 0 and not timed_out,
             "command": _redact(normalized),
             "exit_code": None if timed_out else proc.returncode,
+            "timeout_ms": effective_timeout_ms,
             "stdout": stdout,
             "stderr": stderr,
             "stdout_tail": stdout_tail,
@@ -798,7 +806,7 @@ def run_test_preset(
     preset_cwd = preset_config.get("cwd")
     if preset_cwd is None:
         preset_cwd = resolved_cwd
-    effective_timeout = timeout_ms or preset_config.get("timeout_ms") or settings.command_timeout_ms
+    effective_timeout = timeout_ms if timeout_ms is not None else preset_config.get("timeout_ms")
     parser = str(preset_config.get("parser", "auto"))
     if background:
         fingerprint = hashlib.sha256(
@@ -866,13 +874,14 @@ def start_command_job(
 ) -> dict[str, Any]:
     if on_conflict not in {"fail", "attach", "wait"}:
         raise CommandPolicyError("on_conflict must be one of: fail, attach, wait")
+    effective_timeout_ms = _effective_timeout_ms(timeout_ms, settings.command_job_timeout_ms)
     if concurrency_key:
         existing = _active_lock_job(settings, concurrency_key)
         if existing:
             if on_conflict == "attach":
                 return {"ok": True, "status": "attached", "lock_status": "attached", **existing}
             if on_conflict == "wait":
-                deadline = time.time() + min((timeout_ms or settings.command_timeout_ms) / 1000, 30)
+                deadline = time.time() + min(effective_timeout_ms / 1000, 30)
                 while time.time() < deadline:
                     time.sleep(0.2)
                     existing = _active_lock_job(settings, concurrency_key)
@@ -1055,7 +1064,7 @@ def start_command_job(
         "started_at_rfc3339": now,
         "finished_at": None,
         "last_output_at": now,
-        "timeout_ms": timeout_ms or settings.command_timeout_ms,
+        "timeout_ms": effective_timeout_ms,
         "tail_lines": tail_lines,
         "status": "running",
         "complete": False,
@@ -1104,6 +1113,7 @@ def start_command_job(
         "pid": proc.pid,
         "pgid": proc.pid,
         "log_id": job_id,
+        "timeout_ms": effective_timeout_ms,
         "command": _redact(normalized),
         "concurrency_key": concurrency_key,
         "policy_source": "preset" if policy_exempt else "direct",
@@ -1286,6 +1296,7 @@ def _active_lock_job(settings: Settings, concurrency_key: str) -> dict[str, Any]
             "attached_to_job_id": job_id,
             "pid": pid,
             "concurrency_key": concurrency_key,
+            "timeout_ms": int(meta.get("timeout_ms", settings.command_job_timeout_ms)),
             "command": _redact(str(meta.get("command", ""))),
             "status": meta.get("status", "running"),
         }
@@ -1324,7 +1335,7 @@ def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None =
     already_timed_out = meta.get("status") == "timed_out"
     timed_out = already_timed_out or (
         meta.get("status") in {"running", "terminating"}
-        and duration_ms > int(meta.get("timeout_ms", settings.command_timeout_ms))
+        and duration_ms > int(meta.get("timeout_ms", settings.command_job_timeout_ms))
     )
     if timed_out and running:
         try:
@@ -1368,6 +1379,7 @@ def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None =
         "running": running,
         "exit_code": meta.get("exit_code", return_code),
         "timed_out": timed_out,
+        "timeout_ms": int(meta.get("timeout_ms", settings.command_job_timeout_ms)),
         "duration_ms": duration_ms,
         "command": _redact(meta["command"]),
         "pid": pid,

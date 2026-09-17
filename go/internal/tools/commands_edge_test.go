@@ -27,6 +27,24 @@ func TestCommandPolicyMatrix(t *testing.T) {
 	}
 }
 
+func TestCommandAndJobTimeoutCapsAreIndependent(t *testing.T) {
+	engine, _ := newTestEngine(t)
+	engine.settings.CommandTimeout = 50 * time.Millisecond
+	engine.settings.CommandJobTimeout = 500 * time.Millisecond
+
+	foreground := engine.commandRequestFromArgs(map[string]any{"timeout_ms": 1000}, false)
+	background := engine.commandJobRequestFromArgs(map[string]any{"timeout_ms": 1000}, false)
+	foregroundDefault := engine.commandRequestFromArgs(map[string]any{}, false)
+	backgroundDefault := engine.commandJobRequestFromArgs(map[string]any{}, false)
+
+	if foreground.Timeout != 50*time.Millisecond || foregroundDefault.Timeout != 50*time.Millisecond {
+		t.Fatalf("foreground timeout cap mismatch: requested=%v default=%v", foreground.Timeout, foregroundDefault.Timeout)
+	}
+	if background.Timeout != 500*time.Millisecond || backgroundDefault.Timeout != 500*time.Millisecond {
+		t.Fatalf("background timeout cap mismatch: requested=%v default=%v", background.Timeout, backgroundDefault.Timeout)
+	}
+}
+
 func TestRunCommandsAndJobLifecycle(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("command job lifecycle test is bash-specific")
