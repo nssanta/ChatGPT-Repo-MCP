@@ -739,7 +739,7 @@ func (e *Engine) doctor(ctx context.Context) map[string]any {
 		"capabilities": capabilities, "effective_path": paths, "path_warnings": warnings,
 		"resource_limits": map[string]any{"profile": e.settings.ResourceProfile, "profile_applied": e.settings.ResourceProfileApplied, "buffer_bytes": e.settings.ResourceBufferBytes, "buffer_enforced": false, "buffer_semantics": "diagnostic_estimate_only", "heavy_operations": e.settings.MaxHeavyOperations, "active_heavy_operations": e.listHeavyOperations(), "detected_memory_bytes": e.settings.DetectedMemoryBytes, "persist_full_output": e.settings.PersistFullOutput},
 		"toolchains":      []any{capabilities["go"], capabilities["python3"], capabilities["node"]},
-		"repos":           e.workspaceEntries(ctx),
+		"repos":           e.workspaceOverview(ctx),
 	}
 }
 
@@ -757,7 +757,8 @@ func (e *Engine) smokeAll(ctx context.Context) map[string]any {
 }
 
 func (e *Engine) contextBootstrap(ctx context.Context) map[string]any {
-	result := map[string]any{"ok": true, "repo": e.repoInfo(ctx, ""), "repos": e.workspaceEntries(ctx)}
+	repos := e.workspaceOverview(ctx)
+	result := map[string]any{"ok": true, "repo": e.settings.ProjectRoot, "repos": repos}
 	for _, candidate := range []string{"AGENTS.md", "README.md", "README_RU.md", "docs/CURRENT_TASK.md", "CURRENT_TASK.md"} {
 		if metadata := e.fileMetadata(candidate, false); metadata["ok"] == true {
 			result["context_file"] = e.readText(candidate, 1, 200, false)

@@ -152,6 +152,46 @@ func TestWorkspaceEntriesAndRepoListing(t *testing.T) {
 	}
 }
 
+func TestWorkspaceOverviewKeepsDetailedRepoListing(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "service")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("git", "-C", repo, "init", "-b", "main").Run(); err != nil {
+		t.Fatal(err)
+	}
+	engine := New(testSettingsForTools(root), []string{})
+	ctx := context.Background()
+
+	for _, result := range []map[string]any{engine.doctor(ctx), engine.contextBootstrap(ctx)} {
+		repos, ok := result["repos"].([]map[string]any)
+		if !ok || len(repos) != 1 || repos[0]["path"] != "service" || repos[0]["is_git"] != true {
+			t.Fatalf("unexpected workspace overview: %#v", result["repos"])
+		}
+		if _, present := repos[0]["branch"]; present {
+			t.Fatalf("overview should not run Git for branch details: %#v", repos[0])
+		}
+	}
+	if bootstrap := engine.contextBootstrap(ctx); bootstrap["repo"] != root {
+		t.Fatalf("context_bootstrap repo must match its string contract: %#v", bootstrap["repo"])
+	}
+
+	entries := engine.workspaceEntries(ctx)
+	if len(entries) != 1 || entries[0]["branch"] != "main" {
+		t.Fatalf("list_repos must retain detailed entries: %#v", entries)
+	}
+	info := engine.repoInfo(ctx, "")
+	git, ok := info["git"].(map[string]any)
+	if !ok || git["polyrepo"] != true {
+		t.Fatalf("repo_info must retain polyrepo details: %#v", info["git"])
+	}
+	infoRepos, ok := git["repos"].([]map[string]any)
+	if !ok || len(infoRepos) != 1 || infoRepos[0]["branch"] != "main" {
+		t.Fatalf("repo_info must retain detailed entries: %#v", git["repos"])
+	}
+}
+
 func TestRepoEntryCapturesBranchAndDirtyState(t *testing.T) {
 	root := t.TempDir()
 	settings := testSettingsForTools(root)

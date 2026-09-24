@@ -120,12 +120,32 @@ func makefileTargets(directory string) []string {
 }
 
 func (e *Engine) workspaceEntries(ctx context.Context) []map[string]any {
+	return e.discoverWorkspaceEntries(ctx, true)
+}
+
+// workspaceOverview discovers repository paths without running Git for each
+// repository. It is intended for fast bootstrap and health responses in large
+// polyrepo workspaces.
+func (e *Engine) workspaceOverview(ctx context.Context) []map[string]any {
+	return e.discoverWorkspaceEntries(ctx, false)
+}
+
+func (e *Engine) discoverWorkspaceEntries(ctx context.Context, includeGitDetails bool) []map[string]any {
 	root := e.settings.ProjectRoot
+	entryFor := func(directory, relative string, isGit bool) map[string]any {
+		if includeGitDetails {
+			return e.repoEntry(ctx, directory, relative, isGit)
+		}
+		return map[string]any{"path": relative, "is_git": isGit}
+	}
 	if hasGitMarker(root) {
-		return []map[string]any{e.repoEntry(ctx, root, "", true)}
+		return []map[string]any{entryFor(root, "", true)}
 	}
 	var found []map[string]any
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return filepath.SkipAll
+		}
 		if err != nil || path == root {
 			return nil
 		}
@@ -141,7 +161,7 @@ func (e *Engine) workspaceEntries(ctx context.Context) []map[string]any {
 			return filepath.SkipDir
 		}
 		if entry.IsDir() && hasGitMarker(path) {
-			found = append(found, e.repoEntry(ctx, path, filepath.ToSlash(rel), true))
+			found = append(found, entryFor(path, filepath.ToSlash(rel), true))
 			return filepath.SkipDir
 		}
 		return nil
@@ -156,7 +176,7 @@ func (e *Engine) workspaceEntries(ctx context.Context) []map[string]any {
 			continue
 		}
 		path := filepath.Join(root, entry.Name())
-		found = append(found, e.repoEntry(ctx, path, entry.Name(), false))
+		found = append(found, entryFor(path, entry.Name(), false))
 	}
 	return found
 }

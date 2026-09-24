@@ -127,6 +127,7 @@ Connect ChatGPT to it — see [Connecting to ChatGPT](#connecting-to-chatgpt) be
 - **A plain folder with no git at all** — read/search/edit tools still work; git-specific tools report there's no repository instead of failing.
 
 `list_repos` is the natural first call for the agent in a new workspace: it's the discovery entry point.
+On the Go server, `doctor` and `context_bootstrap` return a lightweight repo overview (`path` and `is_git`) without checking every repo's Git status. Use `list_repos` when branch and dirty-state details are needed; it runs Git commands for each discovered repo and can take longer in large workspaces.
 
 * * *
 
