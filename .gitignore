@@ -11,6 +11,3 @@ coverage*.out
 .coverage
 htmlcov/
 python-coverage.json
-config/
-logs/
-AGENTS.md

@@ -218,9 +218,6 @@ func (e *Engine) readTerminalOutput(session *terminalSession, store *artifactSto
 		artifactErr = artifact.Close()
 	}
 	if writeErr != nil {
-		if session.process.Process != nil {
-			_ = session.process.Process.Kill()
-		}
 		_ = session.pty.Close()
 	}
 	session.mu.Lock()
