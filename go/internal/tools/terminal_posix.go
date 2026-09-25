@@ -217,6 +217,9 @@ func (e *Engine) readTerminalOutput(session *terminalSession, store *artifactSto
 	} else {
 		artifactErr = artifact.Close()
 	}
+	if writeErr != nil {
+		_ = session.pty.Close()
+	}
 	session.mu.Lock()
 	session.OutputBytes = capture.Total()
 	session.mu.Unlock()
