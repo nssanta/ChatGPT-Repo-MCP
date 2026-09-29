@@ -160,6 +160,7 @@ func (e *Engine) repoInfo(ctx context.Context, repo string) map[string]any {
 			"allow_secret_access": e.settings.AllowSecretAccess, "transport": e.settings.Transport,
 			"max_file_bytes": e.settings.MaxFileBytes, "max_response_chars": e.settings.MaxResponseChars,
 			"max_read_files": e.settings.MaxReadFiles, "max_search_results": e.settings.MaxSearchResults,
+			"file_transfer_import_max_bytes": e.settings.FileTransferImportMaxBytes, "file_transfer_export_max_bytes": e.settings.FileTransferExportMaxBytes,
 			"max_tree_entries": e.settings.MaxTreeEntries, "blocked_globs": e.settings.BlockedGlobs,
 			"resource_profile": e.settings.ResourceProfile, "resource_profile_applied": e.settings.ResourceProfileApplied, "resource_buffer_bytes": e.settings.ResourceBufferBytes,
 			"resource_buffer_enforced": false, "resource_buffer_semantics": "diagnostic_estimate_only",

@@ -4,7 +4,7 @@
   "server": {
     "name": "chatrepo-mcp",
     "version": "0.3.0",
-    "toolCount": 98
+    "toolCount": 100
   },
   "resultSchemas": {
     "boundedOutputReceiptV1": {
@@ -3689,6 +3689,207 @@
       "annotations": {
         "title": "Ensure Directory",
         "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "export_file_to_chat",
+      "description": "Expose a machine file to ChatGPT as a downloadable MCP resource.\n\n    Use this when the user asks to get, download, or attach a file from the\n    connected PC/VPS in the current chat. Binary files are supported. The file\n    is exposed through ResourceLink + resources/read and is capped by\n    FILE_TRANSFER_EXPORT_MAX_BYTES.\n    ",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access.",
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "export_file_to_chat_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ExportFileToChatSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Path"
+              },
+              "name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Name"
+              },
+              "mime_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Mime Type"
+              },
+              "size_bytes": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Size Bytes"
+              },
+              "sha256": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Sha256"
+              },
+              "resource_uri": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Resource Uri"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "name",
+              "mime_type",
+              "size_bytes",
+              "sha256",
+              "resource_uri",
+              "ok"
+            ],
+            "title": "ExportFileToChatSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ExportFileToChatSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "path": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "resource_uri": {
+            "type": "string"
+          }
+        },
+        "title": "ExportFileToChatResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Export File To Chat",
+        "readOnlyHint": true,
         "destructiveHint": false,
         "openWorldHint": false
       }
@@ -14410,6 +14611,276 @@
         "readOnlyHint": true,
         "destructiveHint": false,
         "openWorldHint": false
+      }
+    },
+    {
+      "name": "receive_chat_file",
+      "description": "Save a ChatGPT attachment onto the connected PC/VPS.\n\n    Use this when the user asks to copy or upload a file from the current chat\n    to the connected machine. ChatGPT supplies the file object through\n    openai/fileParams; never invent or ask the user to paste its temporary\n    download URL or file id. The transfer is binary-safe, streams over HTTPS,\n    enforces FILE_TRANSFER_IMPORT_MAX_BYTES, and preserves path/secret policy.\n    ",
+      "inputSchema": {
+        "$defs": {
+          "ChatFileParam": {
+            "additionalProperties": false,
+            "description": "Host-supplied ChatGPT file reference for openai/fileParams.",
+            "properties": {
+              "download_url": {
+                "title": "Download Url",
+                "type": "string"
+              },
+              "file_id": {
+                "title": "File Id",
+                "type": "string"
+              },
+              "mime_type": {
+                "default": "",
+                "title": "Mime Type",
+                "type": "string"
+              },
+              "file_name": {
+                "default": "",
+                "title": "File Name",
+                "type": "string"
+              }
+            },
+            "required": [
+              "download_url",
+              "file_id"
+            ],
+            "title": "ChatFileParam",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "file": {
+            "$ref": "#/$defs/ChatFileParam"
+          },
+          "destination_path": {
+            "description": "Exact destination file path on the connected machine. Relative paths use PROJECT_ROOT; absolute paths require WORKSPACE_ROOTS or full access. Existing files are never overwritten.",
+            "title": "Destination Path",
+            "type": "string"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Preview when true; apply when false; omit to use the ACCESS_MODE default.",
+            "title": "Dry Run"
+          }
+        },
+        "required": [
+          "file",
+          "destination_path"
+        ],
+        "title": "receive_chat_file_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ReceiveChatFileSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Path"
+              },
+              "file_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "File Id"
+              },
+              "file_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "File Name"
+              },
+              "mime_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Mime Type"
+              },
+              "size_bytes": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Size Bytes"
+              },
+              "sha256": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Sha256"
+              },
+              "dry_run": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Dry Run"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "file_id",
+              "file_name",
+              "mime_type",
+              "size_bytes",
+              "sha256",
+              "dry_run",
+              "ok"
+            ],
+            "title": "ReceiveChatFileSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ReceiveChatFileSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "path": {
+            "type": "string"
+          },
+          "file_id": {
+            "type": "string"
+          },
+          "file_name": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "dry_run": {
+            "type": "boolean"
+          }
+        },
+        "title": "ReceiveChatFileResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Receive Chat File",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "openai/fileParams": [
+          "file"
+        ]
       }
     },
     {

@@ -23,6 +23,7 @@ func testSettings(root string) config.Settings {
 		BinaryGlobs: []string{"**/*.bin"}, WritableGlobs: []string{"**/*"}, DangerouslyAllowAllWrites: true,
 		MaxFileBytes: 1_000_000, MaxResponseChars: 100_000, MaxReadFiles: 25, MaxSearchResults: 100,
 		MaxTreeEntries: 1000, MaxDiffBytes: 100_000, MaxLogCommits: 100, MaxWriteFileBytes: 1_000_000,
+		FileTransferImportMaxBytes: 1_000_000, FileTransferExportMaxBytes: 1_000_000,
 		MaxBatchOperations: 50, MaxCombinedDiffChars: 100_000, MaxPatchBytes: 100_000,
 		DefaultInlineOutputBytes: 64 * 1024,
 		MaxCommandOutputChars:    100_000, CommandTimeout: 5 * time.Second, CommandJobTimeout: 4 * time.Hour, SubprocessTimeout: 5 * time.Second,

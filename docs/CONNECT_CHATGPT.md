@@ -42,6 +42,8 @@ This no-auth recommendation applies only when the MCP listener remains on loopba
 
 Choose **Server URL**, enter the public `/mcp` HTTPS endpoint, and use OAuth or another authentication method supported by the ChatGPT app dialog. Do not expose a full-access agent anonymously.
 
+This mode does **not** need OpenAI Secure MCP Tunnel. The same tool catalog, including `receive_chat_file` and `export_file_to_chat`, works over the direct Streamable HTTP connection. File transfer is implemented at the MCP/tool layer (`openai/fileParams` for ChatGPT -> machine and MCP `resource_link` + `resources/read` for machine -> ChatGPT), so it is not coupled to `tunnel-client`. See [File transfer](FILE_TRANSFER.md).
+
 ## Steps
 
 1. Open <https://chatgpt.com/plugins> (or ChatGPT **Settings → Apps**).
@@ -72,6 +74,8 @@ Use prompts like:
 - `Найди где используется JWT`
 - `Покажи последние изменения по backend`
 - `Проверь TODO и FIXME по проекту`
+- `Сохрани прикреплённый файл в artifacts/input.zip на подключённой машине`
+- `Прикрепи reports/result.zip с VPS обратно в этот чат`
 - `Объясни разницу между ветками и текущим diff`
 
 ## If connection fails

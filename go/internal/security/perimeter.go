@@ -38,6 +38,16 @@ func (p *Perimeter) Roots() []string { return append([]string(nil), p.roots...) 
 // Resolve validates a structured-tool path. When forWrite is true, the write
 // glob policy and secret/binary rules are also applied.
 func (p *Perimeter) Resolve(candidate string, allowHidden, forWrite bool) (ResolvedPath, error) {
+	return p.resolve(candidate, allowHidden, forWrite, false)
+}
+
+// ResolveTransfer applies the same perimeter and secret/write policy as Resolve,
+// but intentionally permits binary files so they can cross the MCP file bridge.
+func (p *Perimeter) ResolveTransfer(candidate string, allowHidden, forWrite bool) (ResolvedPath, error) {
+	return p.resolve(candidate, allowHidden, forWrite, true)
+}
+
+func (p *Perimeter) resolve(candidate string, allowHidden, forWrite, transfer bool) (ResolvedPath, error) {
 	if strings.TrimSpace(candidate) == "" {
 		candidate = "."
 	}
@@ -80,7 +90,11 @@ func (p *Perimeter) Resolve(candidate string, allowHidden, forWrite bool) (Resol
 	if !allowHidden && hidden(relative) {
 		return ResolvedPath{}, fmt.Errorf("hidden path is not allowed: %s", candidate)
 	}
-	if p.blocked(relative) {
+	blocked := p.blocked(relative)
+	if transfer {
+		blocked = p.transferBlocked(relative)
+	}
+	if blocked {
 		return ResolvedPath{}, fmt.Errorf("path is blocked by security policy: %s", candidate)
 	}
 	if forWrite && !p.writable(relative) {
@@ -116,6 +130,39 @@ func (p *Perimeter) blocked(relative string) bool {
 	return matchesAny(relative, p.settings.BlockedGlobs) || secret || matchesAny(relative, p.settings.BinaryGlobs)
 }
 
+func (p *Perimeter) transferBlocked(relative string) bool {
+	if matchesAny(relative, p.settings.SecretGlobs) && !p.settings.AllowSecretAccess {
+		return true
+	}
+	binaryPatterns := make(map[string]struct{}, len(p.settings.BinaryGlobs))
+	for _, pattern := range p.settings.BinaryGlobs {
+		binaryPatterns[normalizePattern(pattern)] = struct{}{}
+	}
+	secretPatterns := make(map[string]struct{}, len(p.settings.SecretGlobs))
+	for _, pattern := range p.settings.SecretGlobs {
+		secretPatterns[normalizePattern(pattern)] = struct{}{}
+	}
+	for _, pattern := range p.settings.BlockedGlobs {
+		normalized := normalizePattern(pattern)
+		if _, binary := binaryPatterns[normalized]; binary {
+			continue
+		}
+		if p.settings.AllowSecretAccess {
+			if _, secret := secretPatterns[normalized]; secret {
+				continue
+			}
+		}
+		if globMatch(relative, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizePattern(pattern string) string {
+	return strings.TrimPrefix(filepath.ToSlash(strings.TrimSpace(pattern)), "./")
+}
+
 func (p *Perimeter) writable(relative string) bool {
 	if matchesAny(relative, p.settings.SecretGlobs) && !p.settings.AllowSecretAccess {
 		return false
@@ -135,22 +182,26 @@ func (p *Perimeter) writable(relative string) bool {
 }
 
 func resolvePhysical(target string) (string, error) {
-	physical, err := filepath.EvalSymlinks(target)
-	if err == nil {
-		return physical, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("resolve symlinks for %s: %w", target, err)
-	}
-	parent := filepath.Dir(target)
-	resolvedParent, parentErr := filepath.EvalSymlinks(parent)
-	if parentErr != nil {
-		if errors.Is(parentErr, os.ErrNotExist) {
-			return filepath.Clean(target), nil
+	current := filepath.Clean(target)
+	missing := make([]string, 0, 4)
+	for {
+		physical, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for index := len(missing) - 1; index >= 0; index-- {
+				physical = filepath.Join(physical, missing[index])
+			}
+			return filepath.Clean(physical), nil
 		}
-		return "", fmt.Errorf("resolve parent for %s: %w", target, parentErr)
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("resolve symlinks for %s: %w", target, err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("resolve existing ancestor for %s: %w", target, err)
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
 	}
-	return filepath.Join(resolvedParent, filepath.Base(target)), nil
 }
 
 func contains(root, target string) bool {

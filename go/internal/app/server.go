@@ -66,6 +66,7 @@ func New(settings config.Settings) (*Application, error) {
 			InputSchema:  json.RawMessage(definition.InputSchema),
 			OutputSchema: json.RawMessage(definition.OutputSchema),
 			Annotations:  annotation,
+			Meta:         mcp.Meta(definition.Meta),
 		}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			arguments := make(map[string]any)
 			if len(request.Params.Arguments) > 0 {
@@ -84,14 +85,70 @@ func New(settings config.Settings) (*Application, error) {
 				return nil, fmt.Errorf("marshal %s result: %w", definition.Name, err)
 			}
 			isError := result["ok"] == false
+			content := []mcp.Content{&mcp.TextContent{Text: string(encoded)}}
+			if definition.Name == "export_file_to_chat" && !isError {
+				uri, _ := result["resource_uri"].(string)
+				name, _ := result["name"].(string)
+				mimeType, _ := result["mime_type"].(string)
+				description := fmt.Sprintf("File exported from %v", result["path"])
+				size := resultSize(result["size_bytes"])
+				if uri != "" && name != "" {
+					content = append(content, &mcp.ResourceLink{
+						URI: uri, Name: name, MIMEType: mimeType,
+						Description: description, Size: size,
+					})
+				}
+			}
 			return &mcp.CallToolResult{
-				Content:           []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
+				Content:           content,
 				StructuredContent: result,
 				IsError:           isError,
 			}, nil
 		})
 	}
+	server.AddResourceTemplate(
+		&mcp.ResourceTemplate{
+			Name:        "chatrepo-exported-file",
+			Description: "Binary-safe file resource created by export_file_to_chat.",
+			URITemplate: "chatrepo-file://local/{token}",
+		},
+		func(_ context.Context, request *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			if request == nil || request.Params == nil || request.Params.URI == "" {
+				return nil, mcp.ResourceNotFoundError("")
+			}
+			data, mimeType, err := engine.ReadExportResource(request.Params.URI)
+			if err != nil {
+				return nil, mcp.ResourceNotFoundError(request.Params.URI)
+			}
+			return &mcp.ReadResourceResult{
+				Contents: []*mcp.ResourceContents{{
+					URI: request.Params.URI, MIMEType: mimeType, Blob: data,
+				}},
+			}, nil
+		},
+	)
 	return &Application{Settings: settings, Contract: document, Server: server, Engine: engine}, nil
+}
+
+func resultSize(value any) *int64 {
+	var size int64
+	switch typed := value.(type) {
+	case int64:
+		size = typed
+	case int:
+		size = int64(typed)
+	case float64:
+		size = int64(typed)
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil {
+			return nil
+		}
+		size = parsed
+	default:
+		return nil
+	}
+	return &size
 }
 
 func isPTYTool(name string) bool {

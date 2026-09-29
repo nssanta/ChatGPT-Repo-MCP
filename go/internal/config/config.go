@@ -47,6 +47,8 @@ type Settings struct {
 	MaxDiffBytes                 int
 	MaxLogCommits                int
 	MaxWriteFileBytes            int64
+	FileTransferImportMaxBytes   int64
+	FileTransferExportMaxBytes   int64
 	MaxBatchOperations           int
 	MaxCombinedDiffChars         int
 	MaxPatchBytes                int
@@ -196,6 +198,8 @@ func Load() (Settings, error) {
 		MaxDiffBytes:                 intEnv("MAX_DIFF_BYTES", 1_000_000),
 		MaxLogCommits:                intEnv("MAX_LOG_COMMITS", 100),
 		MaxWriteFileBytes:            int64(intEnv("MAX_WRITE_FILE_BYTES", 1_000_000)),
+		FileTransferImportMaxBytes:   int64(intEnv("FILE_TRANSFER_IMPORT_MAX_BYTES", 512*1024*1024)),
+		FileTransferExportMaxBytes:   int64(intEnv("FILE_TRANSFER_EXPORT_MAX_BYTES", 100*1024*1024)),
 		MaxBatchOperations:           intEnv("MAX_BATCH_OPERATIONS", 50),
 		MaxCombinedDiffChars:         intEnv("MAX_COMBINED_DIFF_CHARS", 300_000),
 		MaxPatchBytes:                intEnv("MAX_PATCH_BYTES", 500_000),
@@ -254,6 +258,12 @@ func Load() (Settings, error) {
 	}
 	if settings.CommandJobTimeout <= 0 {
 		return Settings{}, errors.New("COMMAND_JOB_TIMEOUT_MS must be a positive integer")
+	}
+	if settings.FileTransferImportMaxBytes <= 0 {
+		return Settings{}, errors.New("FILE_TRANSFER_IMPORT_MAX_BYTES must be a positive integer")
+	}
+	if settings.FileTransferExportMaxBytes <= 0 {
+		return Settings{}, errors.New("FILE_TRANSFER_EXPORT_MAX_BYTES must be a positive integer")
 	}
 	return settings, nil
 }

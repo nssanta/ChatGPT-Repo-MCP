@@ -9,7 +9,8 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic import AnyHttpUrl, Field
+from mcp.types import CallToolResult, ResourceLink, TextContent
+from pydantic import AnyHttpUrl, AnyUrl, BaseModel, ConfigDict, Field
 
 from .command_tools import (
     TEST_PRESETS,
@@ -109,6 +110,7 @@ from .github_tools import (
     gh_run_view,
     gh_status,
 )
+from .file_transfer import export_file_to_chat, read_export_resource, receive_chat_file
 from .index_tools import document_symbols, symbol_definition, workspace_symbols
 from .lsp_tools import code_diagnostics
 from .output_store import read_artifact
@@ -253,6 +255,18 @@ NETWORK_WRITE = {
 }
 
 
+class ChatFileParam(BaseModel):
+    """Host-supplied ChatGPT file reference for openai/fileParams."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    download_url: str
+    file_id: str
+    # Optional in OpenAI's contract, but when present they remain plain strings.
+    mime_type: str = ""
+    file_name: str = ""
+
+
 RepoPath = Annotated[
     str,
     Field(description="Project-relative path, or an absolute path allowed by WORKSPACE_ROOTS/full access."),
@@ -393,6 +407,83 @@ def read_multiple_files_tool(paths: list[str]) -> dict:
 def file_metadata_tool(path: str, include_stat: bool = True) -> dict:
     """Return basic metadata for a repo-relative file or directory."""
     return file_metadata(path=path, settings=settings, include_stat=include_stat)
+
+
+@_tool(
+    name="receive_chat_file",
+    annotations={**SAFE_EDIT_ACTION, "openWorldHint": True, "title": "Receive Chat File"},
+    meta={"openai/fileParams": ["file"]},
+)
+def receive_chat_file_tool(
+    file: ChatFileParam,
+    destination_path: Annotated[
+        str,
+        Field(
+            description=(
+                "Exact destination file path on the connected machine. Relative paths use PROJECT_ROOT; "
+                "absolute paths require WORKSPACE_ROOTS or full access. Existing files are never overwritten."
+            )
+        ),
+    ],
+    dry_run: DryRun = None,
+) -> dict:
+    """Save a ChatGPT attachment onto the connected PC/VPS.
+
+    Use this when the user asks to copy or upload a file from the current chat
+    to the connected machine. ChatGPT supplies the file object through
+    openai/fileParams; never invent or ask the user to paste its temporary
+    download URL or file id. The transfer is binary-safe, streams over HTTPS,
+    enforces FILE_TRANSFER_IMPORT_MAX_BYTES, and preserves path/secret policy.
+    """
+    return receive_chat_file(
+        file=file.model_dump(),
+        destination_path=destination_path,
+        settings=settings,
+        dry_run=settings.effective_dry_run(dry_run),
+    )
+
+
+@_tool(
+    name="export_file_to_chat",
+    annotations={**READ_ONLY, "title": "Export File To Chat"},
+)
+def export_file_to_chat_tool(path: RepoPath) -> CallToolResult | dict:
+    """Expose a machine file to ChatGPT as a downloadable MCP resource.
+
+    Use this when the user asks to get, download, or attach a file from the
+    connected PC/VPS in the current chat. Binary files are supported. The file
+    is exposed through ResourceLink + resources/read and is capped by
+    FILE_TRANSFER_EXPORT_MAX_BYTES.
+    """
+    result = export_file_to_chat(path=path, settings=settings)
+    if result.get("ok") is not True:
+        return result
+
+    size = int(result["size_bytes"])
+    link = ResourceLink(
+        type="resource_link",
+        name=str(result["name"]),
+        uri=AnyUrl(str(result["resource_uri"])),
+        mimeType=str(result["mime_type"]),
+        size=size,
+        description=f"File exported from {result['path']}",
+    )
+    return CallToolResult(
+        content=[
+            TextContent(type="text", text=f"File ready: {result['name']} ({size} bytes)"),
+            link,
+        ],
+        structuredContent=result,
+    )
+
+
+@mcp.resource(
+    "chatrepo-file://local/{token}",
+    name="ChatRepo exported file",
+    description="Binary-safe file resource created by export_file_to_chat.",
+)
+def exported_file_resource(token: str) -> bytes:
+    return read_export_resource(token=token, settings=settings)
 
 
 @_tool(
@@ -656,6 +747,8 @@ def _write_config_info() -> dict:
         "max_command_output_chars": settings.max_command_output_chars,
         "command_timeout_ms": settings.command_timeout_ms,
         "command_job_timeout_ms": settings.command_job_timeout_ms,
+        "file_transfer_import_max_bytes": settings.file_transfer_import_max_bytes,
+        "file_transfer_export_max_bytes": settings.file_transfer_export_max_bytes,
         "command_audit_log_path": str(settings.command_audit_log_path),
         "mcp_auth_mode": settings.mcp_auth_mode,
         "resource_profile": settings.resource_profile,

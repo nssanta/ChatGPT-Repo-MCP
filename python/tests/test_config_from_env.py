@@ -61,6 +61,8 @@ def test_from_env_full_access_enables_full_mode_defaults(tmp_path: Path, monkeyp
     assert settings.enable_pty is True
     assert settings.command_timeout_ms == 300_000
     assert settings.command_job_timeout_ms == 14_400_000
+    assert settings.file_transfer_import_max_bytes == 512 * 1024**2
+    assert settings.file_transfer_export_max_bytes == 100 * 1024**2
 
 
 def test_from_env_rejects_empty_secret_globs_in_safe_mode(tmp_path: Path, monkeypatch) -> None:
@@ -138,3 +140,14 @@ def test_settings_dry_run_default_and_confirmation(tmp_path: Path, monkeypatch) 
     assert settings.effective_dry_run(False) is False
     assert settings.confirmation_granted(None) is False
     assert settings.confirmation_granted(True) is True
+
+
+@pytest.mark.parametrize("name", ["FILE_TRANSFER_IMPORT_MAX_BYTES", "FILE_TRANSFER_EXPORT_MAX_BYTES"])
+def test_from_env_rejects_non_positive_file_transfer_limits(
+    tmp_path: Path, monkeypatch, name: str,
+) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv(name, "0")
+
+    with pytest.raises(RuntimeError, match=name):
+        config.Settings.from_env()

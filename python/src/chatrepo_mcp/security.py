@@ -51,6 +51,18 @@ def is_blocked_relative(rel_path: str, settings: Settings) -> bool:
     return matches_any_glob(rel_path, patterns)
 
 
+def is_transfer_blocked_relative(rel_path: str, settings: Settings) -> bool:
+    """Apply normal blocked-path policy while allowing binary file transfer."""
+    binary_patterns = {normalize_rel_path(pattern) for pattern in settings.binary_globs}
+    secret_patterns = {normalize_rel_path(pattern) for pattern in settings.secret_globs}
+    patterns = tuple(
+        pattern for pattern in settings.blocked_globs
+        if normalize_rel_path(pattern) not in binary_patterns
+        and not (settings.allow_secret_access and normalize_rel_path(pattern) in secret_patterns)
+    )
+    return matches_any_glob(rel_path, patterns)
+
+
 def matches_any_glob(rel_path: str, patterns: tuple[str, ...]) -> bool:
     rel_path = normalize_rel_path(rel_path)
     parts = Path(rel_path).parts

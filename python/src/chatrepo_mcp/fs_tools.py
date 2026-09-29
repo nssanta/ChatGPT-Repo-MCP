@@ -141,6 +141,8 @@ def repo_info(settings: Settings) -> dict[str, Any]:
             "max_response_chars": settings.max_response_chars,
             "max_read_files": settings.max_read_files,
             "max_search_results": settings.max_search_results,
+            "file_transfer_import_max_bytes": settings.file_transfer_import_max_bytes,
+            "file_transfer_export_max_bytes": settings.file_transfer_export_max_bytes,
             "max_tree_entries": settings.max_tree_entries,
             "resource_profile": settings.resource_profile,
             "resource_profile_applied": settings.resource_profile_applied,

@@ -100,6 +100,8 @@ class Settings:
     persist_full_output: bool = True
     # Ограничиваем обычный inline-ответ, но не объём сохраняемого артефакта.
     default_inline_output_bytes: int = 65_536
+    file_transfer_import_max_bytes: int = 512 * 1024**2
+    file_transfer_export_max_bytes: int = 100 * 1024**2
 
     @property
     def full_access(self) -> bool:
@@ -255,6 +257,8 @@ class Settings:
             max_heavy_operations=resource_limits.heavy_operations,
             persist_full_output=persist_full_output,
             default_inline_output_bytes=_env_int("DEFAULT_INLINE_OUTPUT_BYTES", 65_536),
+            file_transfer_import_max_bytes=_env_int("FILE_TRANSFER_IMPORT_MAX_BYTES", 512 * 1024**2),
+            file_transfer_export_max_bytes=_env_int("FILE_TRANSFER_EXPORT_MAX_BYTES", 100 * 1024**2),
             git_network_timeout=_env_int("GIT_NETWORK_TIMEOUT", 60),
             protected_branches=_env_csv("PROTECTED_BRANCHES", "main,master"),
             allow_force_push=_env_bool("ALLOW_FORCE_PUSH", False),
@@ -284,4 +288,8 @@ class Settings:
             raise RuntimeError("COMMAND_TIMEOUT_MS must be a positive integer")
         if settings.command_job_timeout_ms <= 0:
             raise RuntimeError("COMMAND_JOB_TIMEOUT_MS must be a positive integer")
+        if settings.file_transfer_import_max_bytes <= 0:
+            raise RuntimeError("FILE_TRANSFER_IMPORT_MAX_BYTES must be a positive integer")
+        if settings.file_transfer_export_max_bytes <= 0:
+            raise RuntimeError("FILE_TRANSFER_EXPORT_MAX_BYTES must be a positive integer")
         return settings

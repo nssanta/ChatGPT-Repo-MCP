@@ -22,12 +22,13 @@ ChatGPT (Developer Mode)
 Reverse Proxy (Caddy or Nginx)
         │
         ▼
-Shared MCP catalog (98 tools; 92 default)
+Shared MCP catalog (100 tools; 94 default)
         │
         ├── Python FastMCP package
         └── Go MCP binary
         │
         ├── Filesystem tools (validated reads)
+        ├── Binary-safe ChatGPT/MCP file transfer (fileParams + ResourceLink/resources/read)
         ├── Git tools + git-workflow (branch/stash/fetch/pull/push/merge/worktree)
         ├── GitHub tools (PR/CI via `gh`) + diagnostics/symbol index
         ├── Safe text edit tools (diff + hash guarded)
@@ -65,7 +66,15 @@ Every write path is checked against:
 
 Write tools return unified diffs. If `dry_run` is omitted, safe mode previews and full mode applies; an explicit value always wins.
 
-### 3) Git through subprocess
+### 3) Binary-safe file transfer
+
+`receive_chat_file` is the ChatGPT -> machine bridge. Its top-level `file` argument is declared through `_meta["openai/fileParams"]`, so ChatGPT supplies the temporary file URL and file metadata. The server streams the payload to disk, keeps normal workspace/write/secret policy, allows binary content only on this dedicated path, rejects non-public download targets, and never overwrites an existing destination.
+
+`export_file_to_chat` is the machine -> client bridge. It returns an MCP `ResourceLink` with a logical `chatrepo-file://` URI. Both implementations register the matching resource template; `resources/read` revalidates the path and byte limit before returning the binary resource. The feature is independent of Secure MCP Tunnel and works over any supported MCP transport/reachable HTTPS endpoint.
+
+The two directions have independent operator-owned ceilings: `FILE_TRANSFER_IMPORT_MAX_BYTES` and `FILE_TRANSFER_EXPORT_MAX_BYTES`.
+
+### 4) Git through subprocess
 
 Git information is obtained through `git` CLI commands executed with:
 
@@ -74,22 +83,22 @@ Git information is obtained through `git` CLI commands executed with:
 - explicit argument list
 - capped output
 
-### 4) Safe/full command runner
+### 5) Safe/full command runner
 
 `ACCESS_MODE=safe` uses scoped paths, allowlisted commands by default, preview writes, hashes, and confirmation gates. `ACCESS_MODE=full` forces unrestricted bash/filesystem, applies writes by default, enables move/delete, and treats structural confirmations as granted. Safe mode blocks raw `git push`; full mode intentionally permits it because it is real shell access. Separate structural interlocks remain for secret tools, force push, and hard reset.
 
 Command, job, terminal, Git/GitHub, and exhaustive-search output is redacted before persistence or bounded in-memory retention. Direct command, Git, and GitHub responses use a configurable 64 KiB head/tail preview by default, independently of their hard capture ceilings. Full redacted output is stored as a quota-managed artifact; bounded inline receipts state whether the inline view is complete and provide an opaque `read_artifact` continuation when it is not. Heavy operations write start/finish audit records without raw arguments or secrets.
 
-### 5) Text/code search through ripgrep
+### 6) Text/code search through ripgrep
 
 Search-heavy tools rely on `rg`, because it is fast and scales well for large trees. Quick search streams matches and terminates at its global result cap. Exhaustive search reuses the durable background-job lifecycle instead of buffering the repository-wide result in the server process. `recent_changes` walks file metadata and retains only a bounded top-N heap.
 
-### 6) Secret-aware file access
+### 7) Secret-aware file access
 
 Even in read-only mode, not every file should be exposed.  
 This server blocks sensitive patterns by default. Structured access can be enabled only with `ACCESS_MODE=full` plus `ALLOW_SECRET_ACCESS=true`; raw full-mode shell follows OS permissions.
 
-### 7) Two implementations, one release
+### 8) Two implementations, one release
 
 The Python package and Go binary are equal public implementations. Python
 derives exact success/error output unions from its result models; Go embeds and

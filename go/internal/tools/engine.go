@@ -252,6 +252,10 @@ func (e *Engine) Shutdown() {
 func (e *Engine) Execute(ctx context.Context, name string, args map[string]any) map[string]any {
 	var result map[string]any
 	switch name {
+	case "receive_chat_file":
+		result = e.receiveChatFile(ctx, args)
+	case "export_file_to_chat":
+		result = e.exportFileToChat(args)
 	case "repo_info", "list_dir", "tree", "read_text_file", "read_multiple_files",
 		"file_metadata", "find_files", "search_text", "symbol_search", "recent_changes",
 		"todo_scan", "dependency_map", "list_repos", "list_heavy_operations", "doctor", "smoke_all",

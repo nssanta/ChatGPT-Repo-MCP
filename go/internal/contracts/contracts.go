@@ -35,6 +35,7 @@ type Tool struct {
 	InputSchema  json.RawMessage `json:"inputSchema"`
 	OutputSchema json.RawMessage `json:"outputSchema"`
 	Annotations  Annotations     `json:"annotations"`
+	Meta         map[string]any  `json:"_meta,omitempty"`
 }
 
 // Annotations mirrors MCP tool behavior hints. Pointer booleans retain an
@@ -62,8 +63,8 @@ func Load() (Document, error) {
 	if document.ContractVersion != 3 {
 		return Document{}, fmt.Errorf("unsupported tool contract version %d", document.ContractVersion)
 	}
-	if len(document.Tools) != 98 {
-		return Document{}, fmt.Errorf("tool contract must contain exactly 98 tools, got %d", len(document.Tools))
+	if len(document.Tools) != 100 {
+		return Document{}, fmt.Errorf("tool contract must contain exactly 100 tools, got %d", len(document.Tools))
 	}
 	for _, name := range []string{"boundedOutputReceiptV1", "artifactContinuationV1", "readArtifactResultV1"} {
 		if len(document.ResultSchemas[name]) == 0 {

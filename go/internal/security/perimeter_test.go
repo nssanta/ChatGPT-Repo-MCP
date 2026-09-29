@@ -299,3 +299,33 @@ func TestResolvePhysicalAndHelpers(t *testing.T) {
 		t.Fatal("fallback catch-all without allow-all flag should block write")
 	}
 }
+
+func TestResolveTransferAllowsBinaryButKeepsSecretPolicy(t *testing.T) {
+	root := t.TempDir()
+	settings := perimeterSettings(root)
+	p := New(settings)
+
+	if _, err := p.ResolveTransfer("payload.bin", true, true); err != nil {
+		t.Fatalf("binary transfer should be allowed: %v", err)
+	}
+	if _, err := p.ResolveTransfer(".env", true, false); err == nil {
+		t.Fatal("secret transfer must remain blocked")
+	}
+
+	settings.AllowSecretAccess = true
+	p = New(settings)
+	if _, err := p.ResolveTransfer(".env", true, false); err != nil {
+		t.Fatalf("explicit secret access should be honored: %v", err)
+	}
+}
+
+func TestResolvePhysicalFindsExistingAncestorBeforeMissingSegments(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	p := New(perimeterSettings(root))
+	if _, err := p.ResolveTransfer("linked/missing/payload.bin", true, true); err == nil {
+		t.Fatal("nested missing path through escaping symlink must be rejected")
+	}
+}

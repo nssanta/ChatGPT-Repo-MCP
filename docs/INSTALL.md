@@ -61,7 +61,7 @@ cp .env.example .env
 ## Configuration and verification
 
 Set at least `PROJECT_ROOT` in the shared `.env`. The default endpoint is
-`http://127.0.0.1:8000/mcp` for both implementations.
+`http://127.0.0.1:8000/mcp` for both implementations. Optional binary file-transfer ceilings are `FILE_TRANSFER_IMPORT_MAX_BYTES` (512 MiB by default) and `FILE_TRANSFER_EXPORT_MAX_BYTES` (100 MiB by default); see [File transfer](FILE_TRANSFER.md).
 
 ```bash
 ./scripts/smoke_test.sh

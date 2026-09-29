@@ -306,7 +306,7 @@ async def verify(python_url: str, go_url: str, fixture: Path) -> None:
         go_schema = json.dumps(go_meta["tools"], indent=2, sort_keys=True).splitlines()
         difference = "\n".join(difflib.unified_diff(python_schema, go_schema, "python", "go", n=3))
         raise AssertionError(f"Python/Go live tool schemas differ:\n{difference}")
-    assert len(python_meta["tools"]) == 92
+    assert len(python_meta["tools"]) == 94
 
     for name, arguments in (
         ("list_dir", {"path": ".", "include_hidden": False}),

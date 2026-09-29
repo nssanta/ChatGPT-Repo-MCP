@@ -38,6 +38,8 @@ TOOL_SUCCESS_SPECS: dict[str, tuple[ToolSuccessSpec, ...]] = {
     ),
     "read_multiple_files": ((False, ("files",)),),
     "file_metadata": ((False, ("path", "exists", "type", "name", "suffix")),),
+    "receive_chat_file": ((True, ("path", "file_id", "file_name", "mime_type", "size_bytes", "sha256", "dry_run")),),
+    "export_file_to_chat": ((True, ("path", "name", "mime_type", "size_bytes", "sha256", "resource_uri")),),
     "find_files": ((False, ("pattern", "path", "matches", "count")), (True, ("pattern", "matches", "count", "truncated"))),
     "search_text": (
         (False, ("query", "path", "results", "count", "mode")),
@@ -169,7 +171,8 @@ _FIELD_TYPES: dict[str, Any] = {
     "language": str, "tool_used": list[Any], "missing_tools": list[Any], "output_truncated": bool,
     "stack": list[str] | str, "dependencies": dict[str, Any] | list[Any], "implementation": str,
     "capabilities": dict[str, Any], "normalized": str, "policy_mode": str, "output": str,
-    "receipt": dict[str, Any],
+    "receipt": dict[str, Any], "file_id": str, "file_name": str, "mime_type": str,
+    "size_bytes": int, "resource_uri": str,
 }
 
 

@@ -16,7 +16,7 @@ func cleanEnvironment(t *testing.T, root string) {
 		"CANONICAL_NAMESPACE", "TRANSPORT", "WORKSPACE_ROOTS",
 		"ENABLE_PTY", "PERSIST_FULL_OUTPUT", "RESOURCE_PROFILE", "RESOURCE_BUFFER_BYTES", "MAX_HEAVY_OPERATIONS",
 		"DEFAULT_INLINE_OUTPUT_BYTES", "MAX_RESPONSE_CHARS", "MAX_DIFF_BYTES", "MAX_COMMAND_OUTPUT_CHARS",
-		"COMMAND_TIMEOUT_MS", "COMMAND_JOB_TIMEOUT_MS",
+		"COMMAND_TIMEOUT_MS", "COMMAND_JOB_TIMEOUT_MS", "FILE_TRANSFER_IMPORT_MAX_BYTES", "FILE_TRANSFER_EXPORT_MAX_BYTES",
 	} {
 		t.Setenv(name, "")
 		_ = os.Unsetenv(name)
@@ -112,6 +112,9 @@ func TestLoadDefaultsAndNormalization(t *testing.T) {
 	}
 	if settings.CommandJobTimeout != 4*time.Hour {
 		t.Fatalf("unexpected command job timeout: %v", settings.CommandJobTimeout)
+	}
+	if settings.FileTransferImportMaxBytes != 512*1024*1024 || settings.FileTransferExportMaxBytes != 100*1024*1024 {
+		t.Fatalf("unexpected file transfer limits: import=%d export=%d", settings.FileTransferImportMaxBytes, settings.FileTransferExportMaxBytes)
 	}
 }
 
@@ -232,5 +235,17 @@ func TestLoadValidation(t *testing.T) {
 	t.Setenv("TRANSPORT", "invalid")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid transport error")
+	}
+}
+
+func TestLoadRejectsNonPositiveFileTransferLimits(t *testing.T) {
+	for _, name := range []string{"FILE_TRANSFER_IMPORT_MAX_BYTES", "FILE_TRANSFER_EXPORT_MAX_BYTES"} {
+		t.Run(name, func(t *testing.T) {
+			makeRoot(t)
+			t.Setenv(name, "0")
+			if _, err := Load(); err == nil {
+				t.Fatalf("%s=0 was accepted", name)
+			}
+		})
 	}
 }
