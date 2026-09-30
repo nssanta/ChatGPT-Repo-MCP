@@ -23,6 +23,8 @@ func TestMCPContractParityForAllTools(t *testing.T) {
 	settings := appSettings(t.TempDir())
 	settings.AccessMode = "full"
 	settings.EnablePTY = true
+	settings.ComputerUseEnabled = true
+	settings.ComputerControlEnabled = true
 	application, err := New(settings)
 	if err != nil {
 		t.Fatal(err)

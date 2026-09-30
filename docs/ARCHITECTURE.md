@@ -22,13 +22,14 @@ ChatGPT (Developer Mode)
 Reverse Proxy (Caddy or Nginx)
         │
         ▼
-Shared MCP catalog (100 tools; 94 default)
+Shared canonical MCP catalog (116 tools; Computer Use gated)
         │
         ├── Python FastMCP package
         └── Go MCP binary
         │
         ├── Filesystem tools (validated reads)
         ├── Binary-safe ChatGPT/MCP file transfer (fileParams + ResourceLink/resources/read)
+        ├── Optional Computer Use (ImageContent + shared cross-platform computer host)
         ├── Git tools + git-workflow (branch/stash/fetch/pull/push/merge/worktree)
         ├── GitHub tools (PR/CI via `gh`) + diagnostics/symbol index
         ├── Safe text edit tools (diff + hash guarded)
@@ -74,7 +75,13 @@ Write tools return unified diffs. If `dry_run` is omitted, safe mode previews an
 
 The two directions have independent operator-owned ceilings: `FILE_TRANSFER_IMPORT_MAX_BYTES` and `FILE_TRANSFER_EXPORT_MAX_BYTES`.
 
-### 4) Git through subprocess
+### 4) Shared cross-platform Computer Use
+
+The Python and Go MCP servers both delegate desktop vision/control to the same `chatrepo-computer-host` companion. The companion embeds platform drivers for Linux X11, Linux Wayland portal/PipeWire, Windows UIA/Win32, and macOS AX/CoreGraphics. It owns snapshot ids, TTL, coordinate mapping, stale-window checks, action verification and sequence limits, so those semantics cannot drift between the two public MCP implementations.
+
+Computer Use is opt-in. `COMPUTER_USE_ENABLED=true` registers six read-only desktop inspection tools. Full input additionally requires `ACCESS_MODE=full` and `COMPUTER_CONTROL_ENABLED=true`. Screenshots are returned as MCP `ImageContent`; the base64 transport payload is removed from structured output. See [COMPUTER_USE.md](COMPUTER_USE.md).
+
+### 5) Git through subprocess
 
 Git information is obtained through `git` CLI commands executed with:
 
@@ -83,22 +90,22 @@ Git information is obtained through `git` CLI commands executed with:
 - explicit argument list
 - capped output
 
-### 5) Safe/full command runner
+### 6) Safe/full command runner
 
 `ACCESS_MODE=safe` uses scoped paths, allowlisted commands by default, preview writes, hashes, and confirmation gates. `ACCESS_MODE=full` forces unrestricted bash/filesystem, applies writes by default, enables move/delete, and treats structural confirmations as granted. Safe mode blocks raw `git push`; full mode intentionally permits it because it is real shell access. Separate structural interlocks remain for secret tools, force push, and hard reset.
 
 Command, job, terminal, Git/GitHub, and exhaustive-search output is redacted before persistence or bounded in-memory retention. Direct command, Git, and GitHub responses use a configurable 64 KiB head/tail preview by default, independently of their hard capture ceilings. Full redacted output is stored as a quota-managed artifact; bounded inline receipts state whether the inline view is complete and provide an opaque `read_artifact` continuation when it is not. Heavy operations write start/finish audit records without raw arguments or secrets.
 
-### 6) Text/code search through ripgrep
+### 7) Text/code search through ripgrep
 
 Search-heavy tools rely on `rg`, because it is fast and scales well for large trees. Quick search streams matches and terminates at its global result cap. Exhaustive search reuses the durable background-job lifecycle instead of buffering the repository-wide result in the server process. `recent_changes` walks file metadata and retains only a bounded top-N heap.
 
-### 7) Secret-aware file access
+### 8) Secret-aware file access
 
 Even in read-only mode, not every file should be exposed.  
 This server blocks sensitive patterns by default. Structured access can be enabled only with `ACCESS_MODE=full` plus `ALLOW_SECRET_ACCESS=true`; raw full-mode shell follows OS permissions.
 
-### 8) Two implementations, one release
+### 9) Two implementations, one release
 
 The Python package and Go binary are equal public implementations. Python
 derives exact success/error output unions from its result models; Go embeds and

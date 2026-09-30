@@ -161,6 +161,11 @@ func (e *Engine) repoInfo(ctx context.Context, repo string) map[string]any {
 			"max_file_bytes": e.settings.MaxFileBytes, "max_response_chars": e.settings.MaxResponseChars,
 			"max_read_files": e.settings.MaxReadFiles, "max_search_results": e.settings.MaxSearchResults,
 			"file_transfer_import_max_bytes": e.settings.FileTransferImportMaxBytes, "file_transfer_export_max_bytes": e.settings.FileTransferExportMaxBytes,
+			"computer_use_enabled": e.settings.ComputerUseEnabled, "computer_control_enabled": e.settings.ComputerControlEnabled,
+			"computer_snapshot_ttl_seconds": int(e.settings.ComputerSnapshotTTL.Seconds()), "computer_action_timeout_ms": int(e.settings.ComputerActionTimeout.Milliseconds()),
+			"computer_idle_timeout_seconds": int(e.settings.ComputerIdleTimeout.Seconds()),
+			"computer_max_sequence_steps":   e.settings.ComputerMaxSequenceSteps, "computer_capture_max_edge": e.settings.ComputerCaptureMaxEdge,
+			"maintenance_enabled": e.settings.MaintenanceEnabled, "maintenance_interval_seconds": int(e.settings.MaintenanceInterval.Seconds()), "audit_log_ttl_seconds": int(e.settings.AuditLogTTL.Seconds()),
 			"max_tree_entries": e.settings.MaxTreeEntries, "blocked_globs": e.settings.BlockedGlobs,
 			"resource_profile": e.settings.ResourceProfile, "resource_profile_applied": e.settings.ResourceProfileApplied, "resource_buffer_bytes": e.settings.ResourceBufferBytes,
 			"resource_buffer_enforced": false, "resource_buffer_semantics": "diagnostic_estimate_only",
@@ -732,6 +737,16 @@ func (e *Engine) doctor(ctx context.Context) map[string]any {
 			}
 			return "POSIX PTY is unavailable on this platform"
 		}(),
+	}
+	if e.settings.ComputerUseEnabled {
+		computerStatus := e.executeComputerTool(ctx, "computer_status", map[string]any{})
+		computerStatus["enabled"] = true
+		computerStatus["control_enabled"] = e.settings.ComputerControlEnabled
+		capabilities["computer"] = computerStatus
+	} else {
+		capabilities["computer"] = map[string]any{
+			"ok": true, "enabled": false, "control_enabled": false, "reason": "COMPUTER_USE_ENABLED=false",
+		}
 	}
 	capabilities["subagents"] = map[string]any{"available": false, "enabled": false, "reason": "No executor configured in V1"}
 	return map[string]any{

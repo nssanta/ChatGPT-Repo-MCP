@@ -19,7 +19,7 @@ autostart, and troubleshooting: [OpenAI Secure MCP Tunnel runbook](OPENAI_SECURE
 Use:
 
 - **Name:** Repo Agent (or any name you like)
-- **Description:** Coding agent access to your workspace — files, git, tests/builds, git workflow, GitHub PR/CI, diagnostics
+- **Description:** Coding agent access to your workspace — files, git, tests/builds, git workflow, GitHub PR/CI, diagnostics, and optional desktop Computer Use
 - **Connection:** `Tunnel`
 - **Tunnel:** select the tunnel created in OpenAI Platform, or paste its `tunnel_id`
 - **Authentication:** `No Authentication` when this MCP server is loopback-only behind the tunnel
@@ -32,6 +32,9 @@ Recommended local server settings behind Secure MCP Tunnel:
 HOST=127.0.0.1
 MCP_AUTH_MODE=none
 ACCESS_MODE=full
+# Optional desktop vision/control:
+# COMPUTER_USE_ENABLED=true
+# COMPUTER_CONTROL_ENABLED=true
 ```
 
 `ACCESS_MODE=full` removes this server's internal dry-run and confirmation defaults. It does not control ChatGPT's own four-level permission selector.
@@ -76,6 +79,8 @@ Use prompts like:
 - `Проверь TODO и FIXME по проекту`
 - `Сохрани прикреплённый файл в artifacts/input.zip на подключённой машине`
 - `Прикрепи reports/result.zip с VPS обратно в этот чат`
+- `Покажи текущий рабочий стол и какие окна открыты` (если включён Computer Use)
+- `Наведи мышь на эту кнопку, но не нажимай` (если включён full desktop control)
 - `Объясни разницу между ветками и текущим diff`
 
 ## If connection fails

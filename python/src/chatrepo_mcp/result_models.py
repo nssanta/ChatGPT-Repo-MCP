@@ -40,6 +40,28 @@ TOOL_SUCCESS_SPECS: dict[str, tuple[ToolSuccessSpec, ...]] = {
     "file_metadata": ((False, ("path", "exists", "type", "name", "suffix")),),
     "receive_chat_file": ((True, ("path", "file_id", "file_name", "mime_type", "size_bytes", "sha256", "dry_run")),),
     "export_file_to_chat": ((True, ("path", "name", "mime_type", "size_bytes", "sha256", "resource_uri")),),
+    "computer_status": ((True, ("platform", "session", "backend", "capture", "control")),),
+    "computer_observe": ((True, ("snapshot_id", "mime_type", "image_width", "image_height", "bounds", "scene")),),
+    "computer_zoom": ((True, ("snapshot_id", "mime_type", "image_width", "image_height", "bounds", "scene")),),
+    "computer_windows": ((True, ("windows",)),),
+    "computer_elements": ((True, ("elements",)),),
+    "computer_wait": ((True, ("met",)),),
+    "computer_element": (
+        (True, ("snapshot_id", "scene")),
+        (True, ("element",)),
+    ),
+    "computer_click": ((True, ("snapshot_id", "scene", "verification")),),
+    "computer_move": ((True, ("snapshot_id", "scene", "verification")),),
+    "computer_type": ((True, ("snapshot_id", "scene", "verification")),),
+    "computer_key": ((True, ("snapshot_id", "scene", "verification")),),
+    "computer_scroll": ((True, ("snapshot_id", "scene", "verification")),),
+    "computer_drag": ((True, ("snapshot_id", "scene", "verification")),),
+    "computer_window": ((True, ("snapshot_id", "scene")),),
+    "computer_launch": ((True, ("snapshot_id", "scene")),),
+    "computer_sequence": (
+        (True, ("sequence_results",)),
+        (True, ("snapshot_id", "scene", "sequence_results")),
+    ),
     "find_files": ((False, ("pattern", "path", "matches", "count")), (True, ("pattern", "matches", "count", "truncated"))),
     "search_text": (
         (False, ("query", "path", "results", "count", "mode")),
@@ -173,6 +195,10 @@ _FIELD_TYPES: dict[str, Any] = {
     "capabilities": dict[str, Any], "normalized": str, "policy_mode": str, "output": str,
     "receipt": dict[str, Any], "file_id": str, "file_name": str, "mime_type": str,
     "size_bytes": int, "resource_uri": str,
+    "platform": str, "session": str, "backend": str, "capture": bool, "control": bool,
+    "snapshot_id": str, "image_width": int, "image_height": int, "bounds": dict[str, Any],
+    "scene": dict[str, Any], "windows": list[Any], "elements": list[Any], "element": dict[str, Any],
+    "met": bool, "sequence_results": list[Any], "failed_step": int, "verification": dict[str, Any],
 }
 
 

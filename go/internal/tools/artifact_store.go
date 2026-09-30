@@ -351,6 +351,12 @@ func (s *artifactStore) writeCompanion(id, path string, content []byte) error {
 	return nil
 }
 
+func (s *artifactStore) cleanup() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cleanupLocked(0)
+}
+
 func (s *artifactStore) cleanupLocked(incoming int64) error {
 	type candidate struct {
 		name    string

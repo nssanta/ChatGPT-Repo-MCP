@@ -18,18 +18,18 @@ help:
 
 ## Regenerate the canonical contract from Python schemas and sync the Go embed.
 contracts:
-	PROJECT_ROOT=$(CURDIR) ACCESS_MODE=full ENABLE_PTY=true PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) contracts/acceptance/export_python_contract.py
+	PROJECT_ROOT=$(CURDIR) ACCESS_MODE=full ENABLE_PTY=true COMPUTER_USE_ENABLED=true COMPUTER_CONTROL_ENABLED=true PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) contracts/acceptance/export_python_contract.py
 	cp contracts/tool-schemas/tools.json $(GO_DIR)/internal/contracts/tools.json
 
 ## Verify contract copies, versions, and live Python schema without changing files.
 contracts-check:
-	PROJECT_ROOT=$(CURDIR) ACCESS_MODE=full ENABLE_PTY=true PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) scripts/check_contracts.py
+	PROJECT_ROOT=$(CURDIR) ACCESS_MODE=full ENABLE_PTY=true COMPUTER_USE_ENABLED=true COMPUTER_CONTROL_ENABLED=true PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) scripts/check_contracts.py
 
 acceptance: build
 	PATH=$(PYTHON_BIN_DIR):$$PATH $(PYTHON_ENV) contracts/acceptance/run_dual_server.py
 
 ## Install the Python implementation with all development dependencies.
-python-install:
+python-install: computer-host
 	$(PYTHON_ENV) -m pip install -e './$(PYTHON_DIR)[dev]'
 
 python-test:
@@ -67,9 +67,13 @@ go-coverage:
 	GOTOOLCHAIN=$(GO_MODULE_TOOLCHAIN) $(GO) -C $(GO_DIR) test -coverprofile=coverage-security.out ./internal/security
 	GOTOOLCHAIN=$(GO_MODULE_TOOLCHAIN) $(GO) -C $(GO_DIR) tool cover -func=coverage-security.out | $(PYTHON) scripts/check_go_coverage.py --minimum 90
 
-## Build the Go binary into bin/chatrepo-mcp.
-build:
+## Build the shared Computer Use companion used by both Python and Go MCP implementations.
+computer-host:
 	mkdir -p bin
+	CGO_ENABLED=0 $(GO) -C $(GO_DIR) build -trimpath -ldflags "-s -w" -o ../bin/chatrepo-computer-host ./cmd/chatrepo-computer-host
+
+## Build the Go MCP binary plus its shared Computer Use companion.
+build: computer-host
 	CGO_ENABLED=0 $(GO) -C $(GO_DIR) build -trimpath -ldflags "-s -w -X github.com/nssanta/ChatGPT-Repo-MCP/go/internal/app.Version=$(VERSION)" -o ../bin/chatrepo-mcp ./cmd/chatrepo-mcp
 
 test: python-test go-test contracts-check

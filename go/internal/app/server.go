@@ -4,6 +4,7 @@ package app
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -44,14 +45,14 @@ func New(settings config.Settings) (*Application, error) {
 	server := mcp.NewServer(&mcp.Implementation{Name: document.Server.Name + "-go", Version: version}, nil)
 	names := make([]string, 0, len(document.Tools))
 	for _, contractTool := range document.Tools {
-		if isPTYTool(contractTool.Name) && !(settings.FullAccess() && settings.EnablePTY && runtime.GOOS != "windows") {
+		if !toolEnabled(contractTool.Name, settings) {
 			continue
 		}
 		names = append(names, contractTool.Name)
 	}
 	engine := tools.New(settings, names)
 	for _, contractTool := range document.Tools {
-		if isPTYTool(contractTool.Name) && !(settings.FullAccess() && settings.EnablePTY && runtime.GOOS != "windows") {
+		if !toolEnabled(contractTool.Name, settings) {
 			continue
 		}
 		definition := contractTool
@@ -80,12 +81,32 @@ func New(settings config.Settings) (*Application, error) {
 				}
 			}
 			result := engine.Execute(ctx, definition.Name, arguments)
-			encoded, err := json.Marshal(result)
-			if err != nil {
-				return nil, fmt.Errorf("marshal %s result: %w", definition.Name, err)
-			}
 			isError := result["ok"] == false
-			content := []mcp.Content{&mcp.TextContent{Text: string(encoded)}}
+			structured := result
+			content := []mcp.Content{}
+			if imageB64, ok := result["image_b64"].(string); ok && imageB64 != "" && !isError {
+				image, decodeErr := base64.StdEncoding.DecodeString(imageB64)
+				if decodeErr != nil {
+					return nil, fmt.Errorf("decode %s screenshot: %w", definition.Name, decodeErr)
+				}
+				structured = cloneResult(result)
+				delete(structured, "image_b64")
+				mimeType, _ := structured["mime_type"].(string)
+				if mimeType == "" {
+					mimeType = "image/png"
+				}
+				snapshotID, _ := structured["snapshot_id"].(string)
+				content = append(content,
+					&mcp.TextContent{Text: fmt.Sprintf("Fresh computer scene %s; use this snapshot_id for coordinate actions.", snapshotID)},
+					&mcp.ImageContent{Data: image, MIMEType: mimeType},
+				)
+			} else {
+				encoded, err := json.Marshal(structured)
+				if err != nil {
+					return nil, fmt.Errorf("marshal %s result: %w", definition.Name, err)
+				}
+				content = append(content, &mcp.TextContent{Text: string(encoded)})
+			}
 			if definition.Name == "export_file_to_chat" && !isError {
 				uri, _ := result["resource_uri"].(string)
 				name, _ := result["name"].(string)
@@ -101,7 +122,7 @@ func New(settings config.Settings) (*Application, error) {
 			}
 			return &mcp.CallToolResult{
 				Content:           content,
-				StructuredContent: result,
+				StructuredContent: structured,
 				IsError:           isError,
 			}, nil
 		})
@@ -128,6 +149,44 @@ func New(settings config.Settings) (*Application, error) {
 		},
 	)
 	return &Application{Settings: settings, Contract: document, Server: server, Engine: engine}, nil
+}
+
+func cloneResult(source map[string]any) map[string]any {
+	copy := make(map[string]any, len(source))
+	for key, value := range source {
+		copy[key] = value
+	}
+	return copy
+}
+
+func toolEnabled(name string, settings config.Settings) bool {
+	if isPTYTool(name) && !(settings.FullAccess() && settings.EnablePTY && runtime.GOOS != "windows") {
+		return false
+	}
+	if !isComputerTool(name) {
+		return true
+	}
+	if !settings.ComputerUseEnabled {
+		return false
+	}
+	if isComputerControlTool(name) && (!settings.ComputerControlEnabled || !settings.FullAccess()) {
+		return false
+	}
+	return true
+}
+
+func isComputerTool(name string) bool {
+	return strings.HasPrefix(name, "computer_")
+}
+
+func isComputerControlTool(name string) bool {
+	switch name {
+	case "computer_element", "computer_click", "computer_move", "computer_type", "computer_key", "computer_scroll",
+		"computer_drag", "computer_window", "computer_launch", "computer_sequence":
+		return true
+	default:
+		return false
+	}
 }
 
 func resultSize(value any) *int64 {

@@ -4,6 +4,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -14,25 +15,31 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/nssanta/ChatGPT-Repo-MCP/go/internal/computer"
 	"github.com/nssanta/ChatGPT-Repo-MCP/go/internal/config"
 	"github.com/nssanta/ChatGPT-Repo-MCP/go/internal/security"
 )
 
 // Engine dispatches contract tools to focused implementations.
 type Engine struct {
-	settings     config.Settings
-	perimeter    *security.Perimeter
-	toolNames    []string
-	jobsMu       sync.RWMutex
-	jobs         map[string]*job
-	terminalsMu  sync.RWMutex
-	terminals    map[string]*terminalSession
-	artifactOnce sync.Once
-	artifacts    *artifactStore
-	artifactErr  error
-	heavySlots   chan struct{}
-	heavyMu      sync.RWMutex
-	heavyOps     map[string]*heavyOperation
+	settings            config.Settings
+	perimeter           *security.Perimeter
+	toolNames           []string
+	jobsMu              sync.RWMutex
+	jobs                map[string]*job
+	terminalsMu         sync.RWMutex
+	terminals           map[string]*terminalSession
+	artifactOnce        sync.Once
+	artifacts           *artifactStore
+	artifactErr         error
+	heavySlots          chan struct{}
+	heavyMu             sync.RWMutex
+	heavyOps            map[string]*heavyOperation
+	computerMu          sync.Mutex
+	computer            *computer.HostClient
+	maintenanceStop     chan struct{}
+	maintenanceStopOnce sync.Once
+	maintenanceWG       sync.WaitGroup
 }
 
 type heavyOperationLease struct {
@@ -209,14 +216,68 @@ func New(settings config.Settings, toolNames []string) *Engine {
 	if settings.MaxHeavyOperations > 0 {
 		engine.heavySlots = make(chan struct{}, settings.MaxHeavyOperations)
 	}
+	engine.startMaintenance()
 	return engine
 }
 
 // ToolNames returns the registered runtime tool catalog for readiness output.
 func (e *Engine) ToolNames() []string { return append([]string(nil), e.toolNames...) }
 
+func (e *Engine) computerClient() (*computer.HostClient, error) {
+	e.computerMu.Lock()
+	defer e.computerMu.Unlock()
+	if e.computer != nil {
+		return e.computer, nil
+	}
+	client, err := computer.NewHostClient(computer.HostOptions{
+		SnapshotTTL:      e.settings.ComputerSnapshotTTL,
+		ActionTimeout:    e.settings.ComputerActionTimeout,
+		IdleTimeout:      e.settings.ComputerIdleTimeout,
+		MaxSequenceSteps: e.settings.ComputerMaxSequenceSteps,
+		CaptureMaxEdge:   e.settings.ComputerCaptureMaxEdge,
+		ControlEnabled:   e.settings.ComputerControlEnabled,
+	})
+	if err != nil {
+		return nil, err
+	}
+	e.computer = client
+	return client, nil
+}
+
+func (e *Engine) executeComputerTool(ctx context.Context, name string, args map[string]any) map[string]any {
+	method := strings.TrimPrefix(name, "computer_")
+	client, err := e.computerClient()
+	if err != nil {
+		return map[string]any{"ok": false, "error_kind": "computer_host_unavailable", "error": err.Error()}
+	}
+	result, err := client.Call(ctx, method, args)
+	if err != nil {
+		var driverErr *computer.DriverError
+		if errors.As(err, &driverErr) {
+			return map[string]any{"ok": false, "error_kind": driverErr.Code, "error": driverErr.Message}
+		}
+		// Transport/process failures are recoverable on the next call. Do not cache
+		// a dead long-lived companion forever.
+		e.computerMu.Lock()
+		if e.computer == client {
+			e.computer.Close()
+			e.computer = nil
+		}
+		e.computerMu.Unlock()
+		return map[string]any{"ok": false, "error_kind": "computer_host_failed", "error": err.Error()}
+	}
+	if result == nil {
+		result = map[string]any{}
+	}
+	if _, ok := result["ok"]; !ok {
+		result["ok"] = true
+	}
+	return result
+}
+
 // Shutdown terminates every process group owned by this engine.
 func (e *Engine) Shutdown() {
+	e.stopMaintenance()
 	e.jobsMu.RLock()
 	jobIDs := make([]string, 0, len(e.jobs))
 	for id := range e.jobs {
@@ -246,6 +307,12 @@ func (e *Engine) Shutdown() {
 	for _, id := range terminalIDs {
 		_ = e.closeTerminal(id, "SIGTERM", e.settings.KillGrace, false)
 	}
+	e.computerMu.Lock()
+	if e.computer != nil {
+		e.computer.Close()
+		e.computer = nil
+	}
+	e.computerMu.Unlock()
 }
 
 // Execute invokes one public tool and returns structured JSON content.
@@ -256,6 +323,10 @@ func (e *Engine) Execute(ctx context.Context, name string, args map[string]any) 
 		result = e.receiveChatFile(ctx, args)
 	case "export_file_to_chat":
 		result = e.exportFileToChat(args)
+	case "computer_status", "computer_observe", "computer_zoom", "computer_windows", "computer_elements",
+		"computer_wait", "computer_element", "computer_click", "computer_move", "computer_type", "computer_key",
+		"computer_scroll", "computer_drag", "computer_window", "computer_launch", "computer_sequence":
+		result = e.executeComputerTool(ctx, name, args)
 	case "repo_info", "list_dir", "tree", "read_text_file", "read_multiple_files",
 		"file_metadata", "find_files", "search_text", "symbol_search", "recent_changes",
 		"todo_scan", "dependency_map", "list_repos", "list_heavy_operations", "doctor", "smoke_all",

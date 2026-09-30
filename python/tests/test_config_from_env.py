@@ -7,6 +7,26 @@ import pytest
 from chatrepo_mcp import config
 
 
+_CONFIG_ENV_NAMES = (
+    "PROJECT_ROOT", "ACCESS_MODE", "MCP_AUTH_MODE", "MCP_BEARER_TOKEN",
+    "COMMAND_POLICY_MODE", "SECRET_GLOBS", "ALLOW_SECRET_ACCESS", "ENABLE_PTY",
+    "PERSIST_FULL_OUTPUT", "RESOURCE_PROFILE", "RESOURCE_BUFFER_BYTES", "MAX_HEAVY_OPERATIONS",
+    "DEFAULT_INLINE_OUTPUT_BYTES", "MAX_RESPONSE_CHARS", "MAX_DIFF_BYTES",
+    "MAX_COMMAND_OUTPUT_CHARS", "COMMAND_TIMEOUT_MS", "COMMAND_JOB_TIMEOUT_MS",
+    "FILE_TRANSFER_IMPORT_MAX_BYTES", "FILE_TRANSFER_EXPORT_MAX_BYTES",
+    "COMPUTER_USE_ENABLED", "COMPUTER_CONTROL_ENABLED", "COMPUTER_SNAPSHOT_TTL_SECONDS",
+    "COMPUTER_ACTION_TIMEOUT_MS", "COMPUTER_IDLE_TIMEOUT_SECONDS",
+    "COMPUTER_MAX_SEQUENCE_STEPS", "COMPUTER_CAPTURE_MAX_EDGE",
+    "MAINTENANCE_ENABLED", "MAINTENANCE_INTERVAL_SECONDS", "AUDIT_LOG_TTL_SECONDS",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_config_environment(monkeypatch) -> None:
+    for name in _CONFIG_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_from_env_requires_project_root(monkeypatch) -> None:
     monkeypatch.delenv("PROJECT_ROOT", raising=False)
 
@@ -150,4 +170,105 @@ def test_from_env_rejects_non_positive_file_transfer_limits(
     monkeypatch.setenv(name, "0")
 
     with pytest.raises(RuntimeError, match=name):
+        config.Settings.from_env()
+
+
+def test_from_env_computer_use_defaults_and_validation(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    for name in (
+        "COMPUTER_USE_ENABLED",
+        "COMPUTER_CONTROL_ENABLED",
+        "COMPUTER_SNAPSHOT_TTL_SECONDS",
+        "COMPUTER_ACTION_TIMEOUT_MS",
+        "COMPUTER_IDLE_TIMEOUT_SECONDS",
+        "COMPUTER_MAX_SEQUENCE_STEPS",
+        "COMPUTER_CAPTURE_MAX_EDGE",
+        "MAINTENANCE_ENABLED",
+        "MAINTENANCE_INTERVAL_SECONDS",
+        "AUDIT_LOG_TTL_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = config.Settings.from_env()
+    assert settings.computer_use_enabled is False
+    assert settings.computer_control_enabled is False
+    assert settings.computer_snapshot_ttl_seconds == 30
+    assert settings.computer_action_timeout_ms == 30_000
+    assert settings.computer_idle_timeout_seconds == 300
+    assert settings.computer_max_sequence_steps == 20
+    assert settings.computer_capture_max_edge == 1568
+    assert settings.maintenance_enabled is True
+    assert settings.maintenance_interval_seconds == 21_600
+    assert settings.audit_log_ttl_seconds == 604_800
+
+    monkeypatch.setenv("COMPUTER_CONTROL_ENABLED", "true")
+    with pytest.raises(RuntimeError, match="COMPUTER_CONTROL_ENABLED=true requires"):
+        config.Settings.from_env()
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["COMPUTER_SNAPSHOT_TTL_SECONDS", "COMPUTER_ACTION_TIMEOUT_MS"],
+)
+def test_from_env_rejects_non_positive_computer_limits(
+    tmp_path: Path, monkeypatch, name: str,
+) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv(name, "0")
+
+    with pytest.raises(RuntimeError, match=name):
+        config.Settings.from_env()
+
+
+
+@pytest.mark.parametrize("value", ["0", "128", "8193"])
+def test_from_env_rejects_unsafe_computer_capture_edge(
+    tmp_path: Path, monkeypatch, value: str,
+) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("COMPUTER_CAPTURE_MAX_EDGE", value)
+
+    with pytest.raises(RuntimeError, match="COMPUTER_CAPTURE_MAX_EDGE"):
+        config.Settings.from_env()
+
+
+@pytest.mark.parametrize("value", ["0", "29", "86401"])
+def test_from_env_rejects_unsafe_computer_idle_timeout(
+    tmp_path: Path, monkeypatch, value: str,
+) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("COMPUTER_IDLE_TIMEOUT_SECONDS", value)
+
+    with pytest.raises(RuntimeError, match="COMPUTER_IDLE_TIMEOUT_SECONDS"):
+        config.Settings.from_env()
+
+
+@pytest.mark.parametrize("value", ["0", "21"])
+def test_from_env_rejects_unsafe_computer_sequence_limit(
+    tmp_path: Path, monkeypatch, value: str,
+) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("COMPUTER_MAX_SEQUENCE_STEPS", value)
+
+    with pytest.raises(RuntimeError, match="COMPUTER_MAX_SEQUENCE_STEPS"):
+        config.Settings.from_env()
+
+
+@pytest.mark.parametrize("value", ["0", "59", "604801"])
+def test_from_env_rejects_unsafe_maintenance_interval(
+    tmp_path: Path, monkeypatch, value: str,
+) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("MAINTENANCE_INTERVAL_SECONDS", value)
+    with pytest.raises(RuntimeError, match="MAINTENANCE_INTERVAL_SECONDS"):
+        config.Settings.from_env()
+
+
+@pytest.mark.parametrize("value", ["0", "3599"])
+def test_from_env_rejects_unsafe_audit_ttl(
+    tmp_path: Path, monkeypatch, value: str,
+) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("AUDIT_LOG_TTL_SECONDS", value)
+    with pytest.raises(RuntimeError, match="AUDIT_LOG_TTL_SECONDS"):
         config.Settings.from_env()

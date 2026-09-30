@@ -2,7 +2,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](python/)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go/)
-[![MCP](https://img.shields.io/badge/MCP-100%20tools-black)](contracts/tool-schemas/tools.json)
+[![MCP](https://img.shields.io/badge/MCP-116%20tools-black)](contracts/tool-schemas/tools.json)
 [![Platforms](https://img.shields.io/badge/Go-Linux%20%7C%20macOS%20%7C%20Windows-5c6ac4)](docs/INSTALL.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -10,7 +10,7 @@
 подключения к ChatGPT и автозапуска после reboot есть
 [полный runbook на английском](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP-сервер, который превращает **любую папку или репозиторий** в рабочую среду для автономного кодинг-агента внутри ChatGPT. Пользователь выбирает Python-пакет или самостоятельный Go-бинарник; обе версии используют единый каталог из 100 инструментов. Каждый тул публикует канонические входную и additive-выходную схемы, поэтому MCP-клиенты получают типизированный structured result без потери прежнего JSON-текста. `ENABLE_PTY=true` теперь является дефолтом: на POSIX достаточно включить `ACCESS_MODE=full`, чтобы получить все 100 инструментов; safe-режим публикует 94 без PTY.
+MCP-сервер, который превращает **любую папку или репозиторий** в рабочую среду для автономного кодинг-агента внутри ChatGPT. Пользователь выбирает Python-пакет или самостоятельный Go-бинарник; обе версии используют единый канонический каталог из **116 инструментов**. Computer Use выключен по умолчанию, поэтому существующая поверхность не меняется: 94 тула в safe-режиме и 100 в доверенном POSIX full-режиме. Включение «глаз» добавляет шесть read-only desktop-тулов, а полный контроль рабочего стола даёт все 116 на Linux/macOS (110 на Windows, где нет POSIX PTY). Каждый тул публикует канонические входную и additive-выходную схемы.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -187,10 +187,11 @@ WORKSPACE_ROOTS=/home/you/code/shared-protos
 
 ## Группы тулов
 
-Обе реализации используют каталог из 100 тулов. Safe-режим регистрирует 94, а full-режим на Linux/macOS — все 100, поскольку PTY включён по умолчанию. `doctor` показывает реальное число, effective PATH, версии toolchain, feature capabilities и активные heavy operations. `list_heavy_operations` показывает владельцев общего пула, а `cancel_heavy_operation` отменяет поддерживаемые синхронные операции; для jobs и terminal sessions список указывает штатный cancel tool и id.
+Обе реализации используют один канонический каталог из 116 тулов. Computer Use выключен по умолчанию: safe-режим сохраняет 94 тула, а full-режим на Linux/macOS — 100. `COMPUTER_USE_ENABLED=true` добавляет шесть read-only desktop-тулов; при `ACCESS_MODE=full` + `COMPUTER_CONTROL_ENABLED=true` Linux/macOS публикуют все 116. Windows не имеет шести POSIX PTY-тулов, поэтому максимум с полным desktop-control — 110. `doctor` показывает фактически зарегистрированное число, effective PATH, версии toolchain, feature capabilities и активные heavy operations.
 
 - **Чтение / поиск** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`. `search_text` по умолчанию работает в ограниченном режиме `quick`; `mode=exhaustive` запускает долговечный фоновый поиск, который опрашивается и отменяется через существующие job-инструменты.
 - **Передача файлов** — `receive_chat_file` переносит вложение из ChatGPT на подключённый ПК/VPS через `openai/fileParams`, а `export_file_to_chat` возвращает binary-safe MCP `ResourceLink`, после чего клиент забирает файл с машины через `resources/read`. Лимиты входа и выхода настраиваются отдельно; детали — в [File transfer](docs/FILE_TRANSFER.md). Это работает и через Secure MCP Tunnel, и через обычный доступный HTTPS MCP endpoint с аутентификацией.
+- **Computer Use (опционально)** — `computer_status`, `computer_observe`, `computer_zoom`, `computer_windows`, `computer_elements`, `computer_wait` плюс full-mode «руки»: semantic element actions, наведение/клики/scroll/drag мыши, Unicode-ввод, клавиши, окна, запуск приложений и короткие последовательности. Снимки возвращаются как MCP `ImageContent`, координаты привязаны к свежему `snapshot_id`. Подробно: [Computer Use](docs/COMPUTER_USE.md).
 - **Git (только чтение)** — `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_blame`, `git_grep` — все принимают опциональный `repo=` для polyrepo-workspace.
 - **Редактирование** — `write_text_file`, `replace_text_in_file`, `insert_text_in_file`, `delete_text_in_file`, `create_text_file`, `move_path`, `delete_path`, `ensure_directory`, `batch_edit_files`, `apply_change_set`, `replace_lines`, `insert_before_line` / `insert_after_line`, `insert_before_heading` / `insert_after_heading`, `append_to_file`, `apply_patch`. Если `dry_run` не передан, safe делает preview, а full применяет; явный `dry_run=true` всегда оставляет preview.
 - **Команды / тесты / jobs** — `run_command`, `run_commands`, `run_test_preset`, `list_test_presets`, `run_quality_gate`, `quality_gate_and_commit`, `scan_new_policy_violations`, `command_policy_check`, `start_command_job` / `list_command_jobs` / `get_command_job` / `get_job_status` / `get_command_log` / `summarize_command_log` / `cancel_command_job`, `read_artifact`, `git_worktree_guard`, `git_commit`.
@@ -216,6 +217,10 @@ WORKSPACE_ROOTS=/home/you/code/shared-protos
 Дефолты: **512 MiB на вход** (`FILE_TRANSFER_IMPORT_MAX_BYTES=536870912`) и **100 MiB на выход** (`FILE_TRANSFER_EXPORT_MAX_BYTES=104857600`). Это серверные потолки; у MCP-host могут быть меньшие ограничения. Специальный transfer-path разрешает бинарные файлы, но продолжает соблюдать workspace, symlink, write и secret policy.
 
 Передача файлов **не зависит** от OpenAI Secure MCP Tunnel. Для приватного ПК можно оставить tunnel, а VPS/публичный сервер подключать обычным аутентифицированным HTTPS `/mcp`. Подробности — [File transfer](docs/FILE_TRANSFER.md).
+
+## Computer Use
+
+Управление рабочим столом выключено по умолчанию и одинаково работает через Python- и Go-реализации благодаря общему `chatrepo-computer-host`. Для «глаз» задайте `COMPUTER_USE_ENABLED=true`. Для мыши/клавиатуры/окон дополнительно нужны `ACCESS_MODE=full` и `COMPUTER_CONTROL_ENABLED=true`. Поддерживаются Linux X11, Linux Wayland через XDG Desktop Portal/PipeWire, Windows UI Automation/Win32 и macOS AX/CoreGraphics. Multi-monitor, permissions и snapshot-защита описаны в [docs/COMPUTER_USE.md](docs/COMPUTER_USE.md).
 
 * * *
 

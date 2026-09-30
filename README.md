@@ -2,14 +2,14 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](python/)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go/)
-[![MCP](https://img.shields.io/badge/MCP-100%20tools-black)](contracts/tool-schemas/tools.json)
+[![MCP](https://img.shields.io/badge/MCP-116%20tools-black)](contracts/tool-schemas/tools.json)
 [![Platforms](https://img.shields.io/badge/Go-Linux%20%7C%20macOS%20%7C%20Windows-5c6ac4)](docs/INSTALL.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Run it from a private Linux PC through OpenAI Secure MCP Tunnel, including
 ChatGPT connection and reboot-safe systemd services: [full runbook](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT. Choose the Python package or the standalone Go binary; both share the same 100-tool capability catalog, configuration, and access semantics. Every tool publishes canonical input and additive output schemas, so MCP clients receive typed structured results without losing the existing JSON text representation. `ENABLE_PTY=true` is the default, so trusted POSIX deployments expose all 100 tools as soon as `ACCESS_MODE=full`; safe mode still exposes 94 tools without PTY.
+MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT. Choose the Python package or the standalone Go binary; both share the same canonical **116-tool** capability catalog, configuration, and access semantics. Computer Use is opt-in, so existing installs keep the same baseline surface: 94 tools in safe mode and 100 tools in trusted POSIX full mode. Enabling desktop vision adds six read-only tools; enabling full desktop control exposes all 116 on Linux/macOS (110 on Windows, where POSIX PTY is unavailable). Every tool publishes canonical input and additive output schemas, so MCP clients receive typed structured results without losing the existing JSON text representation.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -186,10 +186,11 @@ Call `run_test_preset("test")` at the workspace root, or `run_test_preset("test"
 
 ## Tool Groups
 
-Both implementations share a 100-tool catalog. Safe mode registers 94 tools; full mode registers all 100 on Linux/macOS because PTY is enabled by default. Call `doctor` (or `smoke_all`) for the registered count, effective PATH, tool versions, feature capabilities, and active heavy operations. Use `list_heavy_operations` to inspect shared-pool holders and `cancel_heavy_operation` for cancellable synchronous work; background jobs and terminal sessions advertise their specialized cancellation tool and id. Groups:
+Both implementations share one canonical 116-tool catalog. Computer Use is disabled by default, leaving the existing baseline at 94 tools in safe mode and 100 in full mode on Linux/macOS. `COMPUTER_USE_ENABLED=true` adds six read-only desktop tools; with `ACCESS_MODE=full` and `COMPUTER_CONTROL_ENABLED=true`, all 116 are registered on Linux/macOS. Windows omits the six POSIX PTY tools, so its full-control maximum is 110. Call `doctor` (or `smoke_all`) for the actual registered count, effective PATH, tool versions, feature capabilities, and active heavy operations. Use `list_heavy_operations` to inspect shared-pool holders and `cancel_heavy_operation` for cancellable synchronous work; background jobs and terminal sessions advertise their specialized cancellation tool and id. Groups:
 
 - **Read / search** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`. `search_text` defaults to bounded `quick` mode; `mode=exhaustive` starts a durable background search that is polled and cancelled through the existing job tools.
 - **File transfer** — `receive_chat_file` copies a ChatGPT attachment to the connected machine through `openai/fileParams`; `export_file_to_chat` returns a binary-safe MCP `ResourceLink` so the client can fetch a PC/VPS file through `resources/read`. Import/export limits are independently configurable; see [File transfer](docs/FILE_TRANSFER.md). The feature works over Secure MCP Tunnel or any reachable authenticated HTTPS MCP endpoint.
+- **Computer Use (gated)** — `computer_status`, `computer_observe`, `computer_zoom`, `computer_windows`, `computer_elements`, `computer_wait`, plus full-mode control tools for semantic element actions, mouse move/click/scroll/drag, Unicode typing, keys, windows, app launch and short action sequences. Screenshots are native MCP `ImageContent`; coordinate actions are bound to fresh `snapshot_id` values. See [Computer Use](docs/COMPUTER_USE.md).
 - **Git (read-only)** — `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_blame`, `git_grep` — all accept an optional `repo=` for polyrepo workspaces.
 - **Editing** — `write_text_file`, `replace_text_in_file`, `insert_text_in_file`, `delete_text_in_file`, `create_text_file`, `move_path`, `delete_path`, `ensure_directory`, `batch_edit_files`, `apply_change_set`, `replace_lines`, `insert_before_line` / `insert_after_line`, `insert_before_heading` / `insert_after_heading`, `append_to_file`, `apply_patch`. Omitted `dry_run` previews in safe mode and applies in full mode; explicit `dry_run=true` always previews.
 - **Commands / tests / jobs** — `run_command`, `run_commands`, `run_test_preset`, `list_test_presets`, `run_quality_gate`, `quality_gate_and_commit`, `scan_new_policy_violations`, `command_policy_check`, `start_command_job` / `list_command_jobs` / `get_command_job` / `get_job_status` / `get_command_log` / `summarize_command_log` / `cancel_command_job`, `read_artifact`, `git_worktree_guard`, `git_commit`.
@@ -215,6 +216,10 @@ Two binary-safe tools bridge ChatGPT and the connected machine without routing f
 Defaults are **512 MiB inbound** (`FILE_TRANSFER_IMPORT_MAX_BYTES=536870912`) and **100 MiB outbound** (`FILE_TRANSFER_EXPORT_MAX_BYTES=104857600`). These are server ceilings; the MCP host may impose a lower limit. Binary files are allowed through these dedicated tools, while workspace, symlink, write and secret-path policies remain enforced.
 
 The transfer layer does **not** depend on OpenAI Secure MCP Tunnel. A private PC can use the tunnel, while a VPS/public deployment can use the normal authenticated HTTPS `/mcp` endpoint. See [File transfer](docs/FILE_TRANSFER.md).
+
+## Computer Use
+
+Desktop vision/control is opt-in and shared by the Python and Go MCP implementations through the same `chatrepo-computer-host`. Set `COMPUTER_USE_ENABLED=true` for read-only desktop vision. Full mouse/keyboard/window control additionally requires `ACCESS_MODE=full` and `COMPUTER_CONTROL_ENABLED=true`. The feature supports Linux X11, Linux Wayland through XDG Desktop Portal/PipeWire, Windows UI Automation/Win32, and macOS AX/CoreGraphics. See [Computer Use](docs/COMPUTER_USE.md) for platform permissions, multi-monitor behavior, snapshot safety, and packaging.
 
 * * *
 

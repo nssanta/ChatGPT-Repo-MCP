@@ -4,7 +4,7 @@
   "server": {
     "name": "chatrepo-mcp",
     "version": "0.3.0",
-    "toolCount": 100
+    "toolCount": 116
   },
   "resultSchemas": {
     "boundedOutputReceiptV1": {
@@ -2125,6 +2125,3154 @@
       },
       "annotations": {
         "title": "Command Policy Check",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_click",
+      "description": "Click an observed element or exact coordinates from a fresh screenshot, then return a fresh scene.",
+      "inputSchema": {
+        "properties": {
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Required for coordinate mode; use the exact fresh scene id.",
+            "title": "Snapshot Id"
+          },
+          "x": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "X pixel in snapshot coordinates.",
+            "title": "X"
+          },
+          "y": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Y pixel in snapshot coordinates.",
+            "title": "Y"
+          },
+          "element_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Accessibility element id; preferred over coordinates.",
+            "title": "Element Id"
+          },
+          "button": {
+            "default": "left",
+            "enum": [
+              "left",
+              "right",
+              "middle",
+              "back",
+              "forward"
+            ],
+            "title": "Button",
+            "type": "string"
+          },
+          "clicks": {
+            "default": 1,
+            "maximum": 3,
+            "minimum": 1,
+            "title": "Clicks",
+            "type": "integer"
+          },
+          "modifiers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Modifiers"
+          },
+          "hold_ms": {
+            "anyOf": [
+              {
+                "maximum": 30000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hold Ms"
+          }
+        },
+        "title": "computer_click_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerClickSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "snapshot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot Id"
+              },
+              "scene": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scene"
+              },
+              "verification": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Verification"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "scene",
+              "verification",
+              "ok"
+            ],
+            "title": "ComputerClickSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerClickSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "snapshot_id": {
+            "type": "string"
+          },
+          "scene": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "verification": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "title": "ComputerClickResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Click Computer",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_drag",
+      "description": "Drag between two points from the same fresh snapshot and verify the resulting desktop state.",
+      "inputSchema": {
+        "properties": {
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "x": {
+            "minimum": 0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "minimum": 0,
+            "title": "Y",
+            "type": "number"
+          },
+          "to_x": {
+            "minimum": 0,
+            "title": "To X",
+            "type": "number"
+          },
+          "to_y": {
+            "minimum": 0,
+            "title": "To Y",
+            "type": "number"
+          },
+          "button": {
+            "default": "left",
+            "enum": [
+              "left",
+              "right",
+              "middle"
+            ],
+            "title": "Button",
+            "type": "string"
+          },
+          "duration_ms": {
+            "default": 400,
+            "maximum": 30000,
+            "minimum": 0,
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "steps": {
+            "default": 24,
+            "maximum": 500,
+            "minimum": 2,
+            "title": "Steps",
+            "type": "integer"
+          },
+          "modifiers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Modifiers"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "x",
+          "y",
+          "to_x",
+          "to_y"
+        ],
+        "title": "computer_drag_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerDragSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "snapshot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot Id"
+              },
+              "scene": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scene"
+              },
+              "verification": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Verification"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "scene",
+              "verification",
+              "ok"
+            ],
+            "title": "ComputerDragSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerDragSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "snapshot_id": {
+            "type": "string"
+          },
+          "scene": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "verification": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "title": "ComputerDragResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Drag On Computer",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_element",
+      "description": "Prefer semantic accessibility actions over pixel clicks; stale element ids fail instead of guessing.",
+      "inputSchema": {
+        "properties": {
+          "element_id": {
+            "description": "Ephemeral id from the latest computer_elements/scene.",
+            "title": "Element Id",
+            "type": "string"
+          },
+          "action": {
+            "default": "press",
+            "enum": [
+              "press",
+              "focus",
+              "set_value",
+              "show_menu",
+              "increment",
+              "decrement",
+              "select",
+              "expand",
+              "collapse",
+              "scroll_into_view",
+              "locate",
+              "read"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Value"
+          }
+        },
+        "required": [
+          "element_id"
+        ],
+        "title": "computer_element_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerElementSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "snapshot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot Id"
+              },
+              "scene": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scene"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "scene",
+              "ok"
+            ],
+            "title": "ComputerElementSuccess0",
+            "type": "object"
+          },
+          "ComputerElementSuccess1": {
+            "additionalProperties": true,
+            "properties": {
+              "element": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Element"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "element",
+              "ok"
+            ],
+            "title": "ComputerElementSuccess1",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerElementSuccess0"
+          },
+          {
+            "$ref": "#/$defs/ComputerElementSuccess1"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "snapshot_id": {
+            "type": "string"
+          },
+          "scene": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "element": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "title": "ComputerElementResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Act On Computer Element",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_elements",
+      "description": "Read the native accessibility tree (AX/UIA/AT-SPI) and return ephemeral element ids.",
+      "inputSchema": {
+        "properties": {
+          "window_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Exact window id from computer_windows.",
+            "title": "Window Id"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional process id when no window id is supplied.",
+            "title": "Pid"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional text filter over element name/value/description.",
+            "title": "Query"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional normalized accessibility role filter.",
+            "title": "Role"
+          },
+          "max": {
+            "default": 150,
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Max",
+            "type": "integer"
+          },
+          "depth": {
+            "default": 12,
+            "maximum": 30,
+            "minimum": 1,
+            "title": "Depth",
+            "type": "integer"
+          }
+        },
+        "title": "computer_elements_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerElementsSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "elements": {
+                "anyOf": [
+                  {
+                    "items": {},
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Elements"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "elements",
+              "ok"
+            ],
+            "title": "ComputerElementsSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerElementsSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "elements": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        "title": "ComputerElementsResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Computer Elements",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_key",
+      "description": "Send a key or shortcut to the unchanged active window and return the resulting fresh scene.",
+      "inputSchema": {
+        "properties": {
+          "snapshot_id": {
+            "description": "Fresh snapshot proving the intended focused window.",
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "key": {
+            "description": "Key name or chord such as enter, escape, ctrl+shift+t, cmd+s.",
+            "title": "Key",
+            "type": "string"
+          },
+          "modifiers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Modifiers"
+          },
+          "repeat": {
+            "default": 1,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Repeat",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "key"
+        ],
+        "title": "computer_key_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerKeySuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "snapshot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot Id"
+              },
+              "scene": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scene"
+              },
+              "verification": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Verification"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "scene",
+              "verification",
+              "ok"
+            ],
+            "title": "ComputerKeySuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerKeySuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "snapshot_id": {
+            "type": "string"
+          },
+          "scene": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "verification": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "title": "ComputerKeyResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Press Computer Key",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_launch",
+      "description": "Launch an installed native application and show the resulting desktop state.",
+      "inputSchema": {
+        "properties": {
+          "app": {
+            "description": "Application name, bundle id, desktop id, or absolute executable/app path.",
+            "title": "App",
+            "type": "string"
+          },
+          "args": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Args"
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "title": "computer_launch_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerLaunchSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "snapshot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot Id"
+              },
+              "scene": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scene"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "scene",
+              "ok"
+            ],
+            "title": "ComputerLaunchSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerLaunchSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "snapshot_id": {
+            "type": "string"
+          },
+          "scene": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "title": "ComputerLaunchResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Launch Computer App",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_move",
+      "description": "Move the real mouse pointer without clicking, then return the resulting hover scene.",
+      "inputSchema": {
+        "properties": {
+          "snapshot_id": {
+            "description": "Fresh snapshot_id whose pixels define x/y.",
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "x": {
+            "description": "X pixel in snapshot coordinates.",
+            "minimum": 0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "description": "Y pixel in snapshot coordinates.",
+            "minimum": 0,
+            "title": "Y",
+            "type": "number"
+          },
+          "hover_ms": {
+            "default": 250,
+            "description": "Wait after moving so hover UI/tooltips can appear.",
+            "maximum": 5000,
+            "minimum": 0,
+            "title": "Hover Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "x",
+          "y"
+        ],
+        "title": "computer_move_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerMoveSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "snapshot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot Id"
+              },
+              "scene": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scene"
+              },
+              "verification": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Verification"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "scene",
+              "verification",
+              "ok"
+            ],
+            "title": "ComputerMoveSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerMoveSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "snapshot_id": {
+            "type": "string"
+          },
+          "scene": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "verification": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "title": "ComputerMoveResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Move Computer Pointer",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_observe",
+      "description": "See the connected computer's current desktop.\n\n        Returns a real screenshot as MCP ImageContent plus a structured scene with snapshot_id,\n        active window/focus, window list and accessibility elements when the OS exposes them.\n        The default capture is the whole virtual desktop, so multi-monitor desktops are visible.\n        Never guess click coordinates from screen dimensions: use pixels from this exact image and\n        pass its snapshot_id to coordinate actions.\n        ",
+      "inputSchema": {
+        "properties": {
+          "include_ocr": {
+            "default": false,
+            "description": "Run the platform OCR engine for this frame. Off by default to keep observation lightweight.",
+            "title": "Include Ocr",
+            "type": "boolean"
+          }
+        },
+        "title": "computer_observe_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerObserveSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "snapshot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot Id"
+              },
+              "mime_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Mime Type"
+              },
+              "image_width": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Image Width"
+              },
+              "image_height": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Image Height"
+              },
+              "bounds": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Bounds"
+              },
+              "scene": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scene"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "mime_type",
+              "image_width",
+              "image_height",
+              "bounds",
+              "scene",
+              "ok"
+            ],
+            "title": "ComputerObserveSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerObserveSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "snapshot_id": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "image_width": {
+            "type": "integer"
+          },
+          "image_height": {
+            "type": "integer"
+          },
+          "bounds": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "scene": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "title": "ComputerObserveResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Observe Computer",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_scroll",
+      "description": "Scroll at a point from the exact observed snapshot; use direction+amount for portable wheel steps.",
+      "inputSchema": {
+        "properties": {
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "x": {
+            "minimum": 0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "minimum": 0,
+            "title": "Y",
+            "type": "number"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "up",
+                  "down",
+                  "left",
+                  "right"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Direction"
+          },
+          "amount": {
+            "default": 3,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Amount",
+            "type": "integer"
+          },
+          "delta_x": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delta X"
+          },
+          "delta_y": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delta Y"
+          },
+          "unit": {
+            "default": "pixel",
+            "enum": [
+              "pixel",
+              "line"
+            ],
+            "title": "Unit",
+            "type": "string"
+          },
+          "modifiers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Modifiers"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "x",
+          "y"
+        ],
+        "title": "computer_scroll_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerScrollSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "snapshot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot Id"
+              },
+              "scene": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scene"
+              },
+              "verification": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Verification"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "scene",
+              "verification",
+              "ok"
+            ],
+            "title": "ComputerScrollSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerScrollSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "snapshot_id": {
+            "type": "string"
+          },
+          "scene": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "verification": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "title": "ComputerScrollResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Scroll Computer",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_sequence",
+      "description": "Execute a short already-known UI sequence atomically enough to avoid a model round trip per click.",
+      "inputSchema": {
+        "properties": {
+          "steps": {
+            "description": "Known dependent computer actions. Each entry has operation (computer_click/type/key/move/scroll/drag/element/window/launch/wait) and its arguments. Stops on first failure.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "title": "computer_sequence_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerSequenceSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "sequence_results": {
+                "anyOf": [
+                  {
+                    "items": {},
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Sequence Results"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "sequence_results",
+              "ok"
+            ],
+            "title": "ComputerSequenceSuccess0",
+            "type": "object"
+          },
+          "ComputerSequenceSuccess1": {
+            "additionalProperties": true,
+            "properties": {
+              "snapshot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot Id"
+              },
+              "scene": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scene"
+              },
+              "sequence_results": {
+                "anyOf": [
+                  {
+                    "items": {},
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Sequence Results"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "scene",
+              "sequence_results",
+              "ok"
+            ],
+            "title": "ComputerSequenceSuccess1",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerSequenceSuccess0"
+          },
+          {
+            "$ref": "#/$defs/ComputerSequenceSuccess1"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "sequence_results": {
+            "items": {},
+            "type": "array"
+          },
+          "snapshot_id": {
+            "type": "string"
+          },
+          "scene": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "title": "ComputerSequenceResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Computer Action Sequence",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_status",
+      "description": "Inspect desktop availability, OS/session backend, permissions, and input/capture capabilities.",
+      "inputSchema": {
+        "properties": {},
+        "title": "computer_status_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerStatusSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "platform": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Platform"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Session"
+              },
+              "backend": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Backend"
+              },
+              "capture": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Capture"
+              },
+              "control": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Control"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "platform",
+              "session",
+              "backend",
+              "capture",
+              "control",
+              "ok"
+            ],
+            "title": "ComputerStatusSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerStatusSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "platform": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "backend": {
+            "type": "string"
+          },
+          "capture": {
+            "type": "boolean"
+          },
+          "control": {
+            "type": "boolean"
+          }
+        },
+        "title": "ComputerStatusResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Computer Status",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_type",
+      "description": "Type Unicode text into the current focus only if the active window still matches the snapshot.",
+      "inputSchema": {
+        "properties": {
+          "snapshot_id": {
+            "description": "Fresh snapshot proving the intended focused window.",
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "clear": {
+            "default": false,
+            "title": "Clear",
+            "type": "boolean"
+          },
+          "submit": {
+            "default": false,
+            "title": "Submit",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "text"
+        ],
+        "title": "computer_type_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerTypeSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "snapshot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot Id"
+              },
+              "scene": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scene"
+              },
+              "verification": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Verification"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "scene",
+              "verification",
+              "ok"
+            ],
+            "title": "ComputerTypeSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerTypeSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "snapshot_id": {
+            "type": "string"
+          },
+          "scene": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "verification": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "title": "ComputerTypeResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Type On Computer",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_wait",
+      "description": "Wait for a desktop condition instead of blindly sleeping; visual waits return the fresh scene.",
+      "inputSchema": {
+        "properties": {
+          "until": {
+            "default": "stable",
+            "enum": [
+              "stable",
+              "element",
+              "element_gone",
+              "window",
+              "window_gone",
+              "text",
+              "text_gone",
+              "time"
+            ],
+            "title": "Until",
+            "type": "string"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Role"
+          },
+          "timeout_ms": {
+            "default": 10000,
+            "maximum": 120000,
+            "minimum": 100,
+            "title": "Timeout Ms",
+            "type": "integer"
+          },
+          "stable_ms": {
+            "default": 800,
+            "maximum": 10000,
+            "minimum": 200,
+            "title": "Stable Ms",
+            "type": "integer"
+          },
+          "ms": {
+            "anyOf": [
+              {
+                "maximum": 120000,
+                "minimum": 50,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ms"
+          }
+        },
+        "title": "computer_wait_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerWaitSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "met": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Met"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "met",
+              "ok"
+            ],
+            "title": "ComputerWaitSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerWaitSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "met": {
+            "type": "boolean"
+          }
+        },
+        "title": "ComputerWaitResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Wait For Computer",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_window",
+      "description": "Control one previously discovered native window and return a fresh scene.",
+      "inputSchema": {
+        "properties": {
+          "window_id": {
+            "title": "Window Id",
+            "type": "string"
+          },
+          "action": {
+            "enum": [
+              "focus",
+              "minimize",
+              "maximize",
+              "restore",
+              "close",
+              "set_bounds"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "x": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "X"
+          },
+          "y": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Y"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Width"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Height"
+          }
+        },
+        "required": [
+          "window_id",
+          "action"
+        ],
+        "title": "computer_window_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerWindowSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "snapshot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot Id"
+              },
+              "scene": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scene"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "scene",
+              "ok"
+            ],
+            "title": "ComputerWindowSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerWindowSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "snapshot_id": {
+            "type": "string"
+          },
+          "scene": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "title": "ComputerWindowResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Control Computer Window",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_windows",
+      "description": "List current native application windows and exact window ids; do not invent ids from titles.",
+      "inputSchema": {
+        "properties": {},
+        "title": "computer_windows_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerWindowsSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "windows": {
+                "anyOf": [
+                  {
+                    "items": {},
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Windows"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "windows",
+              "ok"
+            ],
+            "title": "ComputerWindowsSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerWindowsSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "windows": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        "title": "ComputerWindowsResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Computer Windows",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_zoom",
+      "description": "Recapture one visible region at native resolution and return a new independent snapshot.",
+      "inputSchema": {
+        "properties": {
+          "snapshot_id": {
+            "description": "Fresh snapshot_id from computer_observe or a prior zoom.",
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "x": {
+            "description": "Left edge in pixels of the referenced snapshot.",
+            "minimum": 0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "description": "Top edge in pixels of the referenced snapshot.",
+            "minimum": 0,
+            "title": "Y",
+            "type": "number"
+          },
+          "width": {
+            "description": "Region width in snapshot pixels.",
+            "exclusiveMinimum": 0,
+            "title": "Width",
+            "type": "number"
+          },
+          "height": {
+            "description": "Region height in snapshot pixels.",
+            "exclusiveMinimum": 0,
+            "title": "Height",
+            "type": "number"
+          },
+          "include_ocr": {
+            "default": false,
+            "description": "Run OCR for this zoomed frame. Off by default.",
+            "title": "Include Ocr",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "x",
+          "y",
+          "width",
+          "height"
+        ],
+        "title": "computer_zoom_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerZoomSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "snapshot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot Id"
+              },
+              "mime_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Mime Type"
+              },
+              "image_width": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Image Width"
+              },
+              "image_height": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Image Height"
+              },
+              "bounds": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Bounds"
+              },
+              "scene": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Scene"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "mime_type",
+              "image_width",
+              "image_height",
+              "bounds",
+              "scene",
+              "ok"
+            ],
+            "title": "ComputerZoomSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerZoomSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "snapshot_id": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "image_width": {
+            "type": "integer"
+          },
+          "image_height": {
+            "type": "integer"
+          },
+          "bounds": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "scene": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "title": "ComputerZoomResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Zoom Computer Screen",
         "readOnlyHint": true,
         "destructiveHint": false,
         "openWorldHint": false

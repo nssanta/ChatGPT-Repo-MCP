@@ -17,6 +17,10 @@ func cleanEnvironment(t *testing.T, root string) {
 		"ENABLE_PTY", "PERSIST_FULL_OUTPUT", "RESOURCE_PROFILE", "RESOURCE_BUFFER_BYTES", "MAX_HEAVY_OPERATIONS",
 		"DEFAULT_INLINE_OUTPUT_BYTES", "MAX_RESPONSE_CHARS", "MAX_DIFF_BYTES", "MAX_COMMAND_OUTPUT_CHARS",
 		"COMMAND_TIMEOUT_MS", "COMMAND_JOB_TIMEOUT_MS", "FILE_TRANSFER_IMPORT_MAX_BYTES", "FILE_TRANSFER_EXPORT_MAX_BYTES",
+		"COMPUTER_USE_ENABLED", "COMPUTER_CONTROL_ENABLED", "COMPUTER_SNAPSHOT_TTL_SECONDS",
+		"COMPUTER_ACTION_TIMEOUT_MS", "COMPUTER_IDLE_TIMEOUT_SECONDS",
+		"COMPUTER_MAX_SEQUENCE_STEPS", "COMPUTER_CAPTURE_MAX_EDGE",
+		"MAINTENANCE_ENABLED", "MAINTENANCE_INTERVAL_SECONDS", "AUDIT_LOG_TTL_SECONDS",
 	} {
 		t.Setenv(name, "")
 		_ = os.Unsetenv(name)
@@ -115,6 +119,15 @@ func TestLoadDefaultsAndNormalization(t *testing.T) {
 	}
 	if settings.FileTransferImportMaxBytes != 512*1024*1024 || settings.FileTransferExportMaxBytes != 100*1024*1024 {
 		t.Fatalf("unexpected file transfer limits: import=%d export=%d", settings.FileTransferImportMaxBytes, settings.FileTransferExportMaxBytes)
+	}
+	if settings.ComputerUseEnabled || settings.ComputerControlEnabled {
+		t.Fatalf("computer use should default off: %+v", settings)
+	}
+	if settings.ComputerSnapshotTTL != 30*time.Second || settings.ComputerActionTimeout != 30*time.Second || settings.ComputerIdleTimeout != 300*time.Second || settings.ComputerMaxSequenceSteps != 20 || settings.ComputerCaptureMaxEdge != 1568 {
+		t.Fatalf("unexpected computer defaults: ttl=%v timeout=%v idle=%v steps=%d edge=%d", settings.ComputerSnapshotTTL, settings.ComputerActionTimeout, settings.ComputerIdleTimeout, settings.ComputerMaxSequenceSteps, settings.ComputerCaptureMaxEdge)
+	}
+	if !settings.MaintenanceEnabled || settings.MaintenanceInterval != 6*time.Hour || settings.AuditLogTTL != 7*24*time.Hour {
+		t.Fatalf("unexpected maintenance defaults: enabled=%v interval=%v audit_ttl=%v", settings.MaintenanceEnabled, settings.MaintenanceInterval, settings.AuditLogTTL)
 	}
 }
 
@@ -245,6 +258,81 @@ func TestLoadRejectsNonPositiveFileTransferLimits(t *testing.T) {
 			t.Setenv(name, "0")
 			if _, err := Load(); err == nil {
 				t.Fatalf("%s=0 was accepted", name)
+			}
+		})
+	}
+}
+
+func TestLoadComputerUseValidation(t *testing.T) {
+	makeRoot(t)
+	t.Setenv("COMPUTER_CONTROL_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("computer control without computer use was accepted")
+	}
+
+	for _, name := range []string{"COMPUTER_SNAPSHOT_TTL_SECONDS", "COMPUTER_ACTION_TIMEOUT_MS", "COMPUTER_MAX_SEQUENCE_STEPS"} {
+		t.Run(name, func(t *testing.T) {
+			makeRoot(t)
+			t.Setenv(name, "0")
+			if _, err := Load(); err == nil {
+				t.Fatalf("%s=0 was accepted", name)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsUnsafeComputerCaptureEdge(t *testing.T) {
+	for _, value := range []string{"0", "128", "8193"} {
+		t.Run(value, func(t *testing.T) {
+			makeRoot(t)
+			t.Setenv("COMPUTER_CAPTURE_MAX_EDGE", value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("COMPUTER_CAPTURE_MAX_EDGE=%s was accepted", value)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsUnsafeComputerIdleTimeout(t *testing.T) {
+	for _, value := range []string{"0", "29", "86401"} {
+		t.Run(value, func(t *testing.T) {
+			makeRoot(t)
+			t.Setenv("COMPUTER_IDLE_TIMEOUT_SECONDS", value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("COMPUTER_IDLE_TIMEOUT_SECONDS=%s was accepted", value)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsUnsafeComputerSequenceLimit(t *testing.T) {
+	for _, value := range []string{"0", "21"} {
+		t.Run(value, func(t *testing.T) {
+			makeRoot(t)
+			t.Setenv("COMPUTER_MAX_SEQUENCE_STEPS", value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("COMPUTER_MAX_SEQUENCE_STEPS=%s was accepted", value)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsUnsafeMaintenanceSettings(t *testing.T) {
+	for _, value := range []string{"0", "59", "604801"} {
+		t.Run("interval-"+value, func(t *testing.T) {
+			makeRoot(t)
+			t.Setenv("MAINTENANCE_INTERVAL_SECONDS", value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("MAINTENANCE_INTERVAL_SECONDS=%s was accepted", value)
+			}
+		})
+	}
+	for _, value := range []string{"0", "3599"} {
+		t.Run("audit-"+value, func(t *testing.T) {
+			makeRoot(t)
+			t.Setenv("AUDIT_LOG_TTL_SECONDS", value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("AUDIT_LOG_TTL_SECONDS=%s was accepted", value)
 			}
 		})
 	}

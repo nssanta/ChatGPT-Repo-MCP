@@ -2,8 +2,7 @@
 
 The server preserves inherited PATH and probes existing standard toolchain directories, including `/usr/local/go/bin`. For service-only toolchains, set `MCP_EXTRA_PATH`; doctor, diagnostics, GitHub tools, commands, and PTY all use that same effective PATH. A target repository's `.venv` is never discovered implicitly. Persistent PTY is enabled by default but registered only with `ACCESS_MODE=full` on Linux/macOS; set `ENABLE_PTY=false` to disable it explicitly. The Go Windows build omits those six tools.
 
-ChatRepo MCP ships two independent implementations from the same repository.
-Install one of them; do not run both on the same host and port.
+ChatRepo MCP ships two public MCP implementations from the same repository. Install one of them; do not run both on the same host and port. Optional Computer Use is intentionally shared: both implementations call the same `chatrepo-computer-host` companion so desktop behavior cannot drift.
 
 ## Shared runtime dependencies
 
@@ -25,6 +24,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
 python -m pip install -e ./python
+# Needed only when COMPUTER_USE_ENABLED=true in a source checkout:
+make computer-host
 cp .env.example .env
 python -m chatrepo_mcp
 ```
@@ -42,9 +43,7 @@ cp .env.example .env
 ./chatrepo-mcp
 ```
 
-Windows archives use ZIP and include `chatrepo-mcp.exe`. macOS users may need
-to approve an unsigned binary in System Settings when installing outside a
-package manager.
+Release archives include the matching `chatrepo-computer-host` companion beside the MCP binary. Windows archives use ZIP and `.exe` files. macOS archives also include the native `chatrepo-computer-driver`; users may need to approve unsigned binaries and grant Accessibility / Screen Recording when Computer Use is enabled.
 
 ## Build Go from source
 
@@ -61,7 +60,7 @@ cp .env.example .env
 ## Configuration and verification
 
 Set at least `PROJECT_ROOT` in the shared `.env`. The default endpoint is
-`http://127.0.0.1:8000/mcp` for both implementations. Optional binary file-transfer ceilings are `FILE_TRANSFER_IMPORT_MAX_BYTES` (512 MiB by default) and `FILE_TRANSFER_EXPORT_MAX_BYTES` (100 MiB by default); see [File transfer](FILE_TRANSFER.md).
+`http://127.0.0.1:8000/mcp` for both implementations. Optional binary file-transfer ceilings are `FILE_TRANSFER_IMPORT_MAX_BYTES` (512 MiB by default) and `FILE_TRANSFER_EXPORT_MAX_BYTES` (100 MiB by default); see [File transfer](FILE_TRANSFER.md). Computer Use is disabled by default; see [Computer Use](COMPUTER_USE.md) before enabling `COMPUTER_USE_ENABLED` / `COMPUTER_CONTROL_ENABLED`.
 
 ```bash
 ./scripts/smoke_test.sh

@@ -18,7 +18,7 @@ func TestLoadCanonicalContract(t *testing.T) {
 	if document.ContractVersion != 3 {
 		t.Fatalf("contract version = %d, want 3", document.ContractVersion)
 	}
-	if got, want := len(document.Tools), 100; got != want {
+	if got, want := len(document.Tools), 116; got != want {
 		t.Fatalf("tool count = %d, want %d", got, want)
 	}
 	foundArtifact := false

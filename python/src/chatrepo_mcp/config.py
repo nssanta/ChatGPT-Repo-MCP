@@ -92,6 +92,9 @@ class Settings:
     artifact_max_bytes: int = 5_368_709_120
     artifact_disk_reserve_bytes: int = 2_147_483_648
     artifact_ttl_seconds: int = 604_800
+    maintenance_enabled: bool = True
+    maintenance_interval_seconds: int = 21_600
+    audit_log_ttl_seconds: int = 604_800
     resource_profile: str = "auto"
     resource_profile_applied: str = "small"
     resource_detected_memory_bytes: int | None = None
@@ -102,6 +105,13 @@ class Settings:
     default_inline_output_bytes: int = 65_536
     file_transfer_import_max_bytes: int = 512 * 1024**2
     file_transfer_export_max_bytes: int = 100 * 1024**2
+    computer_use_enabled: bool = False
+    computer_control_enabled: bool = False
+    computer_snapshot_ttl_seconds: int = 30
+    computer_action_timeout_ms: int = 30_000
+    computer_idle_timeout_seconds: int = 300
+    computer_max_sequence_steps: int = 20
+    computer_capture_max_edge: int = 1568
 
     @property
     def full_access(self) -> bool:
@@ -250,6 +260,9 @@ class Settings:
             artifact_max_bytes=_env_int("ARTIFACT_MAX_BYTES", 5_368_709_120),
             artifact_disk_reserve_bytes=_env_int("ARTIFACT_DISK_RESERVE_BYTES", 2_147_483_648),
             artifact_ttl_seconds=_env_int("ARTIFACT_TTL_SECONDS", 604_800),
+            maintenance_enabled=_env_bool("MAINTENANCE_ENABLED", True),
+            maintenance_interval_seconds=_env_int("MAINTENANCE_INTERVAL_SECONDS", 21_600),
+            audit_log_ttl_seconds=_env_int("AUDIT_LOG_TTL_SECONDS", 604_800),
             resource_profile=resource_profile,
             resource_profile_applied=resource_limits.profile,
             resource_detected_memory_bytes=resource_limits.detected_memory_bytes,
@@ -259,6 +272,13 @@ class Settings:
             default_inline_output_bytes=_env_int("DEFAULT_INLINE_OUTPUT_BYTES", 65_536),
             file_transfer_import_max_bytes=_env_int("FILE_TRANSFER_IMPORT_MAX_BYTES", 512 * 1024**2),
             file_transfer_export_max_bytes=_env_int("FILE_TRANSFER_EXPORT_MAX_BYTES", 100 * 1024**2),
+            computer_use_enabled=_env_bool("COMPUTER_USE_ENABLED", False),
+            computer_control_enabled=_env_bool("COMPUTER_CONTROL_ENABLED", False),
+            computer_snapshot_ttl_seconds=_env_int("COMPUTER_SNAPSHOT_TTL_SECONDS", 30),
+            computer_action_timeout_ms=_env_int("COMPUTER_ACTION_TIMEOUT_MS", 30_000),
+            computer_idle_timeout_seconds=_env_int("COMPUTER_IDLE_TIMEOUT_SECONDS", 300),
+            computer_max_sequence_steps=_env_int("COMPUTER_MAX_SEQUENCE_STEPS", 20),
+            computer_capture_max_edge=_env_int("COMPUTER_CAPTURE_MAX_EDGE", 1568),
             git_network_timeout=_env_int("GIT_NETWORK_TIMEOUT", 60),
             protected_branches=_env_csv("PROTECTED_BRANCHES", "main,master"),
             allow_force_push=_env_bool("ALLOW_FORCE_PUSH", False),
@@ -292,4 +312,24 @@ class Settings:
             raise RuntimeError("FILE_TRANSFER_IMPORT_MAX_BYTES must be a positive integer")
         if settings.file_transfer_export_max_bytes <= 0:
             raise RuntimeError("FILE_TRANSFER_EXPORT_MAX_BYTES must be a positive integer")
+        if settings.computer_control_enabled and (
+            not settings.computer_use_enabled or not settings.full_access
+        ):
+            raise RuntimeError(
+                "COMPUTER_CONTROL_ENABLED=true requires COMPUTER_USE_ENABLED=true and ACCESS_MODE=full"
+            )
+        if settings.computer_snapshot_ttl_seconds <= 0:
+            raise RuntimeError("COMPUTER_SNAPSHOT_TTL_SECONDS must be a positive integer")
+        if settings.computer_action_timeout_ms <= 0:
+            raise RuntimeError("COMPUTER_ACTION_TIMEOUT_MS must be a positive integer")
+        if not 30 <= settings.computer_idle_timeout_seconds <= 86_400:
+            raise RuntimeError("COMPUTER_IDLE_TIMEOUT_SECONDS must be between 30 and 86400")
+        if not 1 <= settings.computer_max_sequence_steps <= 20:
+            raise RuntimeError("COMPUTER_MAX_SEQUENCE_STEPS must be between 1 and 20")
+        if not 256 <= settings.computer_capture_max_edge <= 8192:
+            raise RuntimeError("COMPUTER_CAPTURE_MAX_EDGE must be between 256 and 8192")
+        if not 60 <= settings.maintenance_interval_seconds <= 604_800:
+            raise RuntimeError("MAINTENANCE_INTERVAL_SECONDS must be between 60 and 604800")
+        if settings.audit_log_ttl_seconds < 3_600:
+            raise RuntimeError("AUDIT_LOG_TTL_SECONDS must be at least 3600")
         return settings

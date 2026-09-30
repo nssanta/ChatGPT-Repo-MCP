@@ -9,9 +9,10 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import CallToolResult, ResourceLink, TextContent
+from mcp.types import CallToolResult, ImageContent, ResourceLink, TextContent
 from pydantic import AnyHttpUrl, AnyUrl, BaseModel, ConfigDict, Field
 
+from .computer_tools import call_computer
 from .command_tools import (
     TEST_PRESETS,
     CommandPolicyError,
@@ -484,6 +485,358 @@ def export_file_to_chat_tool(path: RepoPath) -> CallToolResult | dict:
 )
 def exported_file_resource(token: str) -> bytes:
     return read_export_resource(token=token, settings=settings)
+
+
+def _computer_result(result: dict[str, Any]) -> CallToolResult | dict[str, Any]:
+    """Return structured computer state plus a native MCP image when a fresh frame exists."""
+    if result.get("ok") is not True:
+        return result
+    image_b64 = result.get("image_b64")
+    if not isinstance(image_b64, str) or not image_b64:
+        return result
+    structured = dict(result)
+    structured.pop("image_b64", None)
+    mime_type = str(structured.get("mime_type") or "image/png")
+    snapshot_id = str(structured.get("snapshot_id") or "")
+    return CallToolResult(
+        content=[
+            TextContent(
+                type="text",
+                text=(
+                    f"Fresh computer scene {snapshot_id}; use this snapshot_id for coordinate actions. "
+                    "The image below is the exact frame whose pixel coordinates the tool accepts."
+                ),
+            ),
+            ImageContent(type="image", data=image_b64, mimeType=mime_type),
+        ],
+        structuredContent=structured,
+    )
+
+
+if settings.computer_use_enabled:
+
+    @_tool(
+        name="computer_status",
+        annotations={**READ_ONLY, "title": "Computer Status"},
+    )
+    def computer_status_tool() -> dict:
+        """Inspect desktop availability, OS/session backend, permissions, and input/capture capabilities."""
+        return call_computer(settings, "status")
+
+    @_tool(
+        name="computer_observe",
+        annotations={**READ_ONLY, "title": "Observe Computer"},
+    )
+    def computer_observe_tool(
+        include_ocr: Annotated[
+            bool,
+            Field(description="Run the platform OCR engine for this frame. Off by default to keep observation lightweight."),
+        ] = False,
+    ) -> CallToolResult | dict:
+        """See the connected computer's current desktop.
+
+        Returns a real screenshot as MCP ImageContent plus a structured scene with snapshot_id,
+        active window/focus, window list and accessibility elements when the OS exposes them.
+        The default capture is the whole virtual desktop, so multi-monitor desktops are visible.
+        Never guess click coordinates from screen dimensions: use pixels from this exact image and
+        pass its snapshot_id to coordinate actions.
+        """
+        return _computer_result(call_computer(settings, "observe", include_ocr=include_ocr))
+
+    @_tool(
+        name="computer_zoom",
+        annotations={**READ_ONLY, "title": "Zoom Computer Screen"},
+    )
+    def computer_zoom_tool(
+        snapshot_id: Annotated[str, Field(description="Fresh snapshot_id from computer_observe or a prior zoom.")],
+        x: Annotated[float, Field(ge=0, description="Left edge in pixels of the referenced snapshot.")],
+        y: Annotated[float, Field(ge=0, description="Top edge in pixels of the referenced snapshot.")],
+        width: Annotated[float, Field(gt=0, description="Region width in snapshot pixels.")],
+        height: Annotated[float, Field(gt=0, description="Region height in snapshot pixels.")],
+        include_ocr: Annotated[
+            bool,
+            Field(description="Run OCR for this zoomed frame. Off by default."),
+        ] = False,
+    ) -> CallToolResult | dict:
+        """Recapture one visible region at native resolution and return a new independent snapshot."""
+        return _computer_result(
+            call_computer(
+                settings,
+                "zoom",
+                snapshot_id=snapshot_id,
+                x=x,
+                y=y,
+                width=width,
+                height=height,
+                include_ocr=include_ocr,
+            )
+        )
+
+    @_tool(
+        name="computer_windows",
+        annotations={**READ_ONLY, "title": "Computer Windows"},
+    )
+    def computer_windows_tool() -> dict:
+        """List current native application windows and exact window ids; do not invent ids from titles."""
+        return call_computer(settings, "windows")
+
+    @_tool(
+        name="computer_elements",
+        annotations={**READ_ONLY, "title": "Computer Elements"},
+    )
+    def computer_elements_tool(
+        window_id: Annotated[str | None, Field(description="Exact window id from computer_windows.")] = None,
+        pid: Annotated[int | None, Field(ge=1, description="Optional process id when no window id is supplied.")] = None,
+        query: Annotated[str | None, Field(description="Optional text filter over element name/value/description.")] = None,
+        role: Annotated[str | None, Field(description="Optional normalized accessibility role filter.")] = None,
+        max: Annotated[int, Field(ge=1, le=500)] = 150,
+        depth: Annotated[int, Field(ge=1, le=30)] = 12,
+    ) -> dict:
+        """Read the native accessibility tree (AX/UIA/AT-SPI) and return ephemeral element ids."""
+        params: dict[str, Any] = {"max": max, "depth": depth}
+        if window_id is not None:
+            params["window_id"] = window_id
+        if pid is not None:
+            params["pid"] = pid
+        if query is not None:
+            params["query"] = query
+        if role is not None:
+            params["role"] = role
+        return call_computer(settings, "elements", **params)
+
+    @_tool(
+        name="computer_wait",
+        annotations={**READ_ONLY, "title": "Wait For Computer"},
+    )
+    def computer_wait_tool(
+        until: Literal["stable", "element", "element_gone", "window", "window_gone", "text", "text_gone", "time"] = "stable",
+        query: str | None = None,
+        role: str | None = None,
+        timeout_ms: Annotated[int, Field(ge=100, le=120_000)] = 10_000,
+        stable_ms: Annotated[int, Field(ge=200, le=10_000)] = 800,
+        ms: Annotated[int | None, Field(ge=50, le=120_000)] = None,
+    ) -> CallToolResult | dict:
+        """Wait for a desktop condition instead of blindly sleeping; visual waits return the fresh scene."""
+        params: dict[str, Any] = {
+            "until": until,
+            "timeout_ms": timeout_ms,
+            "stable_ms": stable_ms,
+        }
+        if query is not None:
+            params["query"] = query
+        if role is not None:
+            params["role"] = role
+        if ms is not None:
+            params["ms"] = ms
+        return _computer_result(call_computer(settings, "wait", **params))
+
+    if settings.computer_control_enabled:
+
+        @_tool(
+            name="computer_element",
+            annotations={**SAFE_EDIT_ACTION, "title": "Act On Computer Element"},
+        )
+        def computer_element_tool(
+            element_id: Annotated[str, Field(description="Ephemeral id from the latest computer_elements/scene.")],
+            action: Literal[
+                "press", "focus", "set_value", "show_menu", "increment", "decrement",
+                "select", "expand", "collapse", "scroll_into_view", "locate", "read",
+            ] = "press",
+            value: str | int | float | None = None,
+        ) -> CallToolResult | dict:
+            """Prefer semantic accessibility actions over pixel clicks; stale element ids fail instead of guessing."""
+            params: dict[str, Any] = {"element_id": element_id, "action": action}
+            if value is not None:
+                params["value"] = value
+            return _computer_result(call_computer(settings, "element", **params))
+
+        @_tool(
+            name="computer_click",
+            annotations={**SAFE_EDIT_ACTION, "title": "Click Computer"},
+        )
+        def computer_click_tool(
+            snapshot_id: Annotated[str | None, Field(description="Required for coordinate mode; use the exact fresh scene id.")] = None,
+            x: Annotated[float | None, Field(ge=0, description="X pixel in snapshot coordinates.")] = None,
+            y: Annotated[float | None, Field(ge=0, description="Y pixel in snapshot coordinates.")] = None,
+            element_id: Annotated[str | None, Field(description="Accessibility element id; preferred over coordinates.")] = None,
+            button: Literal["left", "right", "middle", "back", "forward"] = "left",
+            clicks: Annotated[int, Field(ge=1, le=3)] = 1,
+            modifiers: list[str] | None = None,
+            hold_ms: Annotated[int | None, Field(ge=0, le=30_000)] = None,
+        ) -> CallToolResult | dict:
+            """Click an observed element or exact coordinates from a fresh screenshot, then return a fresh scene."""
+            params: dict[str, Any] = {"button": button, "clicks": clicks}
+            for key, value in (
+                ("snapshot_id", snapshot_id), ("x", x), ("y", y),
+                ("element_id", element_id), ("modifiers", modifiers), ("hold_ms", hold_ms),
+            ):
+                if value is not None:
+                    params[key] = value
+            return _computer_result(call_computer(settings, "click", **params))
+
+        @_tool(
+            name="computer_move",
+            annotations={**SAFE_EDIT_ACTION, "title": "Move Computer Pointer"},
+        )
+        def computer_move_tool(
+            snapshot_id: Annotated[str, Field(description="Fresh snapshot_id whose pixels define x/y.")],
+            x: Annotated[float, Field(ge=0, description="X pixel in snapshot coordinates.")],
+            y: Annotated[float, Field(ge=0, description="Y pixel in snapshot coordinates.")],
+            hover_ms: Annotated[int, Field(ge=0, le=5000, description="Wait after moving so hover UI/tooltips can appear.")] = 250,
+        ) -> CallToolResult | dict:
+            """Move the real mouse pointer without clicking, then return the resulting hover scene."""
+            return _computer_result(
+                call_computer(
+                    settings,
+                    "move",
+                    snapshot_id=snapshot_id,
+                    x=x,
+                    y=y,
+                    hover_ms=hover_ms,
+                )
+            )
+
+        @_tool(
+            name="computer_type",
+            annotations={**SAFE_EDIT_ACTION, "title": "Type On Computer"},
+        )
+        def computer_type_tool(
+            snapshot_id: Annotated[str, Field(description="Fresh snapshot proving the intended focused window.")],
+            text: str,
+            clear: bool = False,
+            submit: bool = False,
+        ) -> CallToolResult | dict:
+            """Type Unicode text into the current focus only if the active window still matches the snapshot."""
+            return _computer_result(
+                call_computer(
+                    settings,
+                    "type",
+                    snapshot_id=snapshot_id,
+                    text=text,
+                    clear=clear,
+                    submit=submit,
+                )
+            )
+
+        @_tool(
+            name="computer_key",
+            annotations={**SAFE_EDIT_ACTION, "title": "Press Computer Key"},
+        )
+        def computer_key_tool(
+            snapshot_id: Annotated[str, Field(description="Fresh snapshot proving the intended focused window.")],
+            key: Annotated[str, Field(description="Key name or chord such as enter, escape, ctrl+shift+t, cmd+s.")],
+            modifiers: list[str] | None = None,
+            repeat: Annotated[int, Field(ge=1, le=100)] = 1,
+        ) -> CallToolResult | dict:
+            """Send a key or shortcut to the unchanged active window and return the resulting fresh scene."""
+            params: dict[str, Any] = {"snapshot_id": snapshot_id, "key": key, "repeat": repeat}
+            if modifiers is not None:
+                params["modifiers"] = modifiers
+            return _computer_result(call_computer(settings, "key", **params))
+
+        @_tool(
+            name="computer_scroll",
+            annotations={**SAFE_EDIT_ACTION, "title": "Scroll Computer"},
+        )
+        def computer_scroll_tool(
+            snapshot_id: str,
+            x: Annotated[float, Field(ge=0)],
+            y: Annotated[float, Field(ge=0)],
+            direction: Literal["up", "down", "left", "right"] | None = None,
+            amount: Annotated[int, Field(ge=1, le=100)] = 3,
+            delta_x: float | None = None,
+            delta_y: float | None = None,
+            unit: Literal["pixel", "line"] = "pixel",
+            modifiers: list[str] | None = None,
+        ) -> CallToolResult | dict:
+            """Scroll at a point from the exact observed snapshot; use direction+amount for portable wheel steps."""
+            params: dict[str, Any] = {
+                "snapshot_id": snapshot_id, "x": x, "y": y, "amount": amount, "unit": unit,
+            }
+            for key, value in (
+                ("direction", direction), ("delta_x", delta_x), ("delta_y", delta_y),
+                ("modifiers", modifiers),
+            ):
+                if value is not None:
+                    params[key] = value
+            return _computer_result(call_computer(settings, "scroll", **params))
+
+        @_tool(
+            name="computer_drag",
+            annotations={**SAFE_EDIT_ACTION, "title": "Drag On Computer"},
+        )
+        def computer_drag_tool(
+            snapshot_id: str,
+            x: Annotated[float, Field(ge=0)],
+            y: Annotated[float, Field(ge=0)],
+            to_x: Annotated[float, Field(ge=0)],
+            to_y: Annotated[float, Field(ge=0)],
+            button: Literal["left", "right", "middle"] = "left",
+            duration_ms: Annotated[int, Field(ge=0, le=30_000)] = 400,
+            steps: Annotated[int, Field(ge=2, le=500)] = 24,
+            modifiers: list[str] | None = None,
+        ) -> CallToolResult | dict:
+            """Drag between two points from the same fresh snapshot and verify the resulting desktop state."""
+            params: dict[str, Any] = {
+                "snapshot_id": snapshot_id, "x": x, "y": y, "to_x": to_x, "to_y": to_y,
+                "button": button, "duration_ms": duration_ms, "steps": steps,
+            }
+            if modifiers is not None:
+                params["modifiers"] = modifiers
+            return _computer_result(call_computer(settings, "drag", **params))
+
+        @_tool(
+            name="computer_window",
+            annotations={**SAFE_EDIT_ACTION, "title": "Control Computer Window"},
+        )
+        def computer_window_tool(
+            window_id: str,
+            action: Literal["focus", "minimize", "maximize", "restore", "close", "set_bounds"],
+            x: float | None = None,
+            y: float | None = None,
+            width: Annotated[float | None, Field(gt=0)] = None,
+            height: Annotated[float | None, Field(gt=0)] = None,
+        ) -> CallToolResult | dict:
+            """Control one previously discovered native window and return a fresh scene."""
+            params: dict[str, Any] = {"window_id": window_id, "action": action}
+            for key, value in (("x", x), ("y", y), ("width", width), ("height", height)):
+                if value is not None:
+                    params[key] = value
+            return _computer_result(call_computer(settings, "window", **params))
+
+        @_tool(
+            name="computer_launch",
+            annotations={**SAFE_EDIT_ACTION, "title": "Launch Computer App"},
+        )
+        def computer_launch_tool(
+            app: Annotated[str, Field(description="Application name, bundle id, desktop id, or absolute executable/app path.")],
+            args: list[str] | None = None,
+        ) -> CallToolResult | dict:
+            """Launch an installed native application and show the resulting desktop state."""
+            params: dict[str, Any] = {"app": app}
+            if args is not None:
+                params["args"] = args
+            return _computer_result(call_computer(settings, "launch", **params))
+
+        @_tool(
+            name="computer_sequence",
+            annotations={**SAFE_EDIT_ACTION, "title": "Computer Action Sequence"},
+        )
+        def computer_sequence_tool(
+            steps: Annotated[
+                list[dict[str, Any]],
+                Field(
+                    min_length=1,
+                    max_length=20,
+                    description=(
+                        "Known dependent computer actions. Each entry has operation (computer_click/type/key/"
+                        "move/scroll/drag/element/window/launch/wait) and its arguments. Stops on first failure."
+                    ),
+                ),
+            ],
+        ) -> CallToolResult | dict:
+            """Execute a short already-known UI sequence atomically enough to avoid a model round trip per click."""
+            return _computer_result(call_computer(settings, "sequence", steps=steps))
 
 
 @_tool(
@@ -973,6 +1326,16 @@ def doctor_tool() -> dict:
         checks["workspace"] = {"ok": False, "error": str(exc)}
 
     checks["capabilities"] = {"ok": True, "result": _capability_matrix()}
+    if settings.computer_use_enabled:
+        computer = call_computer(settings, "status")
+        checks["computer"] = computer
+    else:
+        computer = {
+            "ok": True,
+            "enabled": False,
+            "control_enabled": False,
+            "reason": "COMPUTER_USE_ENABLED=false",
+        }
 
     tools = _tool_names()
     path_entries, _, path_warnings = effective_path(settings)
@@ -993,6 +1356,11 @@ def doctor_tool() -> dict:
                 "available": os.name == "posix",
                 "enabled": bool(settings.full_access and settings.enable_pty and os.name == "posix"),
                 "reason": None if os.name == "posix" else "POSIX PTY is unavailable on this platform",
+            },
+            "computer": {
+                **computer,
+                "enabled": settings.computer_use_enabled,
+                "control_enabled": settings.computer_control_enabled,
             },
             "subagents": {
                 "available": False,

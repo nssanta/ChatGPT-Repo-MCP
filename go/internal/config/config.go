@@ -49,6 +49,13 @@ type Settings struct {
 	MaxWriteFileBytes            int64
 	FileTransferImportMaxBytes   int64
 	FileTransferExportMaxBytes   int64
+	ComputerUseEnabled           bool
+	ComputerControlEnabled       bool
+	ComputerSnapshotTTL          time.Duration
+	ComputerActionTimeout        time.Duration
+	ComputerIdleTimeout          time.Duration
+	ComputerMaxSequenceSteps     int
+	ComputerCaptureMaxEdge       int
 	MaxBatchOperations           int
 	MaxCombinedDiffChars         int
 	MaxPatchBytes                int
@@ -65,6 +72,9 @@ type Settings struct {
 	ArtifactMaxBytes             int64
 	ArtifactTTL                  time.Duration
 	ArtifactDiskReserveBytes     int64
+	MaintenanceEnabled           bool
+	MaintenanceInterval          time.Duration
+	AuditLogTTL                  time.Duration
 	ResourceProfile              string
 	ResourceProfileApplied       string
 	ResourceBufferBytes          int64
@@ -200,6 +210,13 @@ func Load() (Settings, error) {
 		MaxWriteFileBytes:            int64(intEnv("MAX_WRITE_FILE_BYTES", 1_000_000)),
 		FileTransferImportMaxBytes:   int64(intEnv("FILE_TRANSFER_IMPORT_MAX_BYTES", 512*1024*1024)),
 		FileTransferExportMaxBytes:   int64(intEnv("FILE_TRANSFER_EXPORT_MAX_BYTES", 100*1024*1024)),
+		ComputerUseEnabled:           boolEnv("COMPUTER_USE_ENABLED", false),
+		ComputerControlEnabled:       boolEnv("COMPUTER_CONTROL_ENABLED", false),
+		ComputerSnapshotTTL:          time.Duration(intEnv("COMPUTER_SNAPSHOT_TTL_SECONDS", 30)) * time.Second,
+		ComputerActionTimeout:        time.Duration(intEnv("COMPUTER_ACTION_TIMEOUT_MS", 30_000)) * time.Millisecond,
+		ComputerIdleTimeout:          time.Duration(intEnv("COMPUTER_IDLE_TIMEOUT_SECONDS", 300)) * time.Second,
+		ComputerMaxSequenceSteps:     intEnv("COMPUTER_MAX_SEQUENCE_STEPS", 20),
+		ComputerCaptureMaxEdge:       intEnv("COMPUTER_CAPTURE_MAX_EDGE", 1568),
 		MaxBatchOperations:           intEnv("MAX_BATCH_OPERATIONS", 50),
 		MaxCombinedDiffChars:         intEnv("MAX_COMBINED_DIFF_CHARS", 300_000),
 		MaxPatchBytes:                intEnv("MAX_PATCH_BYTES", 500_000),
@@ -216,6 +233,9 @@ func Load() (Settings, error) {
 		ArtifactMaxBytes:             int64(intEnv("ARTIFACT_MAX_BYTES", 5*1024*1024*1024)),
 		ArtifactTTL:                  time.Duration(intEnv("ARTIFACT_TTL_SECONDS", 7*24*60*60)) * time.Second,
 		ArtifactDiskReserveBytes:     int64(intEnv("ARTIFACT_DISK_RESERVE_BYTES", 2*1024*1024*1024)),
+		MaintenanceEnabled:           boolEnv("MAINTENANCE_ENABLED", true),
+		MaintenanceInterval:          time.Duration(intEnv("MAINTENANCE_INTERVAL_SECONDS", 6*60*60)) * time.Second,
+		AuditLogTTL:                  time.Duration(intEnv("AUDIT_LOG_TTL_SECONDS", 7*24*60*60)) * time.Second,
 		ResourceProfile:              configuredResourceProfile,
 		ResourceProfileApplied:       resourceProfile,
 		ResourceBufferBytes:          resourceBuffer,
@@ -264,6 +284,30 @@ func Load() (Settings, error) {
 	}
 	if settings.FileTransferExportMaxBytes <= 0 {
 		return Settings{}, errors.New("FILE_TRANSFER_EXPORT_MAX_BYTES must be a positive integer")
+	}
+	if settings.ComputerControlEnabled && (!settings.ComputerUseEnabled || !settings.FullAccess()) {
+		return Settings{}, errors.New("COMPUTER_CONTROL_ENABLED=true requires COMPUTER_USE_ENABLED=true and ACCESS_MODE=full")
+	}
+	if settings.ComputerSnapshotTTL <= 0 {
+		return Settings{}, errors.New("COMPUTER_SNAPSHOT_TTL_SECONDS must be a positive integer")
+	}
+	if settings.ComputerActionTimeout <= 0 {
+		return Settings{}, errors.New("COMPUTER_ACTION_TIMEOUT_MS must be a positive integer")
+	}
+	if settings.ComputerIdleTimeout < 30*time.Second || settings.ComputerIdleTimeout > 24*time.Hour {
+		return Settings{}, errors.New("COMPUTER_IDLE_TIMEOUT_SECONDS must be between 30 and 86400")
+	}
+	if settings.ComputerMaxSequenceSteps < 1 || settings.ComputerMaxSequenceSteps > 20 {
+		return Settings{}, errors.New("COMPUTER_MAX_SEQUENCE_STEPS must be between 1 and 20")
+	}
+	if settings.ComputerCaptureMaxEdge < 256 || settings.ComputerCaptureMaxEdge > 8192 {
+		return Settings{}, errors.New("COMPUTER_CAPTURE_MAX_EDGE must be between 256 and 8192")
+	}
+	if settings.MaintenanceInterval < time.Minute || settings.MaintenanceInterval > 7*24*time.Hour {
+		return Settings{}, errors.New("MAINTENANCE_INTERVAL_SECONDS must be between 60 and 604800")
+	}
+	if settings.AuditLogTTL < time.Hour {
+		return Settings{}, errors.New("AUDIT_LOG_TTL_SECONDS must be at least 3600")
 	}
 	return settings, nil
 }

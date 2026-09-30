@@ -22,13 +22,13 @@ jobs:
     strategy:
       matrix:
         include:
-          - { goos: linux, goarch: amd64, ext: "", archive: tar.gz }
-          - { goos: linux, goarch: arm64, ext: "", archive: tar.gz }
-          - { goos: darwin, goarch: amd64, ext: "", archive: tar.gz }
-          - { goos: darwin, goarch: arm64, ext: "", archive: tar.gz }
-          - { goos: windows, goarch: amd64, ext: .exe, archive: zip }
-          - { goos: windows, goarch: arm64, ext: .exe, archive: zip }
-    runs-on: ubuntu-latest
+          - { goos: linux, goarch: amd64, ext: "", archive: tar.gz, runner: ubuntu-latest }
+          - { goos: linux, goarch: arm64, ext: "", archive: tar.gz, runner: ubuntu-latest }
+          - { goos: darwin, goarch: amd64, ext: "", archive: tar.gz, runner: macos-latest }
+          - { goos: darwin, goarch: arm64, ext: "", archive: tar.gz, runner: macos-latest }
+          - { goos: windows, goarch: amd64, ext: .exe, archive: zip, runner: ubuntu-latest }
+          - { goos: windows, goarch: arm64, ext: .exe, archive: zip, runner: ubuntu-latest }
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -45,6 +45,16 @@ jobs:
             go -C go build -trimpath \
               -ldflags "-s -w -X github.com/nssanta/ChatGPT-Repo-MCP/go/internal/app.Version=${version}" \
               -o "../dist/${name}/chatrepo-mcp${{ matrix.ext }}" ./cmd/chatrepo-mcp
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+            go -C go build -trimpath -ldflags "-s -w" \
+              -o "../dist/${name}/chatrepo-computer-host${{ matrix.ext }}" ./cmd/chatrepo-computer-host
+          if [ "${{ matrix.goos }}" = "darwin" ]; then
+            target="${{ matrix.goarch }}"
+            [ "$target" = "amd64" ] && target="x86_64"
+            swiftc -target "${target}-apple-macos13.0" \
+              go/internal/computer/assets/macos/ComputerDriver.swift -O \
+              -o "dist/${name}/chatrepo-computer-driver"
+          fi
           cp LICENSE README.md README_RU.md .env.example "dist/${name}/"
           if [ "${{ matrix.archive }}" = "zip" ]; then
             (cd dist && zip -r "${name}.zip" "${name}")

@@ -57,6 +57,8 @@ jobs:
                 python/tests/test_bounded_output.py::test_read_artifact_pages_utf8_crlf_and_huge_line_without_rescanning \
                 python/tests/test_bounded_subprocess.py \
                 python/tests/test_config_from_env.py \
+                python/tests/test_computer_client.py \
+                python/tests/test_maintenance.py \
                 python/tests/test_edit_tools.py \
                 python/tests/test_edit_tools_internals.py \
                 python/tests/test_edit_tools_policy_edges.py \
@@ -88,8 +90,24 @@ jobs:
           fi
       - name: Go tests
         run: go -C go test ./...
-      - name: Build Go server
-        run: go -C go build ./cmd/chatrepo-mcp
+      - name: Build Go server and shared computer host
+        run: |
+          go -C go build ./cmd/chatrepo-mcp
+          go -C go build ./cmd/chatrepo-computer-host
+      - name: Validate platform computer driver
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            /usr/bin/python3 -m py_compile go/internal/computer/assets/linux/computer_driver.py
+            /usr/bin/python3 -m py_compile go/internal/computer/assets/linux/wayland_portal.py
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            swiftc go/internal/computer/assets/macos/ComputerDriver.swift -O -o /tmp/chatrepo-computer-driver
+          else
+            printf '%s\n' '{"id":1,"method":"hello","params":{}}' | \
+              powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+                -File go/internal/computer/assets/windows/computer_driver.ps1 | \
+              grep '"id":1'
+          fi
 
   contract:
     name: Canonical public contract
@@ -111,6 +129,7 @@ jobs:
         shell: bash
         run: |
           PROJECT_ROOT="$PWD" ACCESS_MODE=full ENABLE_PTY=true \
+            COMPUTER_USE_ENABLED=true COMPUTER_CONTROL_ENABLED=true \
             PYTHONPATH=python/src python scripts/check_contracts.py
       - name: Contract-focused Python tests
         shell: bash
@@ -176,5 +195,6 @@ jobs:
         run: |
           mkdir -p bin
           CGO_ENABLED=0 go -C go build -trimpath -o ../bin/chatrepo-mcp ./cmd/chatrepo-mcp
+          CGO_ENABLED=0 go -C go build -trimpath -o ../bin/chatrepo-computer-host ./cmd/chatrepo-computer-host
       - name: Run Python/Go black-box acceptance
         run: python contracts/acceptance/run_dual_server.py
