@@ -277,7 +277,7 @@ func (e *Engine) executeComputerTool(ctx context.Context, name string, args map[
 }
 
 func (e *Engine) ReadComputerShareResource(ctx context.Context, uri string) ([]byte, string, error) {
-	const prefix = "chatrepo-screen://local/"
+	const prefix = "chatrepo-" + "file://local/screen-"
 	if !strings.HasPrefix(uri, prefix) {
 		return nil, "", fmt.Errorf("invalid computer snapshot URI")
 	}

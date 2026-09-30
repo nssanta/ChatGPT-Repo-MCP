@@ -173,7 +173,7 @@ func TestShareSnapshotStaysInRAMAndCanBeReadBack(t *testing.T) {
 	if token == "" {
 		t.Fatal("share token is empty")
 	}
-	if got := shared["resource_uri"]; got != "chatrepo-screen://local/"+token {
+	if got := shared["resource_uri"]; got != "chatrepo-file://local/screen-"+token {
 		t.Fatalf("resource_uri = %#v", got)
 	}
 	if got := shared["size_bytes"]; got != len(snapshot.Image) {

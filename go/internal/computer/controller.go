@@ -978,7 +978,7 @@ func (c *Controller) shareSnapshot(params map[string]any) (map[string]any, error
 		"name":         name,
 		"mime_type":    shared.MIMEType,
 		"size_bytes":   len(shared.Image),
-		"resource_uri": "chatrepo-screen://local/" + token,
+		"resource_uri": "chatrepo-file://local/screen-" + token,
 		"expires_at":   shared.CreatedAt.Add(sharedSnapshotTTL).Format(time.RFC3339Nano),
 		"image_b64":    base64.StdEncoding.EncodeToString(shared.Image),
 	}, nil

@@ -484,18 +484,10 @@ def export_file_to_chat_tool(path: RepoPath) -> CallToolResult | dict:
     description="Binary-safe file resource created by export_file_to_chat.",
 )
 def exported_file_resource(token: str) -> bytes:
+    if token.startswith("screen-"):
+        data, _mime = read_computer_share(settings, token.removeprefix("screen-"))
+        return data
     return read_export_resource(token=token, settings=settings)
-
-
-@mcp.resource(
-    "chatrepo-screen://local/{token}",
-    name="ChatRepo computer snapshot",
-    description="Short-lived RAM-only Computer Use snapshot.",
-    mime_type="image/png",
-)
-def computer_snapshot_resource(token: str) -> bytes:
-    data, _mime = read_computer_share(settings, token)
-    return data
 
 
 def _computer_result(result: dict[str, Any]) -> CallToolResult | dict[str, Any]:

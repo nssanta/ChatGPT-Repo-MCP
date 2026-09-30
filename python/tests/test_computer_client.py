@@ -170,7 +170,7 @@ def test_computer_share_result_includes_short_lived_resource_link() -> None:
             "mime_type": "image/png",
             "name": "computer-snapshot-snap.png",
             "size_bytes": len(png),
-            "resource_uri": "chatrepo-screen://local/token123",
+            "resource_uri": "chatrepo-file://local/screen-token123",
             "expires_at": "2030-01-01T00:00:00Z",
             "image_b64": base64.b64encode(png).decode(),
         }
@@ -179,5 +179,5 @@ def test_computer_share_result_includes_short_lived_resource_link() -> None:
     assert "image_b64" not in result.structuredContent
     links = [item for item in result.content if isinstance(item, ResourceLink)]
     assert len(links) == 1
-    assert str(links[0].uri) == "chatrepo-screen://local/token123"
+    assert str(links[0].uri) == "chatrepo-file://local/screen-token123"
     assert links[0].mimeType == "image/png"

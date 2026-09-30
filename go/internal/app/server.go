@@ -146,32 +146,19 @@ func New(settings config.Settings) (*Application, error) {
 			Description: "Binary-safe file resource created by export_file_to_chat.",
 			URITemplate: "chatrepo-file://local/{token}",
 		},
-		func(_ context.Context, request *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-			if request == nil || request.Params == nil || request.Params.URI == "" {
-				return nil, mcp.ResourceNotFoundError("")
-			}
-			data, mimeType, err := engine.ReadExportResource(request.Params.URI)
-			if err != nil {
-				return nil, mcp.ResourceNotFoundError(request.Params.URI)
-			}
-			return &mcp.ReadResourceResult{
-				Contents: []*mcp.ResourceContents{{
-					URI: request.Params.URI, MIMEType: mimeType, Blob: data,
-				}},
-			}, nil
-		},
-	)
-	server.AddResourceTemplate(
-		&mcp.ResourceTemplate{
-			Name:        "chatrepo-computer-snapshot",
-			Description: "Short-lived RAM-only Computer Use snapshot.",
-			URITemplate: "chatrepo-screen://local/{token}",
-		},
 		func(ctx context.Context, request *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 			if request == nil || request.Params == nil || request.Params.URI == "" {
 				return nil, mcp.ResourceNotFoundError("")
 			}
-			data, mimeType, err := engine.ReadComputerShareResource(ctx, request.Params.URI)
+			var data []byte
+			var mimeType string
+			var err error
+			const screenPrefix = "chatrepo-" + "file://local/screen-"
+			if strings.HasPrefix(request.Params.URI, screenPrefix) {
+				data, mimeType, err = engine.ReadComputerShareResource(ctx, request.Params.URI)
+			} else {
+				data, mimeType, err = engine.ReadExportResource(request.Params.URI)
+			}
 			if err != nil {
 				return nil, mcp.ResourceNotFoundError(request.Params.URI)
 			}
@@ -182,6 +169,7 @@ func New(settings config.Settings) (*Application, error) {
 			}, nil
 		},
 	)
+
 	return &Application{Settings: settings, Contract: document, Server: server, Engine: engine}, nil
 }
 

@@ -123,7 +123,7 @@ The structured result contains values such as:
 The image pixels shown to the model and the `snapshot_id` belong to the same
 capture. Coordinate actions use those exact image pixels.
 
-`computer_share_snapshot(snapshot_id)` is the human-facing path: it returns the same PNG as `ImageContent` and also exposes a five-minute `chatrepo-screen://` `ResourceLink`. The bytes remain RAM-only on the connected machine; at most four shared frames are retained.
+`computer_share_snapshot(snapshot_id)` is the human-facing path: it returns the same PNG as `ImageContent` and also exposes a five-minute `chatrepo-file://local/screen-*` `ResourceLink` served by the same resource template as `export_file_to_chat`. The bytes remain RAM-only on the connected machine; at most four shared frames are retained.
 
 ## Snapshot and stale-state rules
 
