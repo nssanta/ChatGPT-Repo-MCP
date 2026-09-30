@@ -2,6 +2,7 @@ package computer
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"image"
 	"image/color"
@@ -145,5 +146,54 @@ func TestCompactSequenceResultDropsImageAndScenePayloads(t *testing.T) {
 	}
 	if _, ok := compact["scene"]; ok {
 		t.Fatal("sequence receipt retained full scene")
+	}
+}
+
+func TestShareSnapshotStaysInRAMAndCanBeReadBack(t *testing.T) {
+	controller := &Controller{
+		ttl:       time.Minute,
+		snapshots: map[string]*Snapshot{},
+		shares:    map[string]*SharedSnapshot{},
+	}
+	snapshot := &Snapshot{
+		ID:          "1234567890abcdef",
+		Image:       []byte("png-bytes"),
+		MIMEType:    "image/png",
+		ImageWidth:  10,
+		ImageHeight: 10,
+		CreatedAt:   time.Now(),
+	}
+	controller.snapshots[snapshot.ID] = snapshot
+
+	shared, err := controller.shareSnapshot(map[string]any{"snapshot_id": snapshot.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _ := shared["share_token"].(string)
+	if token == "" {
+		t.Fatal("share token is empty")
+	}
+	if got := shared["resource_uri"]; got != "chatrepo-screen://local/"+token {
+		t.Fatalf("resource_uri = %#v", got)
+	}
+	if got := shared["size_bytes"]; got != len(snapshot.Image) {
+		t.Fatalf("size_bytes = %#v", got)
+	}
+
+	read, err := controller.readShare(map[string]any{"token": token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(read["image_b64"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(decoded) != string(snapshot.Image) {
+		t.Fatalf("read snapshot = %q", decoded)
+	}
+
+	controller.releaseRuntimeLocked()
+	if controller.shares[token] == nil {
+		t.Fatal("idle runtime release removed a still-valid shared snapshot")
 	}
 }

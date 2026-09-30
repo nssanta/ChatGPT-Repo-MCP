@@ -117,10 +117,11 @@ def test_python_registration_gates_computer_eyes_and_hands(tmp_path: Path) -> No
     hands = _registered_tools(tmp_path / "hands", access_mode="full", use=True, control=True)
 
     assert len(baseline) == 94
-    assert len(eyes) == 100
-    assert len(hands) == 110  # PTY explicitly disabled in this registration test.
+    assert len(eyes) == 101
+    assert len(hands) == 111  # PTY explicitly disabled in this registration test.
     assert "computer_observe" not in baseline
     assert "computer_observe" in eyes
+    assert "computer_share_snapshot" in eyes
     assert "computer_click" not in eyes
     assert {"computer_click", "computer_move", "computer_type", "computer_sequence"} <= set(hands)
 
@@ -156,3 +157,27 @@ def test_wayland_multi_monitor_layout_and_region_math() -> None:
     plan = module.region_plan(logical, (4480, 1440), {"x": 1800, "y": 100, "width": 400, "height": 300})
     assert plan["region"] == {"x": 1800, "y": 100, "width": 400, "height": 300}
     assert plan["crop"] == (1800, 100, 400, 300)
+
+
+def test_computer_share_result_includes_short_lived_resource_link() -> None:
+    from mcp.types import ResourceLink
+
+    png = b"\x89PNG\r\n\x1a\n"
+    result = server._computer_result(
+        {
+            "ok": True,
+            "snapshot_id": "snap",
+            "mime_type": "image/png",
+            "name": "computer-snapshot-snap.png",
+            "size_bytes": len(png),
+            "resource_uri": "chatrepo-screen://local/token123",
+            "expires_at": "2030-01-01T00:00:00Z",
+            "image_b64": base64.b64encode(png).decode(),
+        }
+    )
+    assert isinstance(result, CallToolResult)
+    assert "image_b64" not in result.structuredContent
+    links = [item for item in result.content if isinstance(item, ResourceLink)]
+    assert len(links) == 1
+    assert str(links[0].uri) == "chatrepo-screen://local/token123"
+    assert links[0].mimeType == "image/png"

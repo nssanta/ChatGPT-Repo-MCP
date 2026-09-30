@@ -196,7 +196,7 @@ func TestComputerToolRegistrationGates(t *testing.T) {
 	settings.ComputerUseEnabled = true
 	eyes := listNames(settings)
 	for _, name := range []string{
-		"computer_status", "computer_observe", "computer_zoom",
+		"computer_status", "computer_observe", "computer_share_snapshot", "computer_zoom",
 		"computer_windows", "computer_elements", "computer_wait",
 	} {
 		if !eyes[name] {
@@ -206,8 +206,8 @@ func TestComputerToolRegistrationGates(t *testing.T) {
 	if eyes["computer_click"] || eyes["computer_type"] || eyes["computer_move"] {
 		t.Fatal("control tools registered while COMPUTER_CONTROL_ENABLED=false")
 	}
-	if got := len(eyes); got != 100 {
-		t.Fatalf("safe + computer eyes tools = %d, want 100", got)
+	if got := len(eyes); got != 101 {
+		t.Fatalf("safe + computer eyes tools = %d, want 101", got)
 	}
 
 	settings = appSettings(t.TempDir())
@@ -225,9 +225,9 @@ func TestComputerToolRegistrationGates(t *testing.T) {
 			t.Fatalf("full computer control tool %q missing", name)
 		}
 	}
-	want := 116
+	want := 117
 	if runtime.GOOS == "windows" {
-		want = 110
+		want = 111
 	}
 	if got := len(full); got != want {
 		t.Fatalf("full computer tool count = %d, want %d", got, want)

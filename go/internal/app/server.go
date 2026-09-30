@@ -120,6 +120,19 @@ func New(settings config.Settings) (*Application, error) {
 					})
 				}
 			}
+			if definition.Name == "computer_share_snapshot" && !isError {
+				uri, _ := result["resource_uri"].(string)
+				name, _ := result["name"].(string)
+				mimeType, _ := result["mime_type"].(string)
+				size := resultSize(result["size_bytes"])
+				if uri != "" && name != "" {
+					content = append(content, &mcp.ResourceLink{
+						URI: uri, Name: name, MIMEType: mimeType,
+						Description: "RAM-only Computer Use snapshot shared with the current chat.",
+						Size:        size,
+					})
+				}
+			}
 			return &mcp.CallToolResult{
 				Content:           content,
 				StructuredContent: structured,
@@ -138,6 +151,27 @@ func New(settings config.Settings) (*Application, error) {
 				return nil, mcp.ResourceNotFoundError("")
 			}
 			data, mimeType, err := engine.ReadExportResource(request.Params.URI)
+			if err != nil {
+				return nil, mcp.ResourceNotFoundError(request.Params.URI)
+			}
+			return &mcp.ReadResourceResult{
+				Contents: []*mcp.ResourceContents{{
+					URI: request.Params.URI, MIMEType: mimeType, Blob: data,
+				}},
+			}, nil
+		},
+	)
+	server.AddResourceTemplate(
+		&mcp.ResourceTemplate{
+			Name:        "chatrepo-computer-snapshot",
+			Description: "Short-lived RAM-only Computer Use snapshot.",
+			URITemplate: "chatrepo-screen://local/{token}",
+		},
+		func(ctx context.Context, request *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			if request == nil || request.Params == nil || request.Params.URI == "" {
+				return nil, mcp.ResourceNotFoundError("")
+			}
+			data, mimeType, err := engine.ReadComputerShareResource(ctx, request.Params.URI)
 			if err != nil {
 				return nil, mcp.ResourceNotFoundError(request.Params.URI)
 			}

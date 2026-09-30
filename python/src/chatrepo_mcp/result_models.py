@@ -42,6 +42,7 @@ TOOL_SUCCESS_SPECS: dict[str, tuple[ToolSuccessSpec, ...]] = {
     "export_file_to_chat": ((True, ("path", "name", "mime_type", "size_bytes", "sha256", "resource_uri")),),
     "computer_status": ((True, ("platform", "session", "backend", "capture", "control")),),
     "computer_observe": ((True, ("snapshot_id", "mime_type", "image_width", "image_height", "bounds", "scene")),),
+    "computer_share_snapshot": ((True, ("snapshot_id", "name", "mime_type", "size_bytes", "resource_uri", "expires_at")),),
     "computer_zoom": ((True, ("snapshot_id", "mime_type", "image_width", "image_height", "bounds", "scene")),),
     "computer_windows": ((True, ("windows",)),),
     "computer_elements": ((True, ("elements",)),),

@@ -3,6 +3,7 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -275,6 +276,38 @@ func (e *Engine) executeComputerTool(ctx context.Context, name string, args map[
 	return result
 }
 
+func (e *Engine) ReadComputerShareResource(ctx context.Context, uri string) ([]byte, string, error) {
+	const prefix = "chatrepo-screen://local/"
+	if !strings.HasPrefix(uri, prefix) {
+		return nil, "", fmt.Errorf("invalid computer snapshot URI")
+	}
+	token := strings.TrimPrefix(uri, prefix)
+	if token == "" || strings.Contains(token, "/") {
+		return nil, "", fmt.Errorf("invalid computer snapshot token")
+	}
+	client, err := e.computerClient()
+	if err != nil {
+		return nil, "", err
+	}
+	result, err := client.Call(ctx, "read_share", map[string]any{"token": token})
+	if err != nil {
+		return nil, "", err
+	}
+	encoded, _ := result["image_b64"].(string)
+	if encoded == "" {
+		return nil, "", fmt.Errorf("computer snapshot resource has no image")
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, "", err
+	}
+	mimeType, _ := result["mime_type"].(string)
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	return data, mimeType, nil
+}
+
 // Shutdown terminates every process group owned by this engine.
 func (e *Engine) Shutdown() {
 	e.stopMaintenance()
@@ -323,7 +356,7 @@ func (e *Engine) Execute(ctx context.Context, name string, args map[string]any) 
 		result = e.receiveChatFile(ctx, args)
 	case "export_file_to_chat":
 		result = e.exportFileToChat(args)
-	case "computer_status", "computer_observe", "computer_zoom", "computer_windows", "computer_elements",
+	case "computer_status", "computer_observe", "computer_share_snapshot", "computer_zoom", "computer_windows", "computer_elements",
 		"computer_wait", "computer_element", "computer_click", "computer_move", "computer_type", "computer_key",
 		"computer_scroll", "computer_drag", "computer_window", "computer_launch", "computer_sequence":
 		result = e.executeComputerTool(ctx, name, args)

@@ -12,7 +12,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, ImageContent, ResourceLink, TextContent
 from pydantic import AnyHttpUrl, AnyUrl, BaseModel, ConfigDict, Field
 
-from .computer_tools import call_computer
+from .computer_tools import call_computer, read_computer_share
 from .command_tools import (
     TEST_PRESETS,
     CommandPolicyError,
@@ -487,6 +487,17 @@ def exported_file_resource(token: str) -> bytes:
     return read_export_resource(token=token, settings=settings)
 
 
+@mcp.resource(
+    "chatrepo-screen://local/{token}",
+    name="ChatRepo computer snapshot",
+    description="Short-lived RAM-only Computer Use snapshot.",
+    mime_type="image/png",
+)
+def computer_snapshot_resource(token: str) -> bytes:
+    data, _mime = read_computer_share(settings, token)
+    return data
+
+
 def _computer_result(result: dict[str, Any]) -> CallToolResult | dict[str, Any]:
     """Return structured computer state plus a native MCP image when a fresh frame exists."""
     if result.get("ok") is not True:
@@ -498,19 +509,29 @@ def _computer_result(result: dict[str, Any]) -> CallToolResult | dict[str, Any]:
     structured.pop("image_b64", None)
     mime_type = str(structured.get("mime_type") or "image/png")
     snapshot_id = str(structured.get("snapshot_id") or "")
-    return CallToolResult(
-        content=[
-            TextContent(
-                type="text",
-                text=(
-                    f"Fresh computer scene {snapshot_id}; use this snapshot_id for coordinate actions. "
-                    "The image below is the exact frame whose pixel coordinates the tool accepts."
-                ),
+    content: list[Any] = [
+        TextContent(
+            type="text",
+            text=(
+                f"Fresh computer scene {snapshot_id}; use this snapshot_id for coordinate actions. "
+                "The image below is the exact frame whose pixel coordinates the tool accepts."
             ),
-            ImageContent(type="image", data=image_b64, mimeType=mime_type),
-        ],
-        structuredContent=structured,
-    )
+        ),
+        ImageContent(type="image", data=image_b64, mimeType=mime_type),
+    ]
+    resource_uri = structured.get("resource_uri")
+    if isinstance(resource_uri, str) and resource_uri:
+        content.append(
+            ResourceLink(
+                type="resource_link",
+                name=str(structured.get("name") or "computer-snapshot.png"),
+                uri=AnyUrl(resource_uri),
+                mimeType=mime_type,
+                size=int(structured.get("size_bytes") or 0),
+                description="RAM-only Computer Use snapshot shared with the current chat.",
+            )
+        )
+    return CallToolResult(content=content, structuredContent=structured)
 
 
 if settings.computer_use_enabled:
@@ -542,6 +563,24 @@ if settings.computer_use_enabled:
         pass its snapshot_id to coordinate actions.
         """
         return _computer_result(call_computer(settings, "observe", include_ocr=include_ocr))
+
+    @_tool(
+        name="computer_share_snapshot",
+        annotations={**READ_ONLY, "title": "Share Computer Snapshot"},
+    )
+    def computer_share_snapshot_tool(
+        snapshot_id: Annotated[
+            str,
+            Field(description="Fresh snapshot_id to expose back to the user as an image resource."),
+        ],
+    ) -> CallToolResult | dict:
+        """Share an observed screenshot back to the chat.
+
+        The image stays RAM-only on the connected machine. Returns both MCP ImageContent
+        and a short-lived PNG ResourceLink so clients that do not render tool images can
+        still expose the screenshot as an attachment/resource.
+        """
+        return _computer_result(call_computer(settings, "share_snapshot", snapshot_id=snapshot_id))
 
     @_tool(
         name="computer_zoom",

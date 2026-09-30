@@ -27,7 +27,7 @@ def test_python_server_matches_shared_tool_contract() -> None:
     if not (settings.full_access and settings.enable_pty):
         excluded.update(pty_names)
     computer_read = {
-        "computer_status", "computer_observe", "computer_zoom",
+        "computer_status", "computer_observe", "computer_share_snapshot", "computer_zoom",
         "computer_windows", "computer_elements", "computer_wait",
     }
     computer_control = {

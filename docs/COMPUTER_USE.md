@@ -63,13 +63,14 @@ more pixels.
 
 ## Tools
 
-The canonical catalog contains sixteen Computer Use tools.
+The canonical catalog contains seventeen Computer Use tools.
 
 Read-only "eyes":
 
 - `computer_status` — platform, backend, permissions, capture/input capability.
 - `computer_observe` — fresh screenshot plus windows, focus, cursor and
   accessibility scene.
+- `computer_share_snapshot` — expose a fresh RAM-only snapshot back to the chat as both `ImageContent` and a short-lived PNG `ResourceLink`.
 - `computer_zoom` — recapture a region from an existing snapshot.
 - `computer_windows` — native application windows.
 - `computer_elements` — AX/UIA/AT-SPI accessibility elements.
@@ -90,9 +91,9 @@ Full-mode "hands":
 
 With Computer Use disabled, the runtime catalog remains the existing baseline:
 94 tools in safe mode and 100 tools in full POSIX mode. Enabling only the eyes
-adds six tools. Enabling full control adds all sixteen, for 116 tools on a
+adds seven tools. Enabling full control adds all seventeen, for 117 tools on a
 full POSIX deployment. Windows omits the six POSIX PTY tools, so its maximum is
-110.
+111.
 
 ## Screenshots are native MCP images
 
@@ -121,6 +122,8 @@ The structured result contains values such as:
 
 The image pixels shown to the model and the `snapshot_id` belong to the same
 capture. Coordinate actions use those exact image pixels.
+
+`computer_share_snapshot(snapshot_id)` is the human-facing path: it returns the same PNG as `ImageContent` and also exposes a five-minute `chatrepo-screen://` `ResourceLink`. The bytes remain RAM-only on the connected machine; at most four shared frames are retained.
 
 ## Snapshot and stale-state rules
 

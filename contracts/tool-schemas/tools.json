@@ -4,7 +4,7 @@
   "server": {
     "name": "chatrepo-mcp",
     "version": "0.3.0",
-    "toolCount": 116
+    "toolCount": 117
   },
   "resultSchemas": {
     "boundedOutputReceiptV1": {
@@ -4174,6 +4174,203 @@
       "annotations": {
         "title": "Computer Action Sequence",
         "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "computer_share_snapshot",
+      "description": "Share an observed screenshot back to the chat.\n\n        The image stays RAM-only on the connected machine. Returns both MCP ImageContent\n        and a short-lived PNG ResourceLink so clients that do not render tool images can\n        still expose the screenshot as an attachment/resource.\n        ",
+      "inputSchema": {
+        "properties": {
+          "snapshot_id": {
+            "description": "Fresh snapshot_id to expose back to the user as an image resource.",
+            "title": "Snapshot Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot_id"
+        ],
+        "title": "computer_share_snapshot_toolArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "ComputerShareSnapshotSuccess0": {
+            "additionalProperties": true,
+            "properties": {
+              "snapshot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Snapshot Id"
+              },
+              "name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Name"
+              },
+              "mime_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Mime Type"
+              },
+              "size_bytes": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Size Bytes"
+              },
+              "resource_uri": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Resource Uri"
+              },
+              "expires_at": {
+                "anyOf": [
+                  {},
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Expires At"
+              },
+              "ok": {
+                "title": "Ok",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "name",
+              "mime_type",
+              "size_bytes",
+              "resource_uri",
+              "expires_at",
+              "ok"
+            ],
+            "title": "ComputerShareSnapshotSuccess0",
+            "type": "object"
+          },
+          "_LegacyError": {
+            "additionalProperties": true,
+            "properties": {
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "items": {},
+                    "type": "array"
+                  }
+                ],
+                "title": "Error"
+              }
+            },
+            "required": [
+              "error"
+            ],
+            "title": "_LegacyError",
+            "type": "object"
+          },
+          "_TypedError": {
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "const": false,
+                "title": "Ok",
+                "type": "boolean"
+              },
+              "error_kind": {
+                "title": "Error Kind",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ok",
+              "error_kind"
+            ],
+            "title": "_TypedError",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ComputerShareSnapshotSuccess0"
+          },
+          {
+            "$ref": "#/$defs/_TypedError"
+          },
+          {
+            "$ref": "#/$defs/_LegacyError"
+          }
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "error_kind": {
+            "type": "string"
+          },
+          "error": {},
+          "snapshot_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "resource_uri": {
+            "type": "string"
+          },
+          "expires_at": {}
+        },
+        "title": "ComputerShareSnapshotResult",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Share Computer Snapshot",
+        "readOnlyHint": true,
         "destructiveHint": false,
         "openWorldHint": false
       }
