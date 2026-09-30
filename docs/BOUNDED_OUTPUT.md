@@ -121,5 +121,4 @@ the periodic pass.
 For a three-day retention window use `ARTIFACT_TTL_SECONDS=259200` and
 `AUDIT_LOG_TTL_SECONDS=259200`.
 
-Computer Use screenshots are not part of this storage at all: desktop frames
-exist only in memory and are discarded with their snapshot/idle lifecycle.
+Computer Use observation frames are not part of this storage: they stay in memory and are discarded with their snapshot/idle lifecycle. An explicit `computer_share_snapshot` call creates a separate private cache PNG only for chat delivery; it is not a command/job artifact and is deleted after five minutes (with maintenance cleanup as crash fallback).

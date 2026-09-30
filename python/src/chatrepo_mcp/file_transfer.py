@@ -8,6 +8,9 @@ import ipaddress
 import mimetypes
 import os
 import socket
+import sys
+import threading
+import time
 import tempfile
 import urllib.error
 import urllib.parse
@@ -32,6 +35,8 @@ from .workspace import is_within_roots, resolve_roots
 
 _RESOURCE_PREFIX = "chatrepo-file://local/"
 _DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+_COMPUTER_SHARE_TTL_SECONDS = 300
+_COMPUTER_SHARE_MAX_FILES = 4
 
 
 class FileTransferError(ValueError):
@@ -279,6 +284,135 @@ def _sha256_file(path: Path, max_bytes: int) -> tuple[int, str]:
     return total, digest.hexdigest()
 
 
+def computer_share_directory() -> Path:
+    if os.name == "nt":
+        root = Path(os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Caches"
+    else:
+        root = Path(os.getenv("XDG_CACHE_HOME") or (Path.home() / ".cache"))
+    return root.expanduser() / "chatrepo-mcp" / "shared-screens"
+
+
+def _is_managed_computer_share(path: Path) -> bool:
+    directory = computer_share_directory().resolve(strict=False)
+    target = path.expanduser().absolute()
+    if target.parent != directory:
+        return False
+    return target.name.startswith("computer-snapshot-") and target.suffix.lower() == ".png"
+
+
+def cleanup_computer_shares(*, now: float | None = None) -> int:
+    directory = computer_share_directory()
+    if not directory.exists():
+        return 0
+    current = time.time() if now is None else now
+    live: list[tuple[float, Path]] = []
+    removed = 0
+    for candidate in directory.iterdir():
+        if not _is_managed_computer_share(candidate):
+            continue
+        try:
+            stat = candidate.lstat()
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            if current - stat.st_mtime >= _COMPUTER_SHARE_TTL_SECONDS:
+                candidate.unlink(missing_ok=True)
+                removed += 1
+            else:
+                live.append((stat.st_mtime, candidate))
+        except OSError:
+            continue
+    live.sort(key=lambda item: item[0])
+    while len(live) >= _COMPUTER_SHARE_MAX_FILES:
+        _mtime, candidate = live.pop(0)
+        try:
+            candidate.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def _export_target(*, target: Path, display: str, settings: Settings) -> dict[str, Any]:
+    if not target.exists():
+        raise FileTransferError("file_not_found", f"file does not exist: {display}")
+    if target.is_symlink() or not target.is_file():
+        raise FileTransferError("not_a_file", f"path is not a regular file: {display}")
+    size, digest = _sha256_file(target, settings.file_transfer_export_max_bytes)
+    mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    resource_uri = f"{_RESOURCE_PREFIX}{_encode_resource_path(target)}"
+    return {
+        "ok": True,
+        "path": display,
+        "name": target.name,
+        "mime_type": mime_type,
+        "size_bytes": size,
+        "sha256": digest,
+        "resource_uri": resource_uri,
+    }
+
+
+def materialize_computer_snapshot(*, result: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    image_b64 = result.get("image_b64")
+    if not isinstance(image_b64, str) or not image_b64:
+        raise FileTransferError("share_invalid", "computer share returned no image")
+    try:
+        data = base64.b64decode(image_b64, validate=True)
+    except ValueError as exc:
+        raise FileTransferError("share_invalid", "computer share returned invalid image data") from exc
+    if len(data) > settings.file_transfer_export_max_bytes:
+        raise FileTransferError(
+            "payload_too_large",
+            "computer snapshot exceeds FILE_TRANSFER_EXPORT_MAX_BYTES "
+            f"({len(data)} > {settings.file_transfer_export_max_bytes})",
+        )
+    mime_type = str(result.get("mime_type") or "image/png")
+    if mime_type != "image/png":
+        raise FileTransferError("share_invalid", "computer snapshot must be image/png")
+
+    directory = computer_share_directory()
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        directory.chmod(0o700)
+    except OSError:
+        pass
+    cleanup_computer_shares()
+
+    snapshot_id = str(result.get("snapshot_id") or "snapshot")
+    short_id = snapshot_id[:8] or "snapshot"
+    handle = tempfile.NamedTemporaryFile(
+        prefix=f"computer-snapshot-{short_id}-",
+        suffix=".png",
+        dir=directory,
+        delete=False,
+    )
+    target = Path(handle.name)
+    completed = False
+    try:
+        with handle:
+            handle.write(data)
+            handle.flush()
+            os.fchmod(handle.fileno(), 0o600)
+        exported = _export_target(target=target, display=str(target), settings=settings)
+        completed = True
+    finally:
+        if not completed:
+            target.unlink(missing_ok=True)
+
+    timer = threading.Timer(_COMPUTER_SHARE_TTL_SECONDS, target.unlink, kwargs={"missing_ok": True})
+    timer.daemon = True
+    timer.start()
+
+    exported["snapshot_id"] = snapshot_id
+    exported["expires_at"] = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(time.time() + _COMPUTER_SHARE_TTL_SECONDS),
+    )
+    exported["image_b64"] = image_b64
+    return exported
+
+
 def _encode_resource_path(path: Path) -> str:
     return base64.urlsafe_b64encode(str(path).encode("utf-8")).decode("ascii").rstrip("=")
 
@@ -300,22 +434,7 @@ def export_file_to_chat(*, path: str, settings: Settings) -> dict[str, Any]:
     """Create a stable MCP ResourceLink URI for a local regular file."""
     try:
         target, display = _resolve_transfer_path(path, settings, for_write=False)
-        if not target.exists():
-            raise FileTransferError("file_not_found", f"file does not exist: {display}")
-        if not target.is_file():
-            raise FileTransferError("not_a_file", f"path is not a regular file: {display}")
-        size, digest = _sha256_file(target, settings.file_transfer_export_max_bytes)
-        mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        resource_uri = f"{_RESOURCE_PREFIX}{_encode_resource_path(target)}"
-        return {
-            "ok": True,
-            "path": display,
-            "name": target.name,
-            "mime_type": mime_type,
-            "size_bytes": size,
-            "sha256": digest,
-            "resource_uri": resource_uri,
-        }
+        return _export_target(target=target, display=display, settings=settings)
     except Exception as exc:  # noqa: BLE001
         return _error(exc)
 
@@ -323,9 +442,20 @@ def export_file_to_chat(*, path: str, settings: Settings) -> dict[str, Any]:
 def read_export_resource(*, token: str, settings: Settings) -> bytes:
     """Resolve and read an exported-file resource, rechecking all policy limits."""
     path = _decode_resource_path(token)
-    target, _display = _resolve_transfer_path(path, settings, for_write=False)
-    if not target.exists() or not target.is_file():
+    candidate = Path(path).expanduser().absolute()
+    if _is_managed_computer_share(candidate):
+        target = candidate
+    else:
+        target, _display = _resolve_transfer_path(path, settings, for_write=False)
+    if not target.exists() or target.is_symlink() or not target.is_file():
         raise ValueError("exported file is no longer available")
+    if _is_managed_computer_share(target):
+        try:
+            if time.time() - target.stat().st_mtime >= _COMPUTER_SHARE_TTL_SECONDS:
+                target.unlink(missing_ok=True)
+                raise ValueError("shared computer snapshot expired")
+        except OSError as exc:
+            raise ValueError("shared computer snapshot is no longer available") from exc
     with target.open("rb") as handle:
         data = handle.read(settings.file_transfer_export_max_bytes + 1)
     if len(data) > settings.file_transfer_export_max_bytes:

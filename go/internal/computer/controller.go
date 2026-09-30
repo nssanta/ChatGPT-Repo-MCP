@@ -26,11 +26,7 @@ type Rect struct {
 	Height float64 `json:"height"`
 }
 
-const (
-	maxRetainedSnapshots = 8
-	maxSharedSnapshots   = 4
-	sharedSnapshotTTL    = 5 * time.Minute
-)
+const maxRetainedSnapshots = 8
 
 type Snapshot struct {
 	ID             string
@@ -44,21 +40,12 @@ type Snapshot struct {
 	ImageHash      string
 }
 
-type SharedSnapshot struct {
-	Token     string
-	Name      string
-	Image     []byte
-	MIMEType  string
-	CreatedAt time.Time
-}
-
 type Controller struct {
 	mu          sync.Mutex
 	assets      RuntimeAssets
 	driver      *lineProcess
 	portal      *lineProcess
 	snapshots   map[string]*Snapshot
-	shares      map[string]*SharedSnapshot
 	ttl         time.Duration
 	idleTimeout time.Duration
 	maxSteps    int
@@ -76,7 +63,7 @@ func NewController(timeout, ttl, idleTimeout time.Duration, maxSteps, maxEdge in
 		return nil, err
 	}
 	controller := &Controller{
-		assets: assets, snapshots: make(map[string]*Snapshot), shares: make(map[string]*SharedSnapshot),
+		assets: assets, snapshots: make(map[string]*Snapshot),
 		ttl: ttl, idleTimeout: idleTimeout, maxSteps: maxSteps, maxEdge: maxEdge, timeout: timeout,
 		stopIdle: make(chan struct{}),
 	}
@@ -167,7 +154,6 @@ func (c *Controller) Close() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.releaseRuntimeLocked()
-		c.shares = map[string]*SharedSnapshot{}
 	})
 }
 
@@ -175,17 +161,12 @@ func (c *Controller) Call(ctx context.Context, method string, params map[string]
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cleanupSnapshots()
-	c.cleanupShares()
-	if method != "share_snapshot" && method != "read_share" {
-		if err := c.ensureRuntimeLocked(); err != nil {
-			return nil, err
-		}
-		c.lastActive = time.Now()
+	if err := c.ensureRuntimeLocked(); err != nil {
+		return nil, err
 	}
+	c.lastActive = time.Now()
 	result, err := c.callLocked(ctx, method, params)
-	if method != "share_snapshot" && method != "read_share" {
-		c.lastActive = time.Now()
-	}
+	c.lastActive = time.Now()
 	return result, err
 }
 
@@ -199,8 +180,6 @@ func (c *Controller) callLocked(ctx context.Context, method string, params map[s
 		return c.zoom(ctx, params)
 	case "share_snapshot":
 		return c.shareSnapshot(params)
-	case "read_share":
-		return c.readShare(params)
 	case "windows":
 		return c.driverMap(ctx, "windows", map[string]any{})
 	case "elements":
@@ -950,66 +929,14 @@ func (c *Controller) shareSnapshot(params map[string]any) (map[string]any, error
 	if err != nil {
 		return nil, err
 	}
-	c.cleanupShares()
-	if len(c.shares) >= maxSharedSnapshots {
-		oldestToken := ""
-		oldest := time.Now()
-		for token, item := range c.shares {
-			if oldestToken == "" || item.CreatedAt.Before(oldest) {
-				oldestToken = token
-				oldest = item.CreatedAt
-			}
-		}
-		if oldestToken != "" {
-			delete(c.shares, oldestToken)
-		}
-	}
-	token := randomID()
-	name := "computer-snapshot-" + snapshot.ID[:8] + ".png"
-	shared := &SharedSnapshot{
-		Token: token, Name: name, Image: append([]byte(nil), snapshot.Image...),
-		MIMEType: snapshot.MIMEType, CreatedAt: time.Now().UTC(),
-	}
-	c.shares[token] = shared
 	return map[string]any{
-		"ok":           true,
-		"snapshot_id":  snapshot.ID,
-		"share_token":  token,
-		"name":         name,
-		"mime_type":    shared.MIMEType,
-		"size_bytes":   len(shared.Image),
-		"resource_uri": "chatrepo-file://local/screen-" + token,
-		"expires_at":   shared.CreatedAt.Add(sharedSnapshotTTL).Format(time.RFC3339Nano),
-		"image_b64":    base64.StdEncoding.EncodeToString(shared.Image),
+		"ok":          true,
+		"snapshot_id": snapshot.ID,
+		"name":        "computer-snapshot-" + snapshot.ID[:8] + ".png",
+		"mime_type":   snapshot.MIMEType,
+		"size_bytes":  len(snapshot.Image),
+		"image_b64":   base64.StdEncoding.EncodeToString(snapshot.Image),
 	}, nil
-}
-
-func (c *Controller) readShare(params map[string]any) (map[string]any, error) {
-	token := stringValue(params["token"], "")
-	if token == "" {
-		return nil, &DriverError{Code: "bad_request", Message: "share token is required"}
-	}
-	c.cleanupShares()
-	shared := c.shares[token]
-	if shared == nil {
-		return nil, &DriverError{Code: "not_found", Message: "shared snapshot expired or was not found"}
-	}
-	return map[string]any{
-		"ok":         true,
-		"name":       shared.Name,
-		"mime_type":  shared.MIMEType,
-		"size_bytes": len(shared.Image),
-		"image_b64":  base64.StdEncoding.EncodeToString(shared.Image),
-	}, nil
-}
-
-func (c *Controller) cleanupShares() {
-	now := time.Now()
-	for token, shared := range c.shares {
-		if now.Sub(shared.CreatedAt) > sharedSnapshotTTL {
-			delete(c.shares, token)
-		}
-	}
 }
 
 func (c *Controller) snapshot(params map[string]any) (*Snapshot, error) {

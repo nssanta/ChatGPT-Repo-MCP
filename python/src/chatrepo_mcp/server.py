@@ -12,7 +12,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, ImageContent, ResourceLink, TextContent
 from pydantic import AnyHttpUrl, AnyUrl, BaseModel, ConfigDict, Field
 
-from .computer_tools import call_computer, read_computer_share
+from .computer_tools import call_computer, share_computer_snapshot
 from .command_tools import (
     TEST_PRESETS,
     CommandPolicyError,
@@ -484,9 +484,6 @@ def export_file_to_chat_tool(path: RepoPath) -> CallToolResult | dict:
     description="Binary-safe file resource created by export_file_to_chat.",
 )
 def exported_file_resource(token: str) -> bytes:
-    if token.startswith("screen-"):
-        data, _mime = read_computer_share(settings, token.removeprefix("screen-"))
-        return data
     return read_export_resource(token=token, settings=settings)
 
 
@@ -520,7 +517,7 @@ def _computer_result(result: dict[str, Any]) -> CallToolResult | dict[str, Any]:
                 uri=AnyUrl(resource_uri),
                 mimeType=mime_type,
                 size=int(structured.get("size_bytes") or 0),
-                description="RAM-only Computer Use snapshot shared with the current chat.",
+                description="Temporary Computer Use screenshot exported through the ChatRepo file bridge.",
             )
         )
     return CallToolResult(content=content, structuredContent=structured)
@@ -568,11 +565,11 @@ if settings.computer_use_enabled:
     ) -> CallToolResult | dict:
         """Share an observed screenshot back to the chat.
 
-        The image stays RAM-only on the connected machine. Returns both MCP ImageContent
-        and a short-lived PNG ResourceLink so clients that do not render tool images can
-        still expose the screenshot as an attachment/resource.
+        Materializes the selected in-RAM frame as a private 0600 PNG in ChatRepo's
+        ephemeral cache, then returns the same proven file ResourceLink used by
+        export_file_to_chat. The temporary PNG is removed automatically after five minutes.
         """
-        return _computer_result(call_computer(settings, "share_snapshot", snapshot_id=snapshot_id))
+        return _computer_result(share_computer_snapshot(settings, snapshot_id))
 
     @_tool(
         name="computer_zoom",

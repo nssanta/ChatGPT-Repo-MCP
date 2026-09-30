@@ -3,7 +3,6 @@ package tools
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -273,39 +272,10 @@ func (e *Engine) executeComputerTool(ctx context.Context, name string, args map[
 	if _, ok := result["ok"]; !ok {
 		result["ok"] = true
 	}
+	if name == "computer_share_snapshot" && result["ok"] != false {
+		result = e.materializeComputerShare(result)
+	}
 	return result
-}
-
-func (e *Engine) ReadComputerShareResource(ctx context.Context, uri string) ([]byte, string, error) {
-	const prefix = "chatrepo-" + "file://local/screen-"
-	if !strings.HasPrefix(uri, prefix) {
-		return nil, "", fmt.Errorf("invalid computer snapshot URI")
-	}
-	token := strings.TrimPrefix(uri, prefix)
-	if token == "" || strings.Contains(token, "/") {
-		return nil, "", fmt.Errorf("invalid computer snapshot token")
-	}
-	client, err := e.computerClient()
-	if err != nil {
-		return nil, "", err
-	}
-	result, err := client.Call(ctx, "read_share", map[string]any{"token": token})
-	if err != nil {
-		return nil, "", err
-	}
-	encoded, _ := result["image_b64"].(string)
-	if encoded == "" {
-		return nil, "", fmt.Errorf("computer snapshot resource has no image")
-	}
-	data, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return nil, "", err
-	}
-	mimeType, _ := result["mime_type"].(string)
-	if mimeType == "" {
-		mimeType = "image/png"
-	}
-	return data, mimeType, nil
 }
 
 // Shutdown terminates every process group owned by this engine.

@@ -128,7 +128,7 @@ func New(settings config.Settings) (*Application, error) {
 				if uri != "" && name != "" {
 					content = append(content, &mcp.ResourceLink{
 						URI: uri, Name: name, MIMEType: mimeType,
-						Description: "RAM-only Computer Use snapshot shared with the current chat.",
+						Description: "Temporary Computer Use screenshot exported through the ChatRepo file bridge.",
 						Size:        size,
 					})
 				}
@@ -146,19 +146,11 @@ func New(settings config.Settings) (*Application, error) {
 			Description: "Binary-safe file resource created by export_file_to_chat.",
 			URITemplate: "chatrepo-file://local/{token}",
 		},
-		func(ctx context.Context, request *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		func(_ context.Context, request *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 			if request == nil || request.Params == nil || request.Params.URI == "" {
 				return nil, mcp.ResourceNotFoundError("")
 			}
-			var data []byte
-			var mimeType string
-			var err error
-			const screenPrefix = "chatrepo-" + "file://local/screen-"
-			if strings.HasPrefix(request.Params.URI, screenPrefix) {
-				data, mimeType, err = engine.ReadComputerShareResource(ctx, request.Params.URI)
-			} else {
-				data, mimeType, err = engine.ReadExportResource(request.Params.URI)
-			}
+			data, mimeType, err := engine.ReadExportResource(request.Params.URI)
 			if err != nil {
 				return nil, mcp.ResourceNotFoundError(request.Params.URI)
 			}

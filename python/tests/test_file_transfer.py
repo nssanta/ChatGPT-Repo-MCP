@@ -15,6 +15,9 @@ from chatrepo_mcp.server import mcp
 
 
 def transfer_settings(tmp_path: Path, monkeypatch, *, import_limit: int = 1024, export_limit: int = 1024) -> Settings:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    monkeypatch.delenv("COMPUTER_USE_ENABLED", raising=False)
+    monkeypatch.delenv("COMPUTER_CONTROL_ENABLED", raising=False)
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("ACCESS_MODE", "safe")
     monkeypatch.setenv("WRITABLE_GLOBS", "**/*")
@@ -178,3 +181,40 @@ def test_python_mcp_resource_link_round_trip(tmp_path: Path, monkeypatch) -> Non
             assert base64.b64decode(resource.contents[0].blob) == payload
 
     anyio.run(exercise)
+
+
+def test_computer_snapshot_materializes_in_private_cache_and_uses_file_resource(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import base64
+    import os
+
+    settings = transfer_settings(tmp_path / "workspace", monkeypatch, export_limit=4096)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    payload = b"\x89PNG\r\n\x1a\ncomputer-snapshot"
+
+    result = file_transfer.materialize_computer_snapshot(
+        result={
+            "ok": True,
+            "snapshot_id": "abcdef1234567890",
+            "mime_type": "image/png",
+            "image_b64": base64.b64encode(payload).decode(),
+        },
+        settings=settings,
+    )
+
+    target = Path(result["path"])
+    assert result["ok"] is True
+    assert target.parent == tmp_path / "cache" / "chatrepo-mcp" / "shared-screens"
+    assert target.name.startswith("computer-snapshot-abcdef12-")
+    assert target.suffix == ".png"
+    assert target.read_bytes() == payload
+    if os.name != "nt":
+        assert target.stat().st_mode & 0o777 == 0o600
+
+    token = str(result["resource_uri"]).removeprefix("chatrepo-file://local/")
+    assert file_transfer.read_export_resource(token=token, settings=settings) == payload
+
+    removed = file_transfer.cleanup_computer_shares(now=target.stat().st_mtime + 301)
+    assert removed >= 1
+    assert not target.exists()

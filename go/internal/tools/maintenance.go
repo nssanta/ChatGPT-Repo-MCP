@@ -72,6 +72,9 @@ func (e *Engine) runMaintenanceOnce(now time.Time) maintenanceResult {
 		e.settings.CommandAuditLogPath,
 		now.Add(-e.settings.AuditLogTTL),
 	)
+	if dir, err := computerShareDirectory(); err == nil {
+		result.RuntimeFilesRemoved += cleanupComputerShareDirectory(dir, now)
+	}
 	return result
 }
 

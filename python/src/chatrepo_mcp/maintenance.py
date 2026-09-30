@@ -7,6 +7,7 @@ import threading
 import time
 
 from .config import Settings
+from .file_transfer import cleanup_computer_shares
 from .output_store import store_for
 
 
@@ -20,8 +21,8 @@ class MaintenanceResult:
 def run_maintenance_once(settings: Settings, *, now: float | None = None) -> MaintenanceResult:
     """Prune expired durable runtime data without touching active work.
 
-    Computer screenshots are deliberately absent here: Computer Use frames are
-    RAM-only and are never persisted to COMMAND_JOBS_DIR.
+    Computer observation frames are RAM-only. Explicitly shared screenshots are
+    short-lived private cache files and are also pruned here after crashes/restarts.
     """
     current = time.time() if now is None else now
     artifacts_checked = False
@@ -42,6 +43,7 @@ def run_maintenance_once(settings: Settings, *, now: float | None = None) -> Mai
         settings.command_jobs_dir,
         cutoff=current - settings.artifact_ttl_seconds,
     )
+    runtime_removed += cleanup_computer_shares(now=current)
     return MaintenanceResult(
         artifacts_checked=artifacts_checked,
         audit_files_removed=audit_removed,

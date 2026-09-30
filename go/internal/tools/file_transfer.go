@@ -160,22 +160,33 @@ func (e *Engine) ReadExportResource(rawURI string) ([]byte, string, error) {
 	if err != nil || len(decoded) == 0 || strings.IndexByte(string(decoded), 0) >= 0 {
 		return nil, "", fmt.Errorf("invalid exported-file resource token")
 	}
-	resolved, err := e.perimeter.ResolveTransfer(string(decoded), e.settings.AllowHiddenDefault, false)
+	decodedPath := string(decoded)
+	absolute := ""
+	if isManagedComputerShare(decodedPath) {
+		absolute = filepath.Clean(decodedPath)
+	} else {
+		resolved, resolveErr := e.perimeter.ResolveTransfer(decodedPath, e.settings.AllowHiddenDefault, false)
+		if resolveErr != nil {
+			return nil, "", resolveErr
+		}
+		absolute = resolved.Absolute
+	}
+	info, err := os.Lstat(absolute)
 	if err != nil {
 		return nil, "", err
 	}
-	info, err := os.Stat(resolved.Absolute)
-	if err != nil {
-		return nil, "", err
-	}
-	if !info.Mode().IsRegular() {
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return nil, "", fmt.Errorf("exported path is not a regular file")
 	}
-	data, err := readFileLimited(resolved.Absolute, e.settings.FileTransferExportMaxBytes)
+	if isManagedComputerShare(absolute) && time.Since(info.ModTime()) >= computerShareTTL {
+		_ = os.Remove(absolute)
+		return nil, "", fmt.Errorf("shared computer snapshot expired")
+	}
+	data, err := readFileLimited(absolute, e.settings.FileTransferExportMaxBytes)
 	if err != nil {
 		return nil, "", err
 	}
-	mimeType := mime.TypeByExtension(filepath.Ext(resolved.Absolute))
+	mimeType := mime.TypeByExtension(filepath.Ext(absolute))
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}

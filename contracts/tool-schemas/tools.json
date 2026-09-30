@@ -4180,7 +4180,7 @@
     },
     {
       "name": "computer_share_snapshot",
-      "description": "Share an observed screenshot back to the chat.\n\n        The image stays RAM-only on the connected machine. Returns both MCP ImageContent\n        and a short-lived PNG ResourceLink so clients that do not render tool images can\n        still expose the screenshot as an attachment/resource.\n        ",
+      "description": "Share an observed screenshot back to the chat.\n\n        Materializes the selected in-RAM frame as a private 0600 PNG in ChatRepo's\n        ephemeral cache, then returns the same proven file ResourceLink used by\n        export_file_to_chat. The temporary PNG is removed automatically after five minutes.\n        ",
       "inputSchema": {
         "properties": {
           "snapshot_id": {

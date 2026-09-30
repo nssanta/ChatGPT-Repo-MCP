@@ -70,7 +70,7 @@ Read-only "eyes":
 - `computer_status` — platform, backend, permissions, capture/input capability.
 - `computer_observe` — fresh screenshot plus windows, focus, cursor and
   accessibility scene.
-- `computer_share_snapshot` — expose a fresh RAM-only snapshot back to the chat as both `ImageContent` and a short-lived PNG `ResourceLink`.
+- `computer_share_snapshot` — materialize a fresh snapshot as a private short-lived PNG in ChatRepo's cache, then expose it through the same file `ResourceLink` path as `export_file_to_chat`.
 - `computer_zoom` — recapture a region from an existing snapshot.
 - `computer_windows` — native application windows.
 - `computer_elements` — AX/UIA/AT-SPI accessibility elements.
@@ -123,7 +123,7 @@ The structured result contains values such as:
 The image pixels shown to the model and the `snapshot_id` belong to the same
 capture. Coordinate actions use those exact image pixels.
 
-`computer_share_snapshot(snapshot_id)` is the human-facing path: it returns the same PNG as `ImageContent` and also exposes a five-minute `chatrepo-file://local/screen-*` `ResourceLink` served by the same resource template as `export_file_to_chat`. The bytes remain RAM-only on the connected machine; at most four shared frames are retained.
+`computer_share_snapshot(snapshot_id)` is the human-facing path. The selected in-RAM frame is written as a private `0600` PNG under the per-user `chatrepo-mcp/shared-screens/` cache, then exposed through the same `chatrepo-file://local/...` `ResourceLink` and `resources/read` path as `export_file_to_chat`. At most four recent shared screenshots are retained and each is scheduled for deletion after five minutes; periodic maintenance also removes crash leftovers.
 
 ## Snapshot and stale-state rules
 
@@ -259,11 +259,14 @@ Password/secure accessibility elements are marked `secure`. Their value,
 selection, and caret text are not returned by semantic read operations.
 
 Raw screenshots can naturally contain whatever is visible on the desktop.
-Computer screenshots are **RAM-only**: they are returned to the active MCP
+Ordinary Computer Use screenshots are **RAM-only**: they are returned to the active MCP
 request and are never written to `COMMAND_JOBS_DIR`, the audit log, or the
-bounded-output artifact store. After `COMPUTER_IDLE_TIMEOUT_SECONDS` without a
+bounded-output artifact store. Only an explicit `computer_share_snapshot` call materializes
+a temporary PNG in the private user cache so ChatGPT can consume it through the proven file bridge.
+That file is `0600`, capped by `FILE_TRANSFER_EXPORT_MAX_BYTES`, limited to four recent shares,
+and removed after five minutes. After `COMPUTER_IDLE_TIMEOUT_SECONDS` without a
 `computer_*` call, the common host releases platform drivers, PipeWire sessions,
-and all retained snapshot bytes.
+and all retained observation snapshot bytes.
 
 ## Cancellation and failure behavior
 
