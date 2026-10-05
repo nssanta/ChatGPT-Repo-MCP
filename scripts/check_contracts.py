@@ -15,9 +15,9 @@ sys.path.insert(0, str(ROOT / "python" / "src"))
 sys.path.insert(0, str(ROOT / "contracts" / "acceptance"))
 os.environ.setdefault("PROJECT_ROOT", str(ROOT))
 
-from bounded_output_contract import BOUNDED_OUTPUT_RESULT_SCHEMAS
-from chatrepo_mcp import __version__
-from chatrepo_mcp.server import mcp
+from bounded_output_contract import BOUNDED_OUTPUT_RESULT_SCHEMAS  # noqa: E402 - bootstrap must precede server imports
+from chatrepo_mcp import __version__  # noqa: E402 - bootstrap must precede server imports
+from chatrepo_mcp.server import mcp  # noqa: E402 - bootstrap must precede server imports
 
 
 def _required_branches(schema: dict[str, object]) -> list[set[str]]:
@@ -121,8 +121,8 @@ async def main() -> None:
     ]
     if contract.get("contractVersion") != 3:
         raise SystemExit("canonical contractVersion must be 3; run `make contracts`")
-    if len(live) != 117:
-        raise SystemExit(f"canonical public surface must contain exactly 117 tools, got {len(live)}")
+    if len(live) != 120:
+        raise SystemExit(f"canonical public surface must contain exactly 120 tools, got {len(live)}")
     for tool in live:
         schema = tool.get("outputSchema")
         if not isinstance(schema, dict) or schema.get("type") != "object":

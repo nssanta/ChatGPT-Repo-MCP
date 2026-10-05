@@ -80,6 +80,14 @@ func New(settings config.Settings) (*Application, error) {
 					}, nil
 				}
 			}
+			identity := tools.OperationIdentity{}
+			if request.Session != nil {
+				identity.SessionID = tools.PublicSessionID(engine.ServerInstanceID(), fmt.Sprintf("%s:%p", request.Session.ID(), request.Session))
+				if params := request.Session.InitializeParams(); params != nil && params.ClientInfo != nil {
+					identity.Client = map[string]any{"name": params.ClientInfo.Name, "version": params.ClientInfo.Version}
+				}
+			}
+			ctx = tools.WithOperationIdentity(ctx, identity)
 			result := engine.Execute(ctx, definition.Name, arguments)
 			isError := result["ok"] == false
 			structured := result
@@ -259,6 +267,7 @@ func (a *Application) runHTTP(ctx context.Context) error {
 	address := net.JoinHostPort(a.Settings.Host, fmt.Sprint(a.Settings.Port))
 	server := &http.Server{
 		Addr: address, Handler: mux, ReadHeaderTimeout: 10 * time.Second,
+		BaseContext: func(net.Listener) context.Context { return ctx },
 		ReadTimeout: 30 * time.Second, WriteTimeout: 0, IdleTimeout: 2 * time.Minute,
 	}
 	listener, err := net.Listen("tcp", address)

@@ -15,10 +15,10 @@ PYTHON_SRC = REPO_ROOT / "python" / "src"
 sys.path.insert(0, str(PYTHON_SRC))
 os.environ.setdefault("PROJECT_ROOT", str(REPO_ROOT))
 
-from bounded_output_contract import (
+from bounded_output_contract import (  # noqa: E402 - bootstrap must precede server imports
     BOUNDED_OUTPUT_RESULT_SCHEMAS,
 )
-from chatrepo_mcp.server import mcp
+from chatrepo_mcp.server import mcp  # noqa: E402 - bootstrap must precede server imports
 
 
 def parse_args() -> argparse.Namespace:

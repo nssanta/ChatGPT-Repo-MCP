@@ -116,9 +116,9 @@ def test_python_registration_gates_computer_eyes_and_hands(tmp_path: Path) -> No
     eyes = _registered_tools(tmp_path / "eyes", access_mode="safe", use=True, control=False)
     hands = _registered_tools(tmp_path / "hands", access_mode="full", use=True, control=True)
 
-    assert len(baseline) == 94
-    assert len(eyes) == 101
-    assert len(hands) == 111  # PTY explicitly disabled in this registration test.
+    assert len(baseline) == 97
+    assert len(eyes) == 104
+    assert len(hands) == 114  # PTY explicitly disabled in this registration test.
     assert "computer_observe" not in baseline
     assert "computer_observe" in eyes
     assert "computer_share_snapshot" in eyes

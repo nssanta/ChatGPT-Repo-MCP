@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, cast
 
+from .operations import CURRENT, checkpoint
 from .output_store import (
     ArtifactPersistenceError,
     ArtifactQuotaError,
@@ -71,6 +72,7 @@ def run_bounded(
     artifact_settings: Any | None = None,
 ) -> BoundedProcessResult:
     """Drain both pipes with bounded previews and optional durable full capture."""
+    checkpoint(phase="subprocess")
     stderr_limit = max_stdout_bytes if max_stderr_bytes is None else max_stderr_bytes
     artifact_id: str | None = None
     artifacts: dict[str, OutputArtifact] = {}
@@ -101,6 +103,11 @@ def run_bounded(
                 _terminate_windows_tree(process.pid)
         except ProcessLookupError:
             return
+
+    operation = CURRENT.get()
+    callback_key = f"process-{uuid.uuid4()}"
+    if operation is not None:
+        operation.add_cancel(callback_key, terminate_tree)
 
     def abort_capture() -> None:
         for output_artifact in artifacts.values():
@@ -219,6 +226,8 @@ def run_bounded(
             process.stderr.close()
             for thread in threads:
                 thread.join(timeout=1)
+        if operation is not None:
+            operation.remove_cancel(callback_key)
         if windows_job is not None:
             windows_job.close()
     stdout, _stdout_total, stdout_redacted_total = captures.get("stdout", (bytearray(), 0, 0))

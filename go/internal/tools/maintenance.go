@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -35,7 +36,9 @@ func (e *Engine) startMaintenance() {
 		}
 
 		for {
+			_, op := e.operations.start(context.Background(), "maintenance", nil, "internal", false)
 			_ = e.runMaintenanceOnce(time.Now())
+			e.operations.finish(op, "completed")
 			timer.Reset(interval)
 			select {
 			case <-e.maintenanceStop:

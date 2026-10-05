@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import atexit
+import contextvars
+import functools
+import threading
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Annotated, Any, Literal
+
+import anyio
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
@@ -114,6 +119,10 @@ from .github_tools import (
 from .file_transfer import export_file_to_chat, read_export_resource, receive_chat_file
 from .index_tools import document_symbols, symbol_definition, workspace_symbols
 from .lsp_tools import code_diagnostics
+from .operations import (
+    CURRENT, IDENTITY, CONTROL_TOOLS, OperationCancelled, checkpoint, registry_for,
+    session_identity, track,
+)
 from .output_store import read_artifact
 from .profile import list_test_presets, load_repo_profile
 from .resource_profile import (
@@ -198,7 +207,76 @@ def _tool(*args: Any, **kwargs: Any):
             raise RuntimeError("tool wrappers own structured_output registration")
         kwargs["structured_output"] = True
         _TOOL_REGISTRY.append(name)
-        return mcp.tool(*args, **kwargs)(fn)
+
+        @functools.wraps(fn)
+        async def registered(**arguments):
+            identity = {}
+            try:
+                identity = session_identity(settings, mcp.get_context())
+            except (ValueError, LookupError):
+                pass
+            identity_token = IDENTITY.set(identity)
+            try:
+                if name in CONTROL_TOOLS:
+                    if name not in {"list_operations", "get_operation", "cancel_operation"}:
+                        return await anyio.to_thread.run_sync(functools.partial(fn, **arguments), limiter=anyio.CapacityLimiter(float("inf")))
+                    return fn(**arguments)
+                operation = registry_for(settings).start(name, arguments)
+                with operation.registry.lock:
+                    if not operation.event.is_set():
+                        operation.data["status"] = "queued"
+                done = threading.Event()
+                started = threading.Event()
+
+                def invoke():
+                    token = CURRENT.set(operation)
+                    started.set()
+                    try:
+                        if operation.finished is not None:
+                            return {"ok": False, "error_kind": "operation_cancelled", "error": "Operation cancelled before execution"}
+                        with operation.registry.lock:
+                            if not operation.event.is_set():
+                                operation.data["status"] = "running"
+                        operation.checkpoint()
+                        result = fn(**arguments)
+                        if isinstance(result,dict):
+                            result.setdefault("operation_id", operation.id)
+                            result["tracking_operation_id"] = operation.id
+                        if operation.event.is_set():
+                            operation.finish("cancelled")
+                            return {"ok": False, "error_kind": "operation_cancelled", "error": "Operation stopped; already applied changes are not rolled back", "operation_id": operation.id, "tracking_operation_id": operation.id}
+                        status = "failed" if isinstance(result, dict) and result.get("ok") is False else "completed"
+                        if isinstance(result, dict) and result.get("timed_out") is True:
+                            status = "timed_out"
+                        operation.finish(status)
+                        return result
+                    except OperationCancelled:
+                        operation.finish("cancelled")
+                        return {"ok": False, "error_kind": "operation_cancelled", "error": "Operation stopped", "operation_id": operation.id, "tracking_operation_id": operation.id}
+                    except BaseException:
+                        operation.finish("failed")
+                        raise
+                    finally:
+                        CURRENT.reset(token)
+                        done.set()
+
+                try:
+                    return await anyio.to_thread.run_sync(invoke, abandon_on_cancel=True, limiter=anyio.CapacityLimiter(float("inf")))
+                except anyio.get_cancelled_exc_class():
+                    registry_for(settings).cancel(operation.id)
+                    with anyio.CancelScope(shield=True):
+                        if not started.is_set():
+                            operation.event.set()
+                            operation.finish("cancelled")
+                        else:
+                            while not done.is_set():
+                                await anyio.sleep(0.01)
+                    raise
+            finally:
+                IDENTITY.reset(identity_token)
+
+        mcp.tool(*args, **kwargs)(registered)
+        return fn
 
     return decorator
 
@@ -1104,7 +1182,13 @@ def _batch_dispatch(tool: str, args: dict | None = None) -> dict:
     }
     if tool not in handlers:
         raise ValueError(f"tool is not allowed for batch_call: {tool}")
-    return handlers[tool]()
+    with track(settings, tool, args) as operation:
+        result = handlers[tool]()
+        result.setdefault("operation_id", operation.id)
+        result["tracking_operation_id"] = operation.id
+        if isinstance(result, dict) and result.get("ok") is False:
+            operation.finish("failed")
+        return result
 
 
 def _write_config_info() -> dict:
@@ -1279,6 +1363,28 @@ def _capability_matrix() -> dict[str, dict[str, Any]]:
     """Report external binaries through the server's effective PATH."""
     binaries = ["git", "rg", "gh", "ctags", "go", "python3", "node", "docker"]
     return {name: tool_status(name, settings) for name in binaries}
+
+
+
+@_tool(name="list_operations", annotations={**READ_ONLY, "title": "List Operations"})
+def list_operations_tool(
+    scope: Literal["server", "session"] = "server", include_finished: bool = False,
+    limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+) -> dict:
+    """Inspect server work independently of heavy slots; session filters the caller's MCP session."""
+    return registry_for(settings).list(scope, include_finished, limit)
+
+
+@_tool(name="get_operation", annotations={**READ_ONLY, "title": "Get Operation"})
+def get_operation_tool(operation_id: str) -> dict:
+    """Read lifecycle, progress and cancellation capability for an operation."""
+    return registry_for(settings).get(operation_id)
+
+
+@_tool(name="cancel_operation", annotations={**READ_ONLY, "readOnlyHint": False, "title": "Cancel Operation"})
+def cancel_operation_tool(operation_id: str) -> dict:
+    """Request cooperative cancellation by ID; cancelling is not completion or rollback."""
+    return registry_for(settings).cancel(operation_id)
 
 
 @_tool(
@@ -1572,7 +1678,9 @@ def batch_call_tool(
         if not isinstance(tool, str) or not isinstance(args, dict):
             return index, {"index": index, "tool": tool, "ok": False, "error": "call must contain string tool and object args"}
         try:
-            return index, {"index": index, "tool": tool, "ok": True, "result": _batch_dispatch(tool, args)}
+            checkpoint()
+            result = _batch_dispatch(tool, args)
+            return index, {"index": index, "tool": tool, "ok": result.get("ok") is not False, "result": result}
         except ResourceBusyError as exc:
             return index, {
                 "index": index,
@@ -1590,7 +1698,7 @@ def batch_call_tool(
             _, ordered[index] = invoke(index, call)
     else:
         with ThreadPoolExecutor(max_workers=min(applied_concurrency, max(len(calls), 1))) as pool:
-            futures = [pool.submit(invoke, index, call) for index, call in enumerate(calls)]
+            futures = [pool.submit(contextvars.copy_context().run, invoke, index, call) for index, call in enumerate(calls)]
             for future in as_completed(futures):
                 index, result = future.result()
                 ordered[index] = result

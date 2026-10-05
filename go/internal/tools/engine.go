@@ -22,6 +22,7 @@ import (
 
 // Engine dispatches contract tools to focused implementations.
 type Engine struct {
+	operations          *operationRegistry
 	settings            config.Settings
 	perimeter           *security.Perimeter
 	toolNames           []string
@@ -50,6 +51,7 @@ type heavyOperationLease struct {
 
 type heavyOperationSpec struct {
 	Tool, CWD, RequestID, CancelTool, CancelID string
+	Context                                    context.Context
 }
 
 type heavyOperation struct {
@@ -138,7 +140,15 @@ func (e *Engine) heavyOperationSnapshots() []map[string]any {
 		item := map[string]any{
 			"operation_id": id, "tool": operation.Spec.Tool,
 			"repo": e.settings.ProjectRoot, "cwd": e.perimeter.Display(operation.Spec.CWD),
-			"request_id":  operation.Spec.RequestID,
+			"request_id": operation.Spec.RequestID,
+			"tracking_operation_id": func() any {
+				if operation.Spec.Context != nil {
+					if op := currentOperation(operation.Spec.Context); op != nil {
+						return op.id
+					}
+				}
+				return nil
+			}(),
 			"started_at":  operation.StartedAt.Format(time.RFC3339Nano),
 			"age_ms":      max(now.Sub(operation.StartedAt).Milliseconds(), int64(0)),
 			"cancellable": operation.Cancel != nil,
@@ -174,9 +184,19 @@ func (e *Engine) cancelHeavyOperation(id string) map[string]any {
 		e.heavyMu.Unlock()
 		return map[string]any{"ok": false, "error_kind": "specialized_cancel_required", "error": "use the operation's cancel_tool and cancel_id", "operation_id": id}
 	}
+	if operation.CancelRequested {
+		e.heavyMu.Unlock()
+		return map[string]any{"ok": true, "operation_id": id, "cancel_requested": true}
+	}
 	operation.CancelRequested = true
+	trackedContext := operation.Spec.Context
 	cancel := operation.Cancel
 	e.heavyMu.Unlock()
+	if trackedContext != nil {
+		if op := currentOperation(trackedContext); op != nil {
+			e.cancelOperation(op.id)
+		}
+	}
 	cancel()
 	return map[string]any{"ok": true, "operation_id": id, "cancel_requested": true}
 }
@@ -216,6 +236,7 @@ func New(settings config.Settings, toolNames []string) *Engine {
 	if settings.MaxHeavyOperations > 0 {
 		engine.heavySlots = make(chan struct{}, settings.MaxHeavyOperations)
 	}
+	engine.operations = newOperationRegistry(engine)
 	engine.startMaintenance()
 	return engine
 }
@@ -280,6 +301,17 @@ func (e *Engine) executeComputerTool(ctx context.Context, name string, args map[
 
 // Shutdown terminates every process group owned by this engine.
 func (e *Engine) Shutdown() {
+	e.operations.mu.Lock()
+	ids := []string{}
+	for id, op := range e.operations.entries {
+		if op.finished.IsZero() && op.data["cancellable"] == true {
+			ids = append(ids, id)
+		}
+	}
+	e.operations.mu.Unlock()
+	for _, id := range ids {
+		e.cancelOperation(id)
+	}
 	e.stopMaintenance()
 	e.jobsMu.RLock()
 	jobIDs := make([]string, 0, len(e.jobs))
@@ -320,8 +352,18 @@ func (e *Engine) Shutdown() {
 
 // Execute invokes one public tool and returns structured JSON content.
 func (e *Engine) Execute(ctx context.Context, name string, args map[string]any) map[string]any {
+	return e.executeTracked(ctx, name, args)
+}
+
+func (e *Engine) executeUntracked(ctx context.Context, name string, args map[string]any) map[string]any {
 	var result map[string]any
 	switch name {
+	case "list_operations":
+		return e.listOperations(ctx, args)
+	case "get_operation":
+		return e.getOperation(stringArg(args, "operation_id", ""))
+	case "cancel_operation":
+		return e.cancelOperation(stringArg(args, "operation_id", ""))
 	case "receive_chat_file":
 		result = e.receiveChatFile(ctx, args)
 	case "export_file_to_chat":

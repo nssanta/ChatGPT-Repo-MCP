@@ -38,7 +38,9 @@ def test_batch_dispatch_allows_mutation_for_dry_run_only(monkeypatch) -> None:
 
     result = server._batch_dispatch("replace_text_in_file", {"path": "x.txt", "find": "a", "replace": "b", "dry_run": True})
 
-    assert result == {"ok": True, "dry_run": True}
+    assert {key: value for key, value in result.items() if key not in {"operation_id", "tracking_operation_id"}} == {"ok": True, "dry_run": True}
+    assert result["operation_id"] == result["tracking_operation_id"]
+    assert result["operation_id"]
 
 
 def test_batch_dispatch_rejects_unknown_tool() -> None:

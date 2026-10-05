@@ -52,7 +52,7 @@ func TestServerListsCanonicalToolsAndCallsOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 94 {
+	if len(listed.Tools) != 97 {
 		t.Fatalf("tools = %d", len(listed.Tools))
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_repos", Arguments: map[string]any{}})
@@ -206,8 +206,8 @@ func TestComputerToolRegistrationGates(t *testing.T) {
 	if eyes["computer_click"] || eyes["computer_type"] || eyes["computer_move"] {
 		t.Fatal("control tools registered while COMPUTER_CONTROL_ENABLED=false")
 	}
-	if got := len(eyes); got != 101 {
-		t.Fatalf("safe + computer eyes tools = %d, want 101", got)
+	if got := len(eyes); got != 104 {
+		t.Fatalf("safe + computer eyes tools = %d, want 104", got)
 	}
 
 	settings = appSettings(t.TempDir())
@@ -225,9 +225,9 @@ func TestComputerToolRegistrationGates(t *testing.T) {
 			t.Fatalf("full computer control tool %q missing", name)
 		}
 	}
-	want := 117
+	want := 120
 	if runtime.GOOS == "windows" {
-		want = 111
+		want = 114
 	}
 	if got := len(full); got != want {
 		t.Fatalf("full computer tool count = %d, want %d", got, want)

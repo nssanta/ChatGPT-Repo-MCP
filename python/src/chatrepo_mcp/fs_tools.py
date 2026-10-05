@@ -17,6 +17,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from .operations import checkpoint
 from .config import Settings
 from .resource_profile import HeavyOperationLease, ResourceBusyError, acquire_heavy_operation
 from .security import (
@@ -92,15 +93,18 @@ def _iter_files(
 
     def walk() -> Iterator[Path]:
         for current, dirnames, filenames in os.walk(target, followlinks=False):
+            checkpoint(phase="walking", directories=1)
             current_path = Path(current)
             kept_dirs = []
             for dirname in dirnames:
+                checkpoint()
                 child = current_path / dirname
                 ok, _ = _entry_allowed(root, child, settings, allow_hidden=allow_hidden)
                 if ok:
                     kept_dirs.append(dirname)
             dirnames[:] = kept_dirs
             for filename in filenames:
+                checkpoint(files=1)
                 child = current_path / filename
                 ok, _ = _entry_allowed(root, child, settings, allow_hidden=allow_hidden)
                 if ok:
@@ -210,17 +214,20 @@ def tree(path: str, settings: Settings, depth: int = 4, include_hidden: bool = T
 
     def walk(node: Path, prefix: str, remaining_depth: int) -> None:
         nonlocal count
+        checkpoint(phase="walking", directories=1)
         if count >= max_entries or remaining_depth < 0:
             return
 
         children = []
         for child in sorted(node.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            checkpoint(files=0 if child.is_dir() else 1)
             ok, _ = _entry_allowed(root, child, settings, allow_hidden=include_hidden)
             if not ok:
                 continue
             children.append(child)
 
         for idx, child in enumerate(children):
+            checkpoint()
             if count >= max_entries:
                 return
             connector = "└── " if idx == len(children) - 1 else "├── "

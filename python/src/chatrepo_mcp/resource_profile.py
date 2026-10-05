@@ -9,6 +9,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from .operations import CURRENT, registry_for
+
 _GIB = 1024**3
 
 
@@ -29,16 +31,25 @@ class HeavyOperationLease:
         self._limiter = limiter
         self.operation_id = operation_id
         self._released = False
+        self.tracked = CURRENT.get()
+        self.detached = False
         self._lock = threading.Lock()
 
     def set_cancel(self, callback: Callable[[], None]) -> None:
-        self._limiter.set_cancel(self.operation_id, callback)
+        if not self.detached:
+            self._limiter.set_cancel(self.operation_id, callback)
+        if self.tracked is not None:
+            self.tracked.add_cancel(self.operation_id, callback)
 
     def release(self) -> None:
         with self._lock:
             if not self._released:
                 self._released = True
                 self._limiter.release(self.operation_id)
+                if self.tracked is not None:
+                    self.tracked.remove_cancel(self.operation_id)
+                    if self.detached:
+                        self.tracked.finish("cancelled" if self.tracked.event.is_set() else "completed")
 
 
 class ResourceBusyError(RuntimeError):
@@ -61,6 +72,7 @@ class _HeavyLimiter:
             return [
                 {
                     "operation_id": operation_id,
+                    "tracking_operation_id": item.get("tracking_operation_id"),
                     "tool": item["tool"],
                     "repo": item["repo"],
                     "cwd": item["cwd"],
@@ -91,6 +103,8 @@ class _HeavyLimiter:
             item = self.operations.get(operation_id)
             if item is None:
                 return None
+            if item["cancel_requested"]:
+                return True
             callback = item["cancel"]  # type: ignore[assignment]
             if callback is None:
                 return False
@@ -144,7 +158,15 @@ def acquire_heavy_operation(
             "cancel_tool": cancel_tool,
             "cancel_id": cancel_id,
         }
-    return HeavyOperationLease(limiter, operation_id)
+    lease = HeavyOperationLease(limiter, operation_id)
+    if cancel_tool:
+        lease.tracked = registry_for(settings).start(tool, {"cwd": cwd or root},
+            kind="terminal" if cancel_tool == "close_terminal_session" else "job", cancellable=True)
+        lease.detached = True
+        lease.tracked.data["resource_id"] = cancel_id
+    with limiter.lock:
+        limiter.operations[operation_id]["tracking_operation_id"] = lease.tracked.id if lease.tracked else None
+    return lease
 
 
 def list_heavy_operations(settings: object) -> dict[str, object]:
@@ -154,7 +176,22 @@ def list_heavy_operations(settings: object) -> dict[str, object]:
 
 
 def cancel_heavy_operation(settings: object, operation_id: str) -> dict[str, object]:
-    outcome = _heavy_limiter(settings).cancel(operation_id)
+    limiter = _heavy_limiter(settings)
+    with limiter.lock:
+        item = limiter.operations.get(operation_id)
+        tracked_id = item.get("tracking_operation_id") if item and item["cancel"] is not None else None
+        already_cancelled = bool(item and item["cancel_requested"])
+    if already_cancelled:
+        return {"ok": True, "operation_id": operation_id, "cancel_requested": True}
+    if tracked_id:
+        result = registry_for(settings).cancel(str(tracked_id))
+        if result.get("ok") is True:
+            with limiter.lock:
+                item = limiter.operations.get(operation_id)
+                if item is not None:
+                    item["cancel_requested"] = True
+            return {"ok": True, "operation_id": operation_id, "cancel_requested": True}
+    outcome = limiter.cancel(operation_id)
     if outcome is None:
         return {"ok": False, "error_kind": "heavy_operation_not_found", "error": "heavy operation was not found", "operation_id": operation_id}
     if outcome is False:

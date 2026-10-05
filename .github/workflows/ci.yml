@@ -80,6 +80,7 @@ jobs:
                 python/tests/test_perimeter.py \
                 python/tests/test_profile.py \
                 python/tests/test_resource_profile.py \
+                python/tests/test_operations.py \
                 python/tests/test_security.py \
                 python/tests/test_shared_contract.py \
                 python/tests/test_tool_schema.py \

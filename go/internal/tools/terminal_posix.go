@@ -27,6 +27,7 @@ type terminalSession struct {
 	TermSignal                    any
 	IdleTimeout                   time.Duration
 	OutputBytes                   int64
+	operationContext              context.Context
 	heavyLease                    *heavyOperationLease
 	process                       *exec.Cmd
 	pty                           *os.File
@@ -36,7 +37,7 @@ type terminalSession struct {
 func (e *Engine) executeTerminalTool(ctx context.Context, name string, args map[string]any) map[string]any {
 	switch name {
 	case "start_terminal_session":
-		return e.startTerminal(args)
+		return e.startTerminalContext(ctx, args)
 	case "read_terminal_session":
 		return e.readTerminal(stringArg(args, "session_id", ""), intArg(args, "cursor", 0), intArg(args, "max_bytes", 65536), intArg(args, "wait_ms", 1000))
 	case "write_terminal_session":
@@ -63,6 +64,9 @@ func (e *Engine) terminalResult(session *terminalSession) map[string]any {
 }
 
 func (e *Engine) startTerminal(args map[string]any) map[string]any {
+	return e.startTerminalContext(context.Background(), args)
+}
+func (e *Engine) startTerminalContext(ctx context.Context, args map[string]any) map[string]any {
 	e.terminalsMu.RLock()
 	active := 0
 	for _, item := range e.terminals {
@@ -130,9 +134,44 @@ func (e *Engine) startTerminal(args map[string]any) map[string]any {
 	e.terminalsMu.Lock()
 	e.terminals[session.ID] = session
 	e.terminalsMu.Unlock()
+	detachedParent := context.Background()
+	if parent := currentOperation(ctx); parent != nil {
+		detachedParent = WithOperationIdentity(detachedParent, parent.identity)
+		detachedParent = context.WithValue(detachedParent, operationContextKey{}, parent)
+	}
+	detachedContext, tracked := e.operations.start(detachedParent, "start_terminal_session", map[string]any{"cwd": directory}, "terminal", true)
+	e.operations.mu.Lock()
+	tracked.data["resource_id"] = session.ID
+	tracked.cancel = func() { go e.closeTerminal(session.ID, "SIGTERM", e.settings.KillGrace, false) }
+	pendingCancel := tracked.data["cancel_requested"] == true
+	e.operations.mu.Unlock()
+	if pendingCancel {
+		tracked.cancel()
+	}
+	e.heavyMu.Lock()
+	if heavy := e.heavyOps[heavyLease.id]; heavy != nil {
+		heavy.Spec.Context = detachedContext
+	}
+	e.heavyMu.Unlock()
+	session.operationContext = detachedContext
 	e.persistTerminal(session)
-	e.writeCommandAudit("start", session.LogID, "start_terminal_session", shell, directory, 0, 0, 0, "running")
-	go e.readTerminalOutput(session, store, artifact)
+	e.writeCommandAuditContext(detachedContext, "start", session.LogID, "start_terminal_session", shell, directory, 0, 0, 0, "running")
+	go func() {
+		e.readTerminalOutput(session, store, artifact)
+		session.mu.RLock()
+		status := session.Status
+		session.mu.RUnlock()
+		if status == "exited" {
+			status = "completed"
+		}
+		e.operations.mu.Lock()
+		cancelled := tracked.data["cancel_requested"] == true
+		e.operations.mu.Unlock()
+		if cancelled {
+			status = "cancelled"
+		}
+		e.operations.finish(tracked, status)
+	}()
 	go e.watchTerminalIdle(session)
 	result := e.terminalResult(session)
 	result["next_cursor"] = 0
@@ -250,7 +289,7 @@ func (e *Engine) readTerminalOutput(session *terminalSession, store *artifactSto
 	session.mu.RLock()
 	outputBytes, status := session.OutputBytes, session.Status
 	session.mu.RUnlock()
-	e.writeCommandAudit("finish", session.LogID, "start_terminal_session", session.Shell, session.CWD, time.Since(session.CreatedAt), outputBytes, 0, status)
+	e.writeCommandAuditContext(session.operationContext, "finish", session.LogID, "start_terminal_session", session.Shell, session.CWD, time.Since(session.CreatedAt), outputBytes, 0, status)
 	_ = session.pty.Close()
 }
 
@@ -366,6 +405,7 @@ func (e *Engine) closeTerminal(id, signalName string, grace time.Duration, force
 		result["closed"] = false
 		return result
 	}
+	e.noteResourceCancel(id)
 	session.Status = "closing"
 	session.TermSignal = signalName
 	session.mu.Unlock()

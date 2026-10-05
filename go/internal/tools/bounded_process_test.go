@@ -355,6 +355,9 @@ func TestLargeGitOutputIsBoundedAndDurablyContinuable(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	engine, root := newTestEngine(t)
+	// This exercises output preservation, not wall-clock timeout behavior.
+	// The race detector instruments every redaction/capture byte.
+	engine.settings.SubprocessTimeout = 30 * time.Second
 	result := engine.gitOutputCapped(context.Background(), root, "git_diff", 128, "diff")
 	output := result["output"].(string)
 	if result["ok"] != true || result["truncated"] != true || len(output) > 128 || !strings.Contains(output, "git-head-😀") || !strings.Contains(output, "git-tail-😀") || !utf8.ValidString(output) {

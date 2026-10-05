@@ -26,7 +26,7 @@ else:  # pragma: no cover - exercised by Windows CI import smoke
 
 from .command_tools import _audit, _resolve_cwd, _terminate_process_group, _utc_now
 from .config import Settings
-from .output_store import artifact_reference, store_for
+from .output_store import artifact_reference, redact_text, store_for
 from .resource_profile import HeavyOperationLease, ResourceBusyError, acquire_heavy_operation
 from .runtime_env import command_environment, resolve_binary
 
@@ -91,6 +91,17 @@ def _set_size(fd: int, cols: int, rows: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
+def _close_terminal_fd(session: TerminalSession) -> None:
+    with session.lock:
+        descriptor = session.master_fd
+        session.master_fd = -1
+    if descriptor >= 0:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+
 def _reader(settings: Settings, session: TerminalSession) -> None:
     _, log_path = _log_paths(settings, session.log_id)
     artifact = store_for(settings).open(
@@ -116,6 +127,9 @@ def _reader(settings: Settings, session: TerminalSession) -> None:
             artifact.close()
         except OSError as exc:
             capture_error = capture_error or str(exc)
+    if capture_error:
+        _terminate_process_group(session.process.pid, grace_seconds=0)
+        _close_terminal_fd(session)
     return_code = session.process.wait()
     with session.lock:
         session.exit_code = return_code
@@ -135,11 +149,36 @@ def _reader(settings: Settings, session: TerminalSession) -> None:
         "status": "failed" if capture_error else "completed",
         "error": capture_error,
     })
+    _close_terminal_fd(session)
+    if session.heavy_lease.tracked is not None:
+        session.heavy_lease.tracked.finish("cancelled" if session.heavy_lease.tracked.event.is_set() else "failed" if capture_error or return_code else "completed")
     session.heavy_lease.release()
+
+
+def _reader_with_lifecycle(settings: Settings, session: TerminalSession) -> None:
+    from .operations import CURRENT
+    token = CURRENT.set(session.heavy_lease.tracked)
     try:
-        os.close(session.master_fd)
-    except OSError:
-        pass
+        _reader(settings, session)
+    except (OSError, ValueError) as exc:
+        _terminate_process_group(session.process.pid, grace_seconds=0)
+        session.process.wait()
+        _close_terminal_fd(session)
+        with session.lock:
+            session.status = "failed"
+            session.exit_code = session.process.returncode
+            session.last_activity_at = _utc_now()
+            try:
+                _persist(settings, session)
+            except OSError:
+                pass
+        _audit(settings, {"event": "terminal_capture_failed", "tool": "start_terminal_session",
+                          "request_id": session.session_id, "error": redact_text(str(exc)), "status": "failed"})
+        if session.heavy_lease.tracked is not None:
+            session.heavy_lease.tracked.finish("failed")
+    finally:
+        session.heavy_lease.release()
+        CURRENT.reset(token)
 
 
 def _idle_watch(settings: Settings, session: TerminalSession) -> None:
@@ -221,6 +260,8 @@ def start_terminal_session(
             start_new_session=True,
         )
     except OSError as exc:
+        if heavy_lease.tracked is not None:
+            heavy_lease.tracked.finish("failed")
         heavy_lease.release()
         if master_fd is not None:
             os.close(master_fd)
@@ -242,8 +283,12 @@ def start_terminal_session(
     )
     with SESSIONS_LOCK:
         SESSIONS[session.session_id] = session
+    def cancel_owned_terminal() -> None:
+        close_terminal_session(session_id, settings)
+
+    heavy_lease.set_cancel(cancel_owned_terminal)
     _persist(settings, session)
-    threading.Thread(target=_reader, args=(settings, session), daemon=True, name=f"pty-read-{session.session_id[:8]}").start()
+    threading.Thread(target=_reader_with_lifecycle, args=(settings, session), daemon=True, name=f"pty-read-{session.session_id[:8]}").start()
     threading.Thread(target=_idle_watch, args=(settings, session), daemon=True, name=f"pty-idle-{session.session_id[:8]}").start()
     return {
         "ok": True, **_metadata(session), "next_cursor": 0,
@@ -311,6 +356,8 @@ def close_terminal_session(session_id: str, settings: Settings, *, signal_name: 
     with session.lock:
         if session.status in {"exited", "failed", "closed"}:
             return {"ok": True, **_metadata(session), "closed": False}
+        from .operations import note_resource_cancel
+        note_resource_cancel(settings, session_id)
         session.status = "closing"
         session.term_signal = "SIGKILL" if force else signal_name
     if force:

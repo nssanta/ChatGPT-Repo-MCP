@@ -123,6 +123,9 @@ TOOL_SUCCESS_SPECS: dict[str, tuple[ToolSuccessSpec, ...]] = {
     "get_command_job": ((True, ("job_id", "status")),),
     "get_job_status": ((True, ("job_id", "status")),),
     "list_command_jobs": ((True, ("jobs", "count")),),
+    "list_operations": ((True, ("server_instance_id", "scope", "operations", "count", "total", "truncated")),),
+    "get_operation": ((True, ("operation",)),),
+    "cancel_operation": ((True, ("operation_id", "cancel_requested", "status")),),
     "list_heavy_operations": ((True, ("capacity", "used", "operations")),),
     "cancel_heavy_operation": ((True, ("operation_id", "cancel_requested")),),
     "cancel_command_job": ((True, ("job_id", "status", "cancelled")),),
@@ -167,6 +170,7 @@ TOOL_SUCCESS_SPECS: dict[str, tuple[ToolSuccessSpec, ...]] = {
 
 
 _FIELD_TYPES: dict[str, Any] = {
+    "server_instance_id": str, "scope": str, "operation": dict[str, Any], "total": int,
     "project_root": str, "exists": bool, "is_dir": bool, "config": dict[str, Any], "path": str,
     "entries": list[Any] | int, "truncated": bool, "tree": str, "max_entries": int, "start_line": int,
     "end_line": int, "content": str, "line_count": int, "total_lines": int, "sha256": str, "files": list[Any], "type": str,
@@ -222,6 +226,8 @@ def _summary_properties(specs: tuple[ToolSuccessSpec, ...]) -> dict[str, Any]:
         "ok": {"type": "boolean"},
         "error_kind": {"type": "string"},
         "error": {},
+        "tracking_operation_id": {"type": "string"},
+        "operation_id": {"type": "string"},
     }
     for _, core in specs:
         for field in core:

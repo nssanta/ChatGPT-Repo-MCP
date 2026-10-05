@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .operations import checkpoint
 from .config import Settings
 
 #: Directory names skipped while scanning for nested repos/stacks.
@@ -254,6 +255,7 @@ def list_workspace_repos(settings: Settings) -> list[dict]:
     found: list[dict] = []
 
     def _walk(directory: Path, depth: int) -> None:
+        checkpoint(phase="discovering", directories=1)
         if depth > settings.workspace_scan_depth:
             return
         try:
@@ -261,6 +263,7 @@ def list_workspace_repos(settings: Settings) -> list[dict]:
         except OSError:
             return
         for entry in entries:
+            checkpoint()
             if not entry.is_dir():
                 continue
             if entry.name.startswith(".") or entry.name in _IGNORED_DIR_NAMES:

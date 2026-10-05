@@ -46,7 +46,7 @@ func (e *Engine) executeReadTool(ctx context.Context, name string, args map[stri
 	case "list_dir":
 		return e.listDirectory(stringArg(args, "path", "."), boolArg(args, "include_hidden", true), intArg(args, "limit", 200))
 	case "tree":
-		return e.directoryTree(stringArg(args, "path", "."), intArg(args, "depth", 4), boolArg(args, "include_hidden", true))
+		return e.directoryTreeContext(ctx, stringArg(args, "path", "."), intArg(args, "depth", 4), boolArg(args, "include_hidden", true))
 	case "read_text_file":
 		return e.readText(stringArg(args, "path", ""), intArg(args, "start_line", 1), intArg(args, "end_line", 0), boolArg(args, "with_line_numbers", true))
 	case "read_multiple_files":
@@ -54,7 +54,7 @@ func (e *Engine) executeReadTool(ctx context.Context, name string, args map[stri
 	case "file_metadata":
 		return e.fileMetadata(stringArg(args, "path", ""), boolArg(args, "include_stat", true))
 	case "find_files":
-		return e.findFiles(stringArg(args, "pattern", "*"), stringArg(args, "path", "."), boolArg(args, "include_hidden", true), intArg(args, "limit", 200))
+		return e.findFilesContext(ctx, stringArg(args, "pattern", "*"), stringArg(args, "path", "."), boolArg(args, "include_hidden", true), intArg(args, "limit", 200))
 	case "search_text":
 		if mode := stringArg(args, "mode", "quick"); mode == "exhaustive" {
 			return e.startExhaustiveSearch(ctx, args)
@@ -234,6 +234,9 @@ func (e *Engine) listDirectory(path string, includeHidden bool, limit int) map[s
 }
 
 func (e *Engine) directoryTree(path string, depth int, includeHidden bool) map[string]any {
+	return e.directoryTreeContext(context.Background(), path, depth, includeHidden)
+}
+func (e *Engine) directoryTreeContext(ctx context.Context, path string, depth int, includeHidden bool) map[string]any {
 	resolved, err := e.perimeter.Resolve(path, includeHidden, false)
 	if err != nil {
 		return withError("path_not_allowed", err)
@@ -245,6 +248,9 @@ func (e *Engine) directoryTree(path string, depth int, includeHidden bool) map[s
 	count := 0
 	var walk func(string, string, int)
 	walk = func(directory, prefix string, remaining int) {
+		if e.operationCheckpoint(ctx, "walking", 0, 1) != nil {
+			return
+		}
 		if remaining == 0 || count >= e.settings.MaxTreeEntries {
 			return
 		}
@@ -255,6 +261,13 @@ func (e *Engine) directoryTree(path string, depth int, includeHidden bool) map[s
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		visible := make([]os.DirEntry, 0, len(entries))
 		for _, entry := range entries {
+			files := int64(1)
+			if entry.IsDir() {
+				files = 0
+			}
+			if e.operationCheckpoint(ctx, "walking", files, 0) != nil {
+				return
+			}
 			child := filepath.Join(directory, entry.Name())
 			if (!includeHidden && strings.HasPrefix(entry.Name(), ".")) || e.perimeter.IsBlocked(e.perimeter.Display(child)) {
 				continue
@@ -264,6 +277,9 @@ func (e *Engine) directoryTree(path string, depth int, includeHidden bool) map[s
 			}
 		}
 		for index, entry := range visible {
+			if ctx.Err() != nil {
+				return
+			}
 			if count >= e.settings.MaxTreeEntries {
 				return
 			}
@@ -393,6 +409,9 @@ func fileType(info os.FileInfo) string {
 }
 
 func (e *Engine) findFiles(pattern, path string, includeHidden bool, limit int) map[string]any {
+	return e.findFilesContext(context.Background(), pattern, path, includeHidden, limit)
+}
+func (e *Engine) findFilesContext(ctx context.Context, pattern, path string, includeHidden bool, limit int) map[string]any {
 	resolved, err := e.perimeter.Resolve(path, includeHidden, false)
 	if err != nil {
 		return withError("path_not_allowed", err)
@@ -401,6 +420,16 @@ func (e *Engine) findFiles(pattern, path string, includeHidden bool, limit int) 
 	var matches []map[string]any
 	truncated := false
 	_ = filepath.WalkDir(resolved.Absolute, func(current string, entry os.DirEntry, walkErr error) error {
+		if ctx.Err() != nil {
+			return filepath.SkipAll
+		}
+		if entry != nil {
+			if entry.IsDir() {
+				_ = e.operationCheckpoint(ctx, "walking", 0, 1)
+			} else {
+				_ = e.operationCheckpoint(ctx, "walking", 1, 0)
+			}
+		}
 		if walkErr != nil {
 			return nil
 		}
@@ -456,7 +485,7 @@ func (e *Engine) searchText(ctx context.Context, query, path string, paths []str
 		resolvedTargets = append(resolvedTargets, resolved.Absolute)
 	}
 	requestID := randomID()
-	heavyLease, acquired := e.acquireHeavyOperation(heavyOperationSpec{Tool: "search_text", CWD: strings.Join(resolvedTargets, ","), RequestID: requestID})
+	heavyLease, acquired := e.acquireHeavyOperation(heavyOperationSpec{Tool: "search_text", CWD: strings.Join(resolvedTargets, ","), RequestID: requestID, Context: ctx})
 	if !acquired {
 		return e.heavyBusyResult()
 	}
@@ -467,7 +496,7 @@ func (e *Engine) searchText(ctx context.Context, query, path string, paths []str
 	if _, err := exec.LookPath("rg"); err == nil {
 		return e.searchWithRipgrep(searchContext, query, resolvedTargets, regexMode, caseSensitive, limit)
 	}
-	return e.searchFallback(query, resolvedTargets, regexMode, caseSensitive, limit)
+	return e.searchFallbackContext(searchContext, query, resolvedTargets, regexMode, caseSensitive, limit)
 }
 
 func (e *Engine) searchWithRipgrep(ctx context.Context, query string, targets []string, regexMode, caseSensitive bool, limit int) map[string]any {
@@ -489,11 +518,11 @@ func (e *Engine) searchWithRipgrep(ctx context.Context, query string, targets []
 	command := exec.CommandContext(ctx, "rg", arguments...)
 	requestID := randomID()
 	started := time.Now()
-	e.writeCommandAudit("start", requestID, "search_text", "rg search", strings.Join(targets, ","), 0, 0, 0, "running")
+	e.writeCommandAuditContext(ctx, "start", requestID, "search_text", "rg search", strings.Join(targets, ","), 0, 0, 0, "running")
 	auditStatus := "failed"
 	var auditReturned int64
 	defer func() {
-		e.writeCommandAudit("finish", requestID, "search_text", "rg search", strings.Join(targets, ","), time.Since(started), auditReturned, 0, auditStatus)
+		e.writeCommandAuditContext(ctx, "finish", requestID, "search_text", "rg search", strings.Join(targets, ","), time.Since(started), auditReturned, 0, auditStatus)
 	}()
 	configureProcessGroup(command)
 	stdout, err := command.StdoutPipe()
@@ -559,6 +588,9 @@ func (e *Engine) searchWithRipgrep(ctx context.Context, query string, targets []
 }
 
 func (e *Engine) searchFallback(query string, targets []string, regexMode, caseSensitive bool, limit int) map[string]any {
+	return e.searchFallbackContext(context.Background(), query, targets, regexMode, caseSensitive, limit)
+}
+func (e *Engine) searchFallbackContext(ctx context.Context, query string, targets []string, regexMode, caseSensitive bool, limit int) map[string]any {
 	expression := regexp.QuoteMeta(query)
 	if regexMode {
 		expression = query
@@ -573,6 +605,16 @@ func (e *Engine) searchFallback(query string, targets []string, regexMode, caseS
 	var results []map[string]any
 	for _, target := range targets {
 		_ = filepath.WalkDir(target, func(path string, entry os.DirEntry, walkErr error) error {
+			if ctx.Err() != nil {
+				return filepath.SkipAll
+			}
+			if entry != nil {
+				if entry.IsDir() {
+					_ = e.operationCheckpoint(ctx, "walking", 0, 1)
+				} else {
+					_ = e.operationCheckpoint(ctx, "walking", 1, 0)
+				}
+			}
 			if walkErr != nil || len(results) >= limit {
 				return filepath.SkipAll
 			}
@@ -593,6 +635,9 @@ func (e *Engine) searchFallback(query string, targets []string, regexMode, caseS
 			scanner := bufio.NewScanner(io.LimitReader(file, e.settings.MaxFileBytes))
 			line := 0
 			for scanner.Scan() && len(results) < limit {
+				if ctx.Err() != nil {
+					return filepath.SkipAll
+				}
 				line++
 				if compiled.MatchString(scanner.Text()) {
 					results = append(results, map[string]any{"path": e.perimeter.Display(path), "line": line, "text": scanner.Text()})
@@ -605,7 +650,6 @@ func (e *Engine) searchFallback(query string, targets []string, regexMode, caseS
 }
 
 func (e *Engine) recentChanges(ctx context.Context, path string, paths []string, limit int) map[string]any {
-	_ = ctx
 	limit = min(max(limit, 0), e.settings.MaxSearchResults)
 	targets := paths
 	if len(targets) == 0 {
@@ -619,6 +663,16 @@ func (e *Engine) recentChanges(ctx context.Context, path string, paths []string,
 			return withError("path_not_allowed", err)
 		}
 		_ = filepath.WalkDir(resolved.Absolute, func(item string, entry os.DirEntry, walkErr error) error {
+			if ctx.Err() != nil {
+				return filepath.SkipAll
+			}
+			if entry != nil {
+				if entry.IsDir() {
+					_ = e.operationCheckpoint(ctx, "walking", 0, 1)
+				} else {
+					_ = e.operationCheckpoint(ctx, "walking", 1, 0)
+				}
+			}
 			if walkErr != nil {
 				return nil
 			}
@@ -721,6 +775,9 @@ func readFileLimited(path string, maximum int64) ([]byte, error) {
 func (e *Engine) doctor(ctx context.Context) map[string]any {
 	capabilities := map[string]any{}
 	for _, name := range []string{"git", "rg", "gh", "ctags", "bash", "go", "python3", "node", "ruff", "mypy", "pyright"} {
+		if e.operationCheckpoint(ctx, "diagnostics", 0, 0) != nil {
+			return failure("operation_cancelled", "Diagnostics cancelled")
+		}
 		capabilities[name] = e.toolStatus(name)
 	}
 	entries, warnings := e.effectivePath()
@@ -792,6 +849,10 @@ func (e *Engine) batchCall(ctx context.Context, args map[string]any) map[string]
 	results := make([]map[string]any, len(calls))
 	invoke := func(index int, call map[string]any) {
 		name := stringArg(call, "tool", "")
+		if ctx.Err() != nil {
+			results[index] = map[string]any{"index": index, "tool": name, "ok": false, "result": failure("operation_cancelled", "Batch cancelled before starting this call")}
+			return
+		}
 		arguments := mapArg(call, "args")
 		allowed := map[string]bool{"repo_info": true, "list_dir": true, "tree": true, "read_text_file": true, "read_multiple_files": true, "file_metadata": true, "find_files": true, "search_text": true, "symbol_search": true, "recent_changes": true, "todo_scan": true, "dependency_map": true, "git_status": true, "git_diff": true, "git_log": true, "git_show": true, "git_branches": true, "git_blame": true, "git_grep": true}
 		if !allowed[name] {
@@ -977,8 +1038,11 @@ func runProcessInput(parent context.Context, directory string, timeout time.Dura
 }
 
 func (e *Engine) runArtifactProcess(parent context.Context, tool, directory string, timeout time.Duration, env []string, limit int, binary string, arguments ...string) (processResult, string, int64, int64, error) {
+	if err := e.operationCheckpoint(parent, "subprocess", 0, 0); err != nil {
+		return processResult{}, "", 0, 0, err
+	}
 	id := randomID()
-	heavyLease, acquired := e.acquireHeavyOperation(heavyOperationSpec{Tool: tool, CWD: directory, RequestID: id})
+	heavyLease, acquired := e.acquireHeavyOperation(heavyOperationSpec{Tool: tool, CWD: directory, RequestID: id, Context: parent})
 	if !acquired {
 		return processResult{}, "", 0, 0, e.heavyBusyError()
 	}
@@ -996,7 +1060,7 @@ func (e *Engine) runArtifactProcess(parent context.Context, tool, directory stri
 	}
 	started := time.Now()
 	safeCommand := binary + " " + strings.Join(arguments, " ")
-	e.writeCommandAudit("start", id, tool, safeCommand, directory, 0, 0, 0, "running")
+	e.writeCommandAuditContext(parent, "start", id, tool, safeCommand, directory, 0, 0, 0, "running")
 	ctx, cancel := context.WithTimeout(operationContext, timeout)
 	defer cancel()
 	command := exec.Command(binary, arguments...)
@@ -1024,7 +1088,7 @@ func (e *Engine) runArtifactProcess(parent context.Context, tool, directory stri
 	if runErr != nil || closeErr != nil {
 		status = "failed"
 	}
-	e.writeCommandAudit("finish", id, tool, safeCommand, directory, time.Since(started), stdoutBytes, stderrBytes, status)
+	e.writeCommandAuditContext(parent, "finish", id, tool, safeCommand, directory, time.Since(started), stdoutBytes, stderrBytes, status)
 	if closeErr != nil {
 		return processResult{}, id, stdoutBytes, stderrBytes, closeErr
 	}

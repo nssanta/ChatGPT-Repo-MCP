@@ -5,6 +5,7 @@ PYTHON_ENV ?= .venv/bin/python
 PYTHON_BIN_DIR := $(dir $(abspath $(PYTHON_ENV)))
 GO ?= go
 GO_DIR := go
+BIN_DIR ?= bin
 GO_MODULE_TOOLCHAIN := go$(shell awk '$$1 == "go" { print $$2; exit }' $(GO_DIR)/go.mod)
 PYTHON_DIR := python
 VERSION := $(shell tr -d '[:space:]' < VERSION)
@@ -26,7 +27,7 @@ contracts-check:
 	PROJECT_ROOT=$(CURDIR) ACCESS_MODE=full ENABLE_PTY=true COMPUTER_USE_ENABLED=true COMPUTER_CONTROL_ENABLED=true PYTHONPATH=$(PYTHON_DIR)/src $(PYTHON_ENV) scripts/check_contracts.py
 
 acceptance: build
-	PATH=$(PYTHON_BIN_DIR):$$PATH $(PYTHON_ENV) contracts/acceptance/run_dual_server.py
+	PATH=$(PYTHON_BIN_DIR):$$PATH CHATREPO_GO_BINARY=$(abspath $(BIN_DIR))/chatrepo-mcp COMPUTER_HOST_PATH=$(abspath $(BIN_DIR))/chatrepo-computer-host $(PYTHON_ENV) contracts/acceptance/run_dual_server.py
 
 ## Install the Python implementation with all development dependencies.
 python-install: computer-host
@@ -59,7 +60,7 @@ go-test:
 	$(GO) -C $(GO_DIR) test ./...
 
 go-race:
-	$(GO) -C $(GO_DIR) test -race ./...
+	$(GO) -C $(GO_DIR) test -race -timeout 30m ./...
 
 go-coverage:
 	GOTOOLCHAIN=$(GO_MODULE_TOOLCHAIN) $(GO) -C $(GO_DIR) test -coverprofile=coverage.out ./...
@@ -69,12 +70,12 @@ go-coverage:
 
 ## Build the shared Computer Use companion used by both Python and Go MCP implementations.
 computer-host:
-	mkdir -p bin
-	CGO_ENABLED=0 $(GO) -C $(GO_DIR) build -trimpath -ldflags "-s -w" -o ../bin/chatrepo-computer-host ./cmd/chatrepo-computer-host
+	mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 $(GO) -C $(GO_DIR) build -trimpath -ldflags "-s -w" -o $(abspath $(BIN_DIR))/chatrepo-computer-host ./cmd/chatrepo-computer-host
 
 ## Build the Go MCP binary plus its shared Computer Use companion.
 build: computer-host
-	CGO_ENABLED=0 $(GO) -C $(GO_DIR) build -trimpath -ldflags "-s -w -X github.com/nssanta/ChatGPT-Repo-MCP/go/internal/app.Version=$(VERSION)" -o ../bin/chatrepo-mcp ./cmd/chatrepo-mcp
+	CGO_ENABLED=0 $(GO) -C $(GO_DIR) build -trimpath -ldflags "-s -w -X github.com/nssanta/ChatGPT-Repo-MCP/go/internal/app.Version=$(VERSION)" -o $(abspath $(BIN_DIR))/chatrepo-mcp ./cmd/chatrepo-mcp
 
 test: python-test go-test contracts-check
 

@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from operation_lifecycle import lifecycle_acceptance, shutdown_acceptance
 from jsonschema import Draft202012Validator
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
@@ -191,7 +192,7 @@ async def verify_saturated_mixed_batch(url: str, runtime: str, capacity: int) ->
     jobs: list[str] = []
     try:
         for _ in range(capacity):
-            started = await call(url, "start_command_job", {"command": "sleep 10"})
+            started = await call(url, "start_command_job", {"command": "sleep 300"})
             if started.get("ok") is not True:
                 raise AssertionError(f"{runtime} could not saturate heavy capacity: {started!r}")
             jobs.append(started["job_id"])
@@ -306,7 +307,7 @@ async def verify(python_url: str, go_url: str, fixture: Path) -> None:
         go_schema = json.dumps(go_meta["tools"], indent=2, sort_keys=True).splitlines()
         difference = "\n".join(difflib.unified_diff(python_schema, go_schema, "python", "go", n=3))
         raise AssertionError(f"Python/Go live tool schemas differ:\n{difference}")
-    assert len(python_meta["tools"]) == 94
+    assert len(python_meta["tools"]) == 97
 
     for name, arguments in (
         ("list_dir", {"path": ".", "include_hidden": False}),
@@ -554,8 +555,19 @@ async def verify_polyrepo_grep(python_url: str, go_url: str) -> None:
         assert {match["repo"] for match in result["results"]} == {"repo-a", "repo-b"}
 
 
+def stop_fixture_server(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
+
+
 def main() -> None:
-    go_binary = ROOT / "bin" / ("chatrepo-mcp.exe" if os.name == "nt" else "chatrepo-mcp")
+    go_binary = Path(os.environ.get("CHATREPO_GO_BINARY", str(ROOT / "bin" / ("chatrepo-mcp.exe" if os.name == "nt" else "chatrepo-mcp"))))
     if not go_binary.exists():
         raise SystemExit("Go binary is missing; run `make build` first")
     with (
@@ -583,6 +595,11 @@ def main() -> None:
             "ALLOWED_HOSTS": "127.0.0.1:*,localhost:*",
             "DANGEROUSLY_ALLOW_ALL_WRITES": "true",
             "COMMAND_POLICY_MODE": "full_repo",
+            "COMMAND_AUDIT_LOG_PATH": str(fixture / "audit" / "commands.log"),
+            "COMMAND_JOBS_DIR": str(fixture / "jobs"),
+            "MAINTENANCE_ENABLED": "false",
+            "COMPUTER_USE_ENABLED": "false",
+            "COMPUTER_CONTROL_ENABLED": "false",
         }
         python_env = {**base_env, "PORT": str(python_port), "PYTHONPATH": str(ROOT / "python" / "src")}
         go_env = {**base_env, "PORT": str(go_port)}
@@ -595,8 +612,8 @@ def main() -> None:
                 [str(go_binary)], cwd=ROOT, env=go_env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             )
-            stack.callback(lambda: python_process.kill() if python_process.poll() is None else None)
-            stack.callback(lambda: go_process.kill() if go_process.poll() is None else None)
+            stack.callback(stop_fixture_server, python_process)
+            stack.callback(stop_fixture_server, go_process)
             wait_for_port(python_port, python_process)
             wait_for_port(go_port, go_process)
             asyncio.run(
@@ -612,6 +629,8 @@ def main() -> None:
             **base_env,
             "ACCESS_MODE": "full",
             "ENABLE_PTY": "true",
+            "COMPUTER_USE_ENABLED": "true",
+            "COMPUTER_CONTROL_ENABLED": "true",
         }
         full_python_env = {
             **full_base_env,
@@ -628,8 +647,8 @@ def main() -> None:
                 [str(go_binary)], cwd=ROOT, env=full_go_env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             )
-            stack.callback(lambda: python_process.kill() if python_process.poll() is None else None)
-            stack.callback(lambda: go_process.kill() if go_process.poll() is None else None)
+            stack.callback(stop_fixture_server, python_process)
+            stack.callback(stop_fixture_server, go_process)
             wait_for_port(full_python_port, python_process)
             wait_for_port(full_go_port, go_process)
             asyncio.run(
@@ -638,6 +657,12 @@ def main() -> None:
                     f"http://127.0.0.1:{full_go_port}/mcp",
                 )
             )
+
+            asyncio.run(lifecycle_acceptance(f"http://127.0.0.1:{full_python_port}/mcp", fixture))
+            asyncio.run(lifecycle_acceptance(f"http://127.0.0.1:{full_go_port}/mcp", fixture))
+            if os.name == "posix":
+                asyncio.run(shutdown_acceptance(f"http://127.0.0.1:{full_python_port}/mcp", fixture, python_process))
+                asyncio.run(shutdown_acceptance(f"http://127.0.0.1:{full_go_port}/mcp", fixture, go_process))
 
         polyrepo = Path(polytemporary)
         for name in ("repo-a", "repo-b"):
@@ -667,15 +692,15 @@ def main() -> None:
                 [str(go_binary)], cwd=ROOT, env=poly_go_env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             )
-            stack.callback(lambda: python_process.kill() if python_process.poll() is None else None)
-            stack.callback(lambda: go_process.kill() if go_process.poll() is None else None)
+            stack.callback(stop_fixture_server, python_process)
+            stack.callback(stop_fixture_server, go_process)
             wait_for_port(poly_python_port, python_process)
             wait_for_port(poly_go_port, go_process)
             asyncio.run(verify_polyrepo_grep(
                 f"http://127.0.0.1:{poly_python_port}/mcp",
                 f"http://127.0.0.1:{poly_go_port}/mcp",
             ))
-    print("dual-server acceptance ok: 92 safe tools, full canonical tools, and core behavior")
+    print("dual-server acceptance ok: 97 safe tools, full canonical tools, lifecycle/session/cancellation and core behavior")
 
 
 if __name__ == "__main__":

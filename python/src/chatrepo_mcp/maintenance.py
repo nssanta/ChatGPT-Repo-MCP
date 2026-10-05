@@ -6,6 +6,7 @@ from pathlib import Path
 import threading
 import time
 
+from .operations import track
 from .config import Settings
 from .file_transfer import cleanup_computer_shares
 from .output_store import store_for
@@ -134,7 +135,8 @@ class RuntimeMaintenance:
         if self._stop.wait(initial):
             return
         while not self._stop.is_set():
-            run_maintenance_once(self._settings)
+            with track(self._settings,"maintenance",{},kind="internal",cancellable=False):
+                run_maintenance_once(self._settings)
             if self._stop.wait(interval):
                 return
 
