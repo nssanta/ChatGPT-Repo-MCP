@@ -187,7 +187,8 @@ Call `run_test_preset("test")` at the workspace root, or `run_test_preset("test"
 ## Operation visibility
 
 Use `list_operations` for all server work or the calling session, `get_operation`
-for progress and lifecycle, and `cancel_operation` to request a stop. Accounting
+for progress and lifecycle, and `cancel_operation` to request a stop. Launch/attach responses expose `background_operation_id` for owned background resources.
+`last_progress_at` records actual progress; an unchanged timestamp alone does not prove a hang. Accounting
 is independent of heavy slots; an empty heavy/job/terminal list is not proof of
 idle. Cancellation remains visible until the worker stops and does not promise
 rollback. See [operation lifecycle and audit](docs/OPERATIONS.md).

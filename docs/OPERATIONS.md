@@ -28,11 +28,18 @@ and finish timestamps, age, status, progress, and cancellation capability.
 Raw commands, search terms, file contents, environment values and authentication
 tokens are not included. Progress reports a phase and visited file/directory
 counts, not a percentage based on an unknown total. Updates are coalesced to
-avoid formatting a timestamp for every visited file.
+avoid formatting a timestamp for every visited file. `last_progress_at` and
+`last_progress_age_ms` describe useful progress separately from `updated_at`;
+requesting cancellation does not make stalled work look productive. An idle
+terminal reports `waiting_input`; an old progress time is not proof of a hang.
+Owned child PID/PGID are shown only while the executor owns a live process and
+are removed after cleanup; they are not inputs to the cancellation API.
 
 Batch children inherit session and request correlation and identify their
 parent. Detached jobs and terminals have their own records and native
-`resource_id`; launcher completion does not terminate those resources.
+`resource_id`; launcher completion does not terminate those resources. Launch/attach responses
+include `background_operation_id`, the ID to pass to `cancel_operation`; this is
+different from the launch call's `tracking_operation_id`.
 Existing heavy-operation entries expose `tracking_operation_id`, linking the
 pool holder to its lifecycle record without acquiring another heavy slot.
 Maintenance passes are visible as `kind="internal"` while they run. The
@@ -53,6 +60,8 @@ session ID; asking for session scope without a session returns
 `cancel_operation` acknowledges a request. Active work becomes `cancelling` and
 remains listed until its worker/process has stopped and performed cleanup.
 Completion is confirmed through `get_operation`, not through the acknowledgement.
+A callback failure stays visible in `cancel_error` while work remains active.
+Successful completion is preserved when cancellation arrives too late.
 Repeated cancellation is idempotent; cancelling a completed operation returns
 its actual terminal state.
 
@@ -69,7 +78,10 @@ cancellation signals a running synchronous worker and waits for that worker to
 leave; abandoning an await does not turn a live thread into a finished record.
 Go propagates its operation context through dispatch and nested calls.
 
-An OS call can still take time to return. The record stays active during that
+Cooperative cancellation needs the worker to reach a checkpoint. A goroutine
+or Python thread stuck inside a syscall cannot be killed by operation ID; a
+separate process worker for those reads is a future extension. An OS call can
+still take time to return. The record stays active during that
 interval. File edits, commit/workflow transactions, transfers, desktop actions
 and maintenance passes without a safe interruption point advertise
 `cancellable=false` and a reason; cancellation returns
