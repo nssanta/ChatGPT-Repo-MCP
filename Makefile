@@ -85,7 +85,7 @@ typecheck: python-typecheck
 
 coverage: python-coverage go-coverage
 
-## Full local quality gate used by CI.
+## Full local quality gate.
 check: contracts-check lint typecheck test coverage build acceptance
 
 bench:
