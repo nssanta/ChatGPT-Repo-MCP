@@ -81,6 +81,12 @@ operation records provide `cancel_tool` and `cancel_id` for
 `cancel_command_job` or `close_terminal_session`. `doctor` embeds the current
 heavy-pool snapshot under its resource diagnostics.
 
+`list_operations` covers work outside the heavy pool as well, including native
+filesystem walks. Heavy records link to it through `tracking_operation_id`.
+Use `get_operation` to distinguish cancellation acknowledgement from completion;
+`cancel_operation` unifies cancellation of supported tracked work. Existing job
+and terminal management APIs remain available. See [OPERATIONS.md](OPERATIONS.md).
+
 ## Audit and incident diagnosis
 
 Heavy operations write a redacted start record before execution and a finish

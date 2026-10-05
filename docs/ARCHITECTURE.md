@@ -8,6 +8,16 @@ Command jobs and POSIX terminal sessions are UUID-owned resources with shared lo
 
 The canonical contract describes the full catalog. Runtime registration can expose the smaller non-PTY subset; readiness and doctor report the active capabilities.
 
+## Server-wide operation registry
+
+Every tool execution, batch child, detached job/terminal and maintenance pass
+has a lifecycle record independent of heavy-operation admission. Public opaque
+session references support server/session views without revealing transport
+tokens. Cooperative cancellation remains observable until actual worker exit.
+Python offloads blocking tools using AnyIO and propagates ContextVars into batch
+workers; Go propagates operation contexts. See [OPERATIONS.md](OPERATIONS.md)
+for API, retention, audit and cancellation boundaries.
+
 ## Goal
 
 Expose a workspace, polyrepo, or trusted machine to ChatGPT through remote MCP, with an explicit safe/full operating mode.
@@ -22,7 +32,7 @@ ChatGPT (Developer Mode)
 Reverse Proxy (Caddy or Nginx)
         │
         ▼
-Shared canonical MCP catalog (117 tools; Computer Use gated)
+Shared canonical MCP catalog (120 tools; Computer Use gated)
         │
         ├── Python FastMCP package
         └── Go MCP binary

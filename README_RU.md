@@ -2,7 +2,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](python/)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go/)
-[![MCP](https://img.shields.io/badge/MCP-117%20tools-black)](contracts/tool-schemas/tools.json)
+[![MCP](https://img.shields.io/badge/MCP-120%20tools-black)](contracts/tool-schemas/tools.json)
 [![Platforms](https://img.shields.io/badge/Go-Linux%20%7C%20macOS%20%7C%20Windows-5c6ac4)](docs/INSTALL.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -10,7 +10,7 @@
 подключения к ChatGPT и автозапуска после reboot есть
 [полный runbook на английском](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP-сервер, который превращает **любую папку или репозиторий** в рабочую среду для автономного кодинг-агента внутри ChatGPT. Пользователь выбирает Python-пакет или самостоятельный Go-бинарник; обе версии используют единый канонический каталог из **117 инструментов**. Computer Use выключен по умолчанию, поэтому существующая поверхность не меняется: 94 тула в safe-режиме и 100 в доверенном POSIX full-режиме. Включение «глаз» добавляет семь read-only desktop-тулов, а полный контроль рабочего стола даёт все 117 на Linux/macOS (111 на Windows, где нет POSIX PTY). Каждый тул публикует канонические входную и additive-выходную схемы.
+MCP-сервер, который превращает **любую папку или репозиторий** в рабочую среду для автономного кодинг-агента внутри ChatGPT. Пользователь выбирает Python-пакет или самостоятельный Go-бинарник; обе версии используют единый канонический каталог из **120 инструментов**. Computer Use выключен по умолчанию, поэтому базовая поверхность содержит: 97 тулов в safe-режиме и 103 в доверенном POSIX full-режиме. Включение «глаз» добавляет семь read-only desktop-тулов, а полный контроль рабочего стола даёт все 120 на Linux/macOS (114 на Windows, где нет POSIX PTY). Каждый тул публикует канонические входную и additive-выходную схемы.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -187,7 +187,9 @@ WORKSPACE_ROOTS=/home/you/code/shared-protos
 
 ## Группы тулов
 
-Обе реализации используют один канонический каталог из 117 тулов. Computer Use выключен по умолчанию: safe-режим сохраняет 94 тула, а full-режим на Linux/macOS — 100. `COMPUTER_USE_ENABLED=true` добавляет семь read-only desktop-тулов; при `ACCESS_MODE=full` + `COMPUTER_CONTROL_ENABLED=true` Linux/macOS публикуют все 117. Windows не имеет шести POSIX PTY-тулов, поэтому максимум с полным desktop-control — 111. `doctor` показывает фактически зарегистрированное число, effective PATH, версии toolchain, feature capabilities и активные heavy operations.
+`list_operations` показывает всю работу сервера или операции вызывающей MCP-сессии; `get_operation` — состояние и прогресс; `cancel_operation` запрашивает остановку. Учёт не занимает heavy slots: пустые списки heavy operations, jobs и terminals ещё не доказывают простой сервера. Операция остаётся видимой до завершения остановки; отмена не обещает откат выполненных изменений. Подробности и логи: [жизненный цикл операций](docs/OPERATIONS.md).
+
+Обе реализации используют один канонический каталог из 120 тулов. Computer Use выключен по умолчанию: safe-режим содержит 97 тулов, а full-режим на Linux/macOS — 103. `COMPUTER_USE_ENABLED=true` добавляет семь read-only desktop-тулов; при `ACCESS_MODE=full` + `COMPUTER_CONTROL_ENABLED=true` Linux/macOS публикуют все 120. Windows не имеет шести POSIX PTY-тулов, поэтому максимум с полным desktop-control — 114. `doctor` показывает фактически зарегистрированное число, effective PATH, версии toolchain, feature capabilities и активные heavy operations.
 
 - **Чтение / поиск** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`. `search_text` по умолчанию работает в ограниченном режиме `quick`; `mode=exhaustive` запускает долговечный фоновый поиск, который опрашивается и отменяется через существующие job-инструменты.
 - **Передача файлов** — `receive_chat_file` переносит вложение из ChatGPT на подключённый ПК/VPS через `openai/fileParams`, а `export_file_to_chat` возвращает binary-safe MCP `ResourceLink`, после чего клиент забирает файл с машины через `resources/read`. Лимиты входа и выхода настраиваются отдельно; детали — в [File transfer](docs/FILE_TRANSFER.md). Это работает и через Secure MCP Tunnel, и через обычный доступный HTTPS MCP endpoint с аутентификацией.

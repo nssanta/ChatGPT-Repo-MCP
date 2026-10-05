@@ -90,10 +90,10 @@ Full-mode "hands":
 - `computer_sequence` — short dependent UI sequences, stopping on first error.
 
 With Computer Use disabled, the runtime catalog remains the existing baseline:
-94 tools in safe mode and 100 tools in full POSIX mode. Enabling only the eyes
-adds seven tools. Enabling full control adds all seventeen, for 117 tools on a
+97 tools in safe mode and 103 tools in full POSIX mode. Enabling only the eyes
+adds seven tools. Enabling full control adds all seventeen, for 120 tools on a
 full POSIX deployment. Windows omits the six POSIX PTY tools, so its maximum is
-111.
+114.
 
 ## Screenshots are native MCP images
 

@@ -2,14 +2,14 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](python/)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go/)
-[![MCP](https://img.shields.io/badge/MCP-117%20tools-black)](contracts/tool-schemas/tools.json)
+[![MCP](https://img.shields.io/badge/MCP-120%20tools-black)](contracts/tool-schemas/tools.json)
 [![Platforms](https://img.shields.io/badge/Go-Linux%20%7C%20macOS%20%7C%20Windows-5c6ac4)](docs/INSTALL.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Run it from a private Linux PC through OpenAI Secure MCP Tunnel, including
 ChatGPT connection and reboot-safe systemd services: [full runbook](docs/OPENAI_SECURE_TUNNEL_RUNBOOK.md).
 
-MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT. Choose the Python package or the standalone Go binary; both share the same canonical **117-tool** capability catalog, configuration, and access semantics. Computer Use is opt-in, so existing installs keep the same baseline surface: 94 tools in safe mode and 100 tools in trusted POSIX full mode. Enabling desktop vision adds seven read-only tools; enabling full desktop control exposes all 117 on Linux/macOS (111 on Windows, where POSIX PTY is unavailable). Every tool publishes canonical input and additive output schemas, so MCP clients receive typed structured results without losing the existing JSON text representation.
+MCP server that turns **any folder or repository** into a working coding environment for an autonomous agent inside ChatGPT. Choose the Python package or the standalone Go binary; both share the same canonical **120-tool** capability catalog, configuration, and access semantics. Computer Use is opt-in, so the baseline surface contains: 97 tools in safe mode and 103 tools in trusted POSIX full mode. Enabling desktop vision adds seven read-only tools; enabling full desktop control exposes all 120 on Linux/macOS (114 on Windows, where POSIX PTY is unavailable). Every tool publishes canonical input and additive output schemas, so MCP clients receive typed structured results without losing the existing JSON text representation.
 
 [Русская версия](README_RU.md) | [English](README.md)
 
@@ -184,9 +184,17 @@ Call `run_test_preset("test")` at the workspace root, or `run_test_preset("test"
 
 * * *
 
+## Operation visibility
+
+Use `list_operations` for all server work or the calling session, `get_operation`
+for progress and lifecycle, and `cancel_operation` to request a stop. Accounting
+is independent of heavy slots; an empty heavy/job/terminal list is not proof of
+idle. Cancellation remains visible until the worker stops and does not promise
+rollback. See [operation lifecycle and audit](docs/OPERATIONS.md).
+
 ## Tool Groups
 
-Both implementations share one canonical 117-tool catalog. Computer Use is disabled by default, leaving the existing baseline at 94 tools in safe mode and 100 in full mode on Linux/macOS. `COMPUTER_USE_ENABLED=true` adds seven read-only desktop tools; with `ACCESS_MODE=full` and `COMPUTER_CONTROL_ENABLED=true`, all 117 are registered on Linux/macOS. Windows omits the six POSIX PTY tools, so its full-control maximum is 111. Call `doctor` (or `smoke_all`) for the actual registered count, effective PATH, tool versions, feature capabilities, and active heavy operations. Use `list_heavy_operations` to inspect shared-pool holders and `cancel_heavy_operation` for cancellable synchronous work; background jobs and terminal sessions advertise their specialized cancellation tool and id. Groups:
+Both implementations share one canonical 120-tool catalog. Computer Use is disabled by default, leaving the baseline at 97 tools in safe mode and 103 in full mode on Linux/macOS. `COMPUTER_USE_ENABLED=true` adds seven read-only desktop tools; with `ACCESS_MODE=full` and `COMPUTER_CONTROL_ENABLED=true`, all 120 are registered on Linux/macOS. Windows omits the six POSIX PTY tools, so its full-control maximum is 114. Call `doctor` (or `smoke_all`) for the actual registered count, effective PATH, tool versions, feature capabilities, and active heavy operations. Use `list_heavy_operations` to inspect shared-pool holders and `cancel_heavy_operation` for cancellable synchronous work; background jobs and terminal sessions advertise their specialized cancellation tool and id. Groups:
 
 - **Read / search** — `repo_info`, `list_dir`, `tree`, `read_text_file`, `read_multiple_files`, `file_metadata`, `find_files`, `search_text`, `symbol_search`, `recent_changes`, `todo_scan`, `dependency_map`, `list_repos`. `search_text` defaults to bounded `quick` mode; `mode=exhaustive` starts a durable background search that is polled and cancelled through the existing job tools.
 - **File transfer** — `receive_chat_file` copies a ChatGPT attachment to the connected machine through `openai/fileParams`; `export_file_to_chat` returns a binary-safe MCP `ResourceLink` so the client can fetch a PC/VPS file through `resources/read`. Import/export limits are independently configurable; see [File transfer](docs/FILE_TRANSFER.md). The feature works over Secure MCP Tunnel or any reachable authenticated HTTPS MCP endpoint.
