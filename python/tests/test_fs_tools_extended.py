@@ -73,6 +73,7 @@ def test_search_text_raises_for_unsupported_rg_exit_code(tmp_path: Path, monkeyp
             return None
 
     class FakeProcess:
+        pid = 1_000_000_000
         stdout = FakeStdout()
 
         def wait(self, timeout=None):

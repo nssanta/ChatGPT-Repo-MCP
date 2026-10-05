@@ -43,6 +43,7 @@ type trackedOperation struct {
 	finished        time.Time
 	finishing       bool
 	progressUpdated time.Time
+	lastProgress    time.Time
 	cancel          context.CancelFunc
 	data            map[string]any
 }
@@ -91,7 +92,7 @@ func (r *operationRegistry) start(parentContext context.Context, name string, ar
 		identity = parent.identity
 	}
 	ctx, cancel := context.WithCancel(parentContext)
-	op := &trackedOperation{id: randomID(), parent: parent, identity: identity, started: time.Now().UTC(), cancel: cancel}
+	op := &trackedOperation{id: randomID(), parent: parent, identity: identity, started: time.Now(), cancel: cancel}
 	root, _ := capText(redact(r.engine.settings.ProjectRoot), 512)
 	target := map[string]any{"project_root": root}
 	switch name {
@@ -120,7 +121,8 @@ func (r *operationRegistry) start(parentContext context.Context, name string, ar
 	if identity.SessionID != "" {
 		sessionID = identity.SessionID
 	}
-	op.data = map[string]any{"operation_id": op.id, "server_instance_id": r.instanceID, "parent_operation_id": parentID, "request_id": requestID, "session_id": sessionID, "client": identity.Client, "tool": name, "kind": kind, "target": target, "started_at": op.started.Format(time.RFC3339Nano), "updated_at": op.started.Format(time.RFC3339Nano), "status": "running", "cancellable": cancellable, "cancel_reason": reason, "cancel_requested": false, "progress": map[string]any{"phase": "starting", "files": int64(0), "directories": int64(0)}}
+	op.data = map[string]any{"operation_id": op.id, "server_instance_id": r.instanceID, "parent_operation_id": parentID, "request_id": requestID, "session_id": sessionID, "client": identity.Client, "tool": name, "kind": kind, "target": target, "started_at": op.started.Format(time.RFC3339Nano), "updated_at": op.started.UTC().Format(time.RFC3339Nano), "last_progress_at": op.started.UTC().Format(time.RFC3339Nano), "status": "running", "cancellable": cancellable, "cancel_reason": reason, "cancel_requested": false, "progress": map[string]any{"phase": "starting", "files": int64(0), "directories": int64(0)}}
+	op.lastProgress = op.started
 	r.mu.Lock()
 	r.pruneLocked(time.Now())
 	r.entries[op.id] = op
@@ -179,6 +181,7 @@ func (r *operationRegistry) snapshotLocked(op *trackedOperation) map[string]any 
 		end = time.Now()
 	}
 	result["age_ms"] = end.Sub(op.started).Milliseconds()
+	result["last_progress_age_ms"] = max(int64(0), end.Sub(op.lastProgress).Milliseconds())
 	return result
 }
 func (e *Engine) listOperations(ctx context.Context, args map[string]any) map[string]any {
@@ -292,14 +295,19 @@ func (e *Engine) operationCheckpoint(ctx context.Context, phase string, files, d
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	progress := op.data["progress"].(map[string]any)
+	changed := phase != "" && progress["phase"] != phase || files != 0 || directories != 0
 	if phase != "" {
 		progress["phase"] = phase
 	}
 	progress["files"] = progress["files"].(int64) + files
 	progress["directories"] = progress["directories"].(int64) + directories
-	now := time.Now().UTC()
-	if now.Sub(op.progressUpdated) >= 250*time.Millisecond {
-		op.data["updated_at"] = now.Format(time.RFC3339Nano)
+	now := time.Now()
+	if changed {
+		op.lastProgress = now
+	}
+	if changed && now.Sub(op.progressUpdated) >= 250*time.Millisecond {
+		op.data["updated_at"] = now.UTC().Format(time.RFC3339Nano)
+		op.data["last_progress_at"] = op.lastProgress.UTC().Format(time.RFC3339Nano)
 		op.progressUpdated = now
 	}
 	return nil
@@ -320,10 +328,18 @@ func (e *Engine) executeTracked(ctx context.Context, name string, args map[strin
 		if result != nil && result["timed_out"] == true {
 			status = "timed_out"
 		}
-		if ctx.Err() != nil && cancellableTool(name) {
+		e.operations.mu.Lock()
+		acknowledged := op.data["cancel_acknowledged"] == true
+		e.operations.mu.Unlock()
+		if ctx.Err() != nil && cancellableTool(name) && (result == nil || result["ok"] != true || acknowledged) {
 			e.cancelOperation(op.id)
 			status = "cancelled"
-			result = failure("operation_cancelled", "Operation stopped; already applied changes are not rolled back")
+			if result == nil {
+				result = map[string]any{}
+			}
+			result["ok"] = false
+			result["error_kind"] = "operation_cancelled"
+			result["error"] = "Operation stopped; already applied changes are not rolled back"
 		}
 		e.operations.finish(op, status)
 		if result != nil {
@@ -337,4 +353,62 @@ func (e *Engine) executeTracked(ctx context.Context, name string, args map[strin
 		return failure("operation_cancelled", "Operation cancelled before execution")
 	}
 	return e.executeUntracked(ctx, name, args)
+}
+
+// Process handles are informational; cancellation uses the executor's own handle.
+func (e *Engine) operationProcess(ctx context.Context, pid int) {
+	op := currentOperation(ctx)
+	if op == nil {
+		return
+	}
+	r := e.operations
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if pid > 0 {
+		op.data["pid"] = pid
+		op.data["pgid"] = pid
+		op.data["progress"].(map[string]any)["phase"] = "waiting_process"
+	} else {
+		delete(op.data, "pid")
+		delete(op.data, "pgid")
+	}
+}
+func (e *Engine) operationCancelError(op *trackedOperation, result map[string]any) {
+	if op == nil || result["ok"] != false {
+		return
+	}
+	r := e.operations
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !op.finished.IsZero() {
+		return
+	}
+	message, _ := capText(redact(fmt.Sprint(result["error"])), 512)
+	op.data["cancel_error"] = message
+	op.data["updated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+func (e *Engine) acknowledgeCancellation(ctx context.Context) {
+	op := currentOperation(ctx)
+	if op == nil {
+		return
+	}
+	e.operations.mu.Lock()
+	op.data["cancel_acknowledged"] = true
+	e.operations.mu.Unlock()
+}
+func (e *Engine) operationActivity(ctx context.Context, phase string, size int64) {
+	op := currentOperation(ctx)
+	if op == nil {
+		return
+	}
+	r := e.operations
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	op.lastProgress = time.Now()
+	op.data["last_progress_at"] = op.lastProgress.UTC().Format(time.RFC3339Nano)
+	p := op.data["progress"].(map[string]any)
+	p["phase"] = phase
+	n, _ := p["bytes"].(int64)
+	p["bytes"] = n + size
 }

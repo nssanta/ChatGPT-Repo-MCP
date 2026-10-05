@@ -22,6 +22,7 @@ from typing import Any
 
 from . import fs_tools, git_tools
 from .bounded_subprocess import run_bounded
+from .operations import checkpoint, OperationCancelled
 from .config import Settings
 from .security import SecurityError, display_path, resolve_path_context, resolve_repo_path
 
@@ -134,6 +135,7 @@ def _save_cache(path: Path, symbols: list[dict[str, Any]]) -> None:
 def _parse_ctags_json_lines(text: str) -> list[dict[str, Any]]:
     tags: list[dict[str, Any]] = []
     for line in text.splitlines():
+        checkpoint(phase="indexing")
         line = line.strip()
         if not line:
             continue
@@ -207,6 +209,7 @@ def _run_ctags_file(target: Path, max_bytes: int = 1_000_000) -> list[dict[str, 
 def _normalize_tags(raw_tags: list[dict[str, Any]], base_dir: Path, settings: Settings) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for tag in raw_tags:
+        checkpoint(phase="indexing")
         path_field = tag.get("path")
         if not path_field:
             continue
@@ -270,6 +273,7 @@ def _infer_kind_from_text(text: str) -> str | None:
 def _heuristic_document_symbols(text: str) -> list[dict[str, Any]]:
     symbols: list[dict[str, Any]] = []
     for line_no, line in enumerate(text.splitlines(), start=1):
+        checkpoint(phase="indexing")
         for pattern, kind in _HEURISTIC_PATTERNS:
             match = pattern.match(line)
             if match:
@@ -304,17 +308,20 @@ def symbol_definition(
         try:
             toplevel, repo_rel = _resolve_index_scope(settings, repo)
             symbols = _get_or_build_index(settings, toplevel, repo_rel)
-            matches = [item for item in symbols if item.get("name") == symbol]
+            matches = [item for item in _checked_items(symbols) if item.get("name") == symbol]
             if kind:
                 matches = [item for item in matches if item.get("kind") == kind]
             matches = matches[:limit]
             return {"ok": True, "symbol": symbol, "definitions": matches, "count": len(matches), "engine": "ctags"}
+        except OperationCancelled:
+            raise
         except Exception:  # noqa: BLE001, S110 - never let index issues break the tool, fall back
             pass
 
     result = fs_tools.symbol_search(symbol, settings, path=repo or ".", limit=limit)
     definitions: list[dict[str, Any]] = []
     for item in result["results"]:
+        checkpoint(phase="indexing")
         inferred_kind = _infer_kind_from_text(item["text"])
         if kind and inferred_kind != kind:
             continue
@@ -358,11 +365,13 @@ def document_symbols(settings: Settings, path: str, *, repo: str | None = None) 
                     for tag in raw_tags
                 ]
                 return {"ok": True, "path": shown_path, "symbols": symbols, "engine": "ctags"}
+        except OperationCancelled:
+            raise
         except Exception:  # noqa: BLE001, S110 - optional ctags failure falls back to heuristics
             pass
 
-    with target.open("rb") as handle:
-        raw = handle.read(settings.max_file_bytes + 1)
+    checkpoint(phase="reading")
+    raw = fs_tools._read_bytes(target, settings.max_file_bytes + 1)
     if len(raw) > settings.max_file_bytes:
         return {
             "ok": False, "path": shown_path, "symbols": [], "engine": "none",
@@ -382,9 +391,11 @@ def workspace_symbols(settings: Settings, query: str, *, repo: str | None = None
             toplevel, repo_rel = _resolve_index_scope(settings, repo)
             symbols = _get_or_build_index(settings, toplevel, repo_rel)
             needle = query.lower()
-            matches = [item for item in symbols if item.get("name") and needle in str(item["name"]).lower()]
+            matches = [item for item in _checked_items(symbols) if item.get("name") and needle in str(item["name"]).lower()]
             matches = matches[:limit]
             return {"ok": True, "query": query, "symbols": matches, "count": len(matches), "engine": "ctags"}
+        except OperationCancelled:
+            raise
         except Exception:  # noqa: BLE001, S110 - optional ctags failure falls back to heuristics
             pass
 
@@ -401,3 +412,9 @@ def workspace_symbols(settings: Settings, query: str, *, repo: str | None = None
         for item in result["results"]
     ]
     return {"ok": True, "query": query, "symbols": symbols, "count": len(symbols), "engine": "heuristic"}
+
+
+def _checked_items(items):
+    for item in items:
+        checkpoint(phase="indexing")
+        yield item

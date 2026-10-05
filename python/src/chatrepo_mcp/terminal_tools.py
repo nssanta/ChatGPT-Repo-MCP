@@ -26,6 +26,7 @@ else:  # pragma: no cover - exercised by Windows CI import smoke
 
 from .command_tools import _audit, _resolve_cwd, _terminate_process_group, _utc_now
 from .config import Settings
+from .operations import OperationCancelled, activity, checkpoint, process_started, process_stopped
 from .output_store import artifact_reference, redact_text, store_for
 from .resource_profile import HeavyOperationLease, ResourceBusyError, acquire_heavy_operation
 from .runtime_env import command_environment, resolve_binary
@@ -64,6 +65,7 @@ def _log_paths(settings: Settings, log_id: str) -> tuple[Path, Path]:
 def _metadata(session: TerminalSession) -> dict[str, Any]:
     return {
         "session_id": session.session_id,
+        "background_operation_id": session.heavy_lease.tracked.id if session.heavy_lease.tracked else None,
         "status": session.status,
         "pid": session.process.pid,
         "pgid": session.process.pid,
@@ -117,6 +119,7 @@ def _reader(settings: Settings, session: TerminalSession) -> None:
             if not chunk:
                 break
             artifact.write(chunk)
+            activity("waiting_input",len(chunk),session.heavy_lease.tracked)
             with session.lock:
                 session.last_activity_at = _utc_now()
                 _persist(settings, session)
@@ -177,6 +180,7 @@ def _reader_with_lifecycle(settings: Settings, session: TerminalSession) -> None
         if session.heavy_lease.tracked is not None:
             session.heavy_lease.tracked.finish("failed")
     finally:
+        process_stopped(session.heavy_lease.tracked)
         session.heavy_lease.release()
         CURRENT.reset(token)
 
@@ -250,6 +254,7 @@ def start_terminal_session(
     try:
         master_fd, slave_fd = pty.openpty()
         _set_size(slave_fd, cols, rows)
+        checkpoint(phase="starting_process")
         process = subprocess.Popen(
             argv,
             cwd=str(run_cwd),
@@ -259,9 +264,9 @@ def start_terminal_session(
             stderr=slave_fd,
             start_new_session=True,
         )
-    except OSError as exc:
+    except (OSError, OperationCancelled) as exc:
         if heavy_lease.tracked is not None:
-            heavy_lease.tracked.finish("failed")
+            heavy_lease.tracked.finish("cancelled" if isinstance(exc, OperationCancelled) else "failed")
         heavy_lease.release()
         if master_fd is not None:
             os.close(master_fd)
@@ -283,8 +288,12 @@ def start_terminal_session(
     )
     with SESSIONS_LOCK:
         SESSIONS[session.session_id] = session
+    process_started(process.pid, heavy_lease.tracked)
+    activity("waiting_input",operation=heavy_lease.tracked)
     def cancel_owned_terminal() -> None:
-        close_terminal_session(session_id, settings)
+        result = close_terminal_session(session_id, settings)
+        if result.get("ok") is False:
+            raise OSError(str(result.get("error", "Terminal cancellation failed")))
 
     heavy_lease.set_cancel(cancel_owned_terminal)
     _persist(settings, session)

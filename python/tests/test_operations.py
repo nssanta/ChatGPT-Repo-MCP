@@ -334,3 +334,83 @@ def test_command_audit_correlates_native_log_with_operation_session(tmp_path: Pa
         assert command["session_id"] == "public-session"
     finally:
         IDENTITY.reset(token)
+
+
+def test_progress_time_is_not_refreshed_by_cancel_request(tmp_path: Path) -> None:
+    registry = Registry(settings_for(tmp_path))
+    op = registry.start("tree", {})
+    previous = op.data["last_progress_at"]
+    op.last_progress -= 1
+    registry.cancel(op.id)
+    snapshot = registry.get(op.id)["operation"]
+    assert snapshot["last_progress_at"] == previous
+    assert snapshot["last_progress_age_ms"] >= 1000
+    assert snapshot["status"] == "cancelling"
+    op.finish("cancelled")
+
+
+def test_cancel_callback_failure_remains_visible(tmp_path: Path) -> None:
+    registry = Registry(settings_for(tmp_path))
+    op = registry.start("run_command", {})
+    def fail() -> None:
+        raise OSError("fixture stop failed")
+    op.add_cancel("test", fail)
+    registry.cancel(op.id)
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and "cancel_error" not in registry.get(op.id)["operation"]:
+        time.sleep(0.01)
+    snapshot = registry.get(op.id)["operation"]
+    assert snapshot["cancel_error"] == "fixture stop failed"
+    assert snapshot["status"] == "cancelling"
+    assert registry.list()["count"] == 1
+    op.finish("failed")
+
+
+def test_read_and_index_cancellation_is_not_masked_by_fallback(tmp_path: Path, monkeypatch) -> None:
+    from chatrepo_mcp import fs_tools, index_tools
+    settings = settings_for(tmp_path)
+    (tmp_path / "a.py").write_text("def example():\n    pass\n")
+    with track(settings, "read_multiple_files", {}) as op:
+        registry_for(settings).cancel(op.id)
+        with pytest.raises(OperationCancelled):
+            fs_tools.read_multiple_files(["a.py"], settings)
+    monkeypatch.setattr(index_tools, "_ctags_available", lambda: True)
+    def cancelled(*args):
+        raise OperationCancelled("fixture cancelled build")
+    monkeypatch.setattr(index_tools, "_get_or_build_index", cancelled)
+    with pytest.raises(OperationCancelled):
+        index_tools.symbol_definition(settings, "example")
+
+
+def test_late_cancel_preserves_successful_tool_result(tmp_path: Path, monkeypatch) -> None:
+    import anyio
+    from chatrepo_mcp import server
+    settings = settings_for(tmp_path)
+    monkeypatch.setattr(server, "settings", settings)
+    def completed(**kwargs):
+        op = CURRENT.get()
+        registry_for(settings).cancel(op.id)
+        return {"path": ".", "paths": ["."], "files": [], "count": 0}
+    monkeypatch.setattr(server, "recent_changes", completed)
+    async def exercise():
+        result = await server.mcp._tool_manager.get_tool("recent_changes").run({}, convert_result=True)
+        body = result[1]
+        assert "error_kind" not in body
+        assert registry_for(settings).get(body["operation_id"])["operation"]["status"] == "completed"
+    anyio.run(exercise)
+
+
+def test_command_cancel_before_spawn_releases_heavy_slot(tmp_path: Path, monkeypatch) -> None:
+    from chatrepo_mcp import command_tools
+    settings = replace(settings_for(tmp_path), access_mode="full", command_policy_mode="unrestricted")
+    real_checkpoint = command_tools.checkpoint
+    def before_spawn(**kwargs):
+        if kwargs.get("phase") == "starting_process":
+            registry_for(settings).cancel(CURRENT.get().id)
+        real_checkpoint(**kwargs)
+    monkeypatch.setattr(command_tools, "checkpoint", before_spawn)
+    with track(settings, "run_command", {}):
+        with pytest.raises(OperationCancelled):
+            command_tools.run_command("touch should-not-exist", settings)
+    assert not (tmp_path / "should-not-exist").exists()
+    assert list_heavy_operations(settings)["used"] == 0

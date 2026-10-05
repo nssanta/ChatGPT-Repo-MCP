@@ -132,6 +132,9 @@ func (e *Engine) workspaceOverview(ctx context.Context) []map[string]any {
 
 func (e *Engine) discoverWorkspaceEntries(ctx context.Context, includeGitDetails bool) []map[string]any {
 	root := e.settings.ProjectRoot
+	if e.operationCheckpoint(ctx, "discovering", 0, 0) != nil {
+		return nil
+	}
 	entryFor := func(directory, relative string, isGit bool) map[string]any {
 		if includeGitDetails {
 			return e.repoEntry(ctx, directory, relative, isGit)
@@ -143,7 +146,7 @@ func (e *Engine) discoverWorkspaceEntries(ctx context.Context, includeGitDetails
 	}
 	var found []map[string]any
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if ctx.Err() != nil {
+		if e.operationCheckpoint(ctx, "discovering", 0, 1) != nil {
 			return filepath.SkipAll
 		}
 		if err != nil || path == root {
@@ -170,8 +173,14 @@ func (e *Engine) discoverWorkspaceEntries(ctx context.Context, includeGitDetails
 		sort.Slice(found, func(i, j int) bool { return fmt.Sprint(found[i]["path"]) < fmt.Sprint(found[j]["path"]) })
 		return found
 	}
+	if ctx.Err() != nil {
+		return nil
+	}
 	entries, _ := os.ReadDir(root)
 	for _, entry := range entries {
+		if e.operationCheckpoint(ctx, "discovering", 0, 1) != nil {
+			return nil
+		}
 		if !entry.IsDir() || ignoredDirectories[entry.Name()] || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}

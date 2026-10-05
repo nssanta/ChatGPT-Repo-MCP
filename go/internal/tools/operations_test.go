@@ -57,7 +57,7 @@ func TestOperationWalksStopOnCancellation(t *testing.T) {
 	if err := e.operationCheckpoint(ctx, "walking", 1, 0); err == nil {
 		t.Fatal("checkpoint ignored cancellation")
 	}
-	if e.findFilesContext(ctx, "*", ".", true, 100)["count"] != 0 {
+	if e.findFilesContext(ctx, "*", ".", true, 100)["error_kind"] != "operation_cancelled" {
 		t.Fatal("cancelled find scanned files")
 	}
 	e.operations.finish(op, "cancelled")
@@ -118,5 +118,67 @@ func TestTrackedCommandCancellationWaitsForProcess(t *testing.T) {
 	}
 	if e.getOperation(id)["operation"].(map[string]any)["status"] != "cancelled" {
 		t.Fatal("wrong terminal status")
+	}
+}
+
+func TestReadPathsRespectCancellation(t *testing.T) {
+	e, root := newTestEngine(t)
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("def example():\n pass\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for name, result := range map[string]map[string]any{
+		"list":      e.listDirectoryContext(ctx, ".", true, 20),
+		"read":      e.readTextContext(ctx, "README.md", 1, 0, false),
+		"multiple":  e.readMultipleContext(ctx, []string{"README.md"}),
+		"metadata":  e.fileMetadataContext(ctx, "README.md", true),
+		"symbols":   e.documentSymbolsContext(ctx, "README.md"),
+		"bootstrap": e.contextBootstrap(ctx),
+	} {
+		if result["error_kind"] != "operation_cancelled" {
+			t.Fatalf("%s masked cancellation: %#v", name, result)
+		}
+	}
+}
+func TestProgressAndProcessLifecycle(t *testing.T) {
+	e, _ := newTestEngine(t)
+	ctx, op := e.operations.start(context.Background(), "tree", nil, "tool", true)
+	if err := e.operationCheckpoint(ctx, "walking", 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	before := e.getOperation(op.id)["operation"].(map[string]any)["last_progress_at"]
+	e.cancelOperation(op.id)
+	after := e.getOperation(op.id)["operation"].(map[string]any)
+	if after["last_progress_at"] != before {
+		t.Fatal("cancel request looked like progress")
+	}
+	e.operationProcess(ctx, 12345)
+	if e.getOperation(op.id)["operation"].(map[string]any)["pid"] != 12345 {
+		t.Fatal("missing owned PID")
+	}
+	e.operationProcess(ctx, 0)
+	if _, exists := e.getOperation(op.id)["operation"].(map[string]any)["pid"]; exists {
+		t.Fatal("stale PID")
+	}
+	e.operations.finish(op, "completed")
+	if e.getOperation(op.id)["operation"].(map[string]any)["status"] != "completed" {
+		t.Fatal("late request overwrote completion")
+	}
+}
+func TestCancelledLaunchDoesNotDetachOrSpawn(t *testing.T) {
+	e, root := newTestEngine(t)
+	e.settings.CommandPolicyMode = "unrestricted"
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := e.startJobRequest(ctx, map[string]any{"command": "touch should-not-exist"}, false)
+	if result["error_kind"] != "operation_cancelled" {
+		t.Fatalf("cancelled launch: %#v", result)
+	}
+	if len(e.jobs) != 0 {
+		t.Fatal("cancelled launch detached a job")
+	}
+	if _, err := os.Stat(filepath.Join(root, "should-not-exist")); !os.IsNotExist(err) {
+		t.Fatal("cancelled launch executed")
 	}
 }

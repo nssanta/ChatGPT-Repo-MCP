@@ -227,6 +227,7 @@ def _summary_properties(specs: tuple[ToolSuccessSpec, ...]) -> dict[str, Any]:
         "error_kind": {"type": "string"},
         "error": {},
         "tracking_operation_id": {"type": "string"},
+        "background_operation_id": {"type": ["string", "null"]},
         "operation_id": {"type": "string"},
     }
     for _, core in specs:

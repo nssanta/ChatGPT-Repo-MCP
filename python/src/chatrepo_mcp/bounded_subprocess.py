@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, cast
 
-from .operations import CURRENT, checkpoint
+from .operations import CURRENT, cancellation_acknowledged, checkpoint, process_started, process_stopped
 from .output_store import (
     ArtifactPersistenceError,
     ArtifactQuotaError,
@@ -84,6 +84,7 @@ def run_bounded(
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             | getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
         )
+    checkpoint(phase="starting_process")
     process = subprocess.Popen(
         list(args), cwd=str(cwd) if cwd is not None else None, env=dict(env) if env is not None else None,
         stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
@@ -106,8 +107,21 @@ def run_bounded(
 
     operation = CURRENT.get()
     callback_key = f"process-{uuid.uuid4()}"
+    def cancel_owned_tree() -> None:
+        if process.poll() is not None:
+            return
+        cancellation_acknowledged(operation)
+        if os.name == "posix":
+            from .command_tools import _terminate_process_group
+            settings = artifact_settings or (operation.registry.settings if operation else None)
+            grace = getattr(settings, "kill_grace_ms", 1000) / 1000
+            _terminate_process_group(process.pid, grace_seconds=grace)
+        else:
+            terminate_tree()
+
+    process_started(process.pid)
     if operation is not None:
-        operation.add_cancel(callback_key, terminate_tree)
+        operation.add_cancel(callback_key, cancel_owned_tree)
 
     def abort_capture() -> None:
         for output_artifact in artifacts.values():
@@ -128,6 +142,9 @@ def run_bounded(
         except (OSError, ValueError):
             terminate_tree()
             process.wait()
+            if operation is not None:
+                operation.remove_cancel(callback_key)
+            process_stopped(operation)
             abort_capture()
             if windows_job is not None:
                 windows_job.close()
@@ -228,6 +245,7 @@ def run_bounded(
                 thread.join(timeout=1)
         if operation is not None:
             operation.remove_cancel(callback_key)
+        process_stopped(operation)
         if windows_job is not None:
             windows_job.close()
     stdout, _stdout_total, stdout_redacted_total = captures.get("stdout", (bytearray(), 0, 0))

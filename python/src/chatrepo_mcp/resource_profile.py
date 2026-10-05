@@ -41,6 +41,12 @@ class HeavyOperationLease:
         if self.tracked is not None:
             self.tracked.add_cancel(self.operation_id, callback)
 
+    def clear_cancel(self) -> None:
+        if not self.detached:
+            self._limiter.set_cancel(self.operation_id, lambda: None)
+        if self.tracked is not None:
+            self.tracked.remove_cancel(self.operation_id)
+
     def release(self) -> None:
         with self._lock:
             if not self._released:

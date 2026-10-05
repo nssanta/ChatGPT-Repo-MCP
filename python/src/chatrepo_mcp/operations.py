@@ -102,6 +102,7 @@ class Operation:
         self.callbacks: dict[str, Callable[[], None]] = {}
         self.started = time.monotonic()
         self.progress_updated = self.started
+        self.last_progress = self.started
         self.finished: float | None = None
         self.finishing = False
         enabled = tool in CANCELLABLE_TOOLS if cancellable is None else cancellable
@@ -134,6 +135,7 @@ class Operation:
             "target": target,
             "started_at": utc(),
             "updated_at": utc(),
+            "last_progress_at": utc(),
             "status": "running",
             "cancellable": enabled,
             "cancel_reason": None
@@ -151,13 +153,17 @@ class Operation:
             raise OperationCancelled("operation cancelled")
         with self.registry.lock:
             progress = self.data["progress"]
+            changed = bool((phase and phase != progress["phase"]) or files or directories)
             if phase:
                 progress["phase"] = phase
             progress["files"] += files
             progress["directories"] += directories
             now = time.monotonic()
-            if now - self.progress_updated >= 0.25:
+            if changed:
+                self.last_progress = now
+            if changed and now - self.progress_updated >= 0.25:
                 self.data["updated_at"] = utc()
+                self.data["last_progress_at"] = self.data["updated_at"]
                 self.progress_updated = now
 
     def add_cancel(self, key: str, callback: Callable[[], None]) -> None:
@@ -165,7 +171,7 @@ class Operation:
             self.callbacks[key] = callback
             pending = self.event.is_set()
         if pending:
-            callback()
+            self.registry.invoke_cancel(self, callback)
 
     def remove_cancel(self, key: str) -> None:
         with self.registry.lock:
@@ -238,6 +244,7 @@ class Registry:
             snapshot = {
                 **operation.data,
                 "progress": dict(operation.data["progress"]),
+                "last_progress_age_ms": int(max(0, (operation.finished or time.monotonic()) - operation.last_progress) * 1000),
                 "age_ms": int(
                     ((operation.finished or time.monotonic()) - operation.started) * 1000
                 ),
@@ -290,6 +297,16 @@ class Registry:
                 return error("operation_not_found", "Operation is unknown or its history expired")
             return {"ok": True, "operation": self.snapshot(op)}
 
+    def invoke_cancel(self, operation: Operation, callback: Callable[[], None]) -> None:
+        from .output_store import redact_text
+        try:
+            callback()
+        except Exception as exc:
+            with self.lock:
+                if operation.finished is None:
+                    operation.data["cancel_error"] = redact_text(str(exc))[:512]
+                    operation.data["updated_at"] = utc()
+
     def shutdown(self) -> None:
         with self.lock:
             identifiers = [
@@ -335,7 +352,7 @@ class Registry:
             self.audit("operation_cancel_requested", op)
         # Cancellation must never block the MCP event loop on TERM/KILL grace periods.
         for callback in callbacks:
-            threading.Thread(target=callback, daemon=True, name="operation-cancel").start()
+            threading.Thread(target=self.invoke_cancel, args=(op,callback), daemon=True, name="operation-cancel").start()
         for child in children:
             self.cancel(child)
         return {"ok": True, "operation_id": op.id, "cancel_requested": True, "status": "cancelling"}
@@ -421,3 +438,39 @@ def session_identity(settings: Any, context: Any) -> dict[str, Any]:
         else None
     )
     return {"session_id": public_id, "client": client}
+
+
+def process_started(pid: int, operation: Operation | None = None) -> None:
+    operation = operation or CURRENT.get()
+    if operation is not None:
+        with operation.registry.lock:
+            operation.data.update(pid=pid, pgid=pid)
+        with operation.registry.lock:
+            operation.data["progress"]["phase"] = "waiting_process"
+            operation.last_progress = time.monotonic()
+            operation.data["last_progress_at"] = utc()
+
+
+def process_stopped(operation: Operation | None = None) -> None:
+    operation = operation or CURRENT.get()
+    if operation is not None:
+        with operation.registry.lock:
+            operation.data.pop("pid", None)
+            operation.data.pop("pgid", None)
+
+
+def cancellation_acknowledged(operation: Operation | None = None) -> None:
+    operation = operation or CURRENT.get()
+    if operation is not None:
+        with operation.registry.lock:
+            operation.data["cancel_acknowledged"] = True
+
+
+def activity(phase: str, size: int = 0, operation: Operation | None = None) -> None:
+    operation = operation or CURRENT.get()
+    if operation is not None:
+        with operation.registry.lock:
+            operation.last_progress = time.monotonic()
+            operation.data["last_progress_at"] = utc()
+            operation.data["progress"]["phase"] = phase
+            operation.data["progress"]["bytes"] = operation.data["progress"].get("bytes",0) + size

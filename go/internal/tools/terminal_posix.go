@@ -60,7 +60,12 @@ func (e *Engine) terminalResult(session *terminalSession) map[string]any {
 	if session.ExitCode != nil {
 		exit = *session.ExitCode
 	}
-	return map[string]any{"ok": true, "session_id": session.ID, "status": session.Status, "pid": session.PID, "pgid": session.PGID, "cwd": e.perimeter.Display(session.CWD), "shell": session.Shell, "cols": session.Cols, "rows": session.Rows, "created_at": session.CreatedAt.UTC().Format(time.RFC3339Nano), "last_activity_at": session.LastActivity.UTC().Format(time.RFC3339Nano), "exit_code": exit, "term_signal": session.TermSignal, "log_id": session.LogID, "next_cursor": session.OutputBytes}
+	return map[string]any{"ok": true, "session_id": session.ID, "background_operation_id": func() any {
+		if op := currentOperation(session.operationContext); op != nil {
+			return op.id
+		}
+		return nil
+	}(), "status": session.Status, "pid": session.PID, "pgid": session.PGID, "cwd": e.perimeter.Display(session.CWD), "shell": session.Shell, "cols": session.Cols, "rows": session.Rows, "created_at": session.CreatedAt.UTC().Format(time.RFC3339Nano), "last_activity_at": session.LastActivity.UTC().Format(time.RFC3339Nano), "exit_code": exit, "term_signal": session.TermSignal, "log_id": session.LogID, "next_cursor": session.OutputBytes}
 }
 
 func (e *Engine) startTerminal(args map[string]any) map[string]any {
@@ -106,6 +111,10 @@ func (e *Engine) startTerminalContext(ctx context.Context, args map[string]any) 
 	command := exec.Command(shell, argv...)
 	command.Dir = directory
 	command.Env = e.commandEnvironment(nil)
+	if ctx.Err() != nil {
+		heavyLease.Release()
+		return failure("operation_cancelled", ctx.Err().Error())
+	}
 	ptmx, err := pty.StartWithSize(command, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
 		heavyLease.Release()
@@ -142,7 +151,12 @@ func (e *Engine) startTerminalContext(ctx context.Context, args map[string]any) 
 	detachedContext, tracked := e.operations.start(detachedParent, "start_terminal_session", map[string]any{"cwd": directory}, "terminal", true)
 	e.operations.mu.Lock()
 	tracked.data["resource_id"] = session.ID
-	tracked.cancel = func() { go e.closeTerminal(session.ID, "SIGTERM", e.settings.KillGrace, false) }
+	tracked.cancel = func() {
+		go func() {
+			result := e.closeTerminal(session.ID, "SIGTERM", e.settings.KillGrace, false)
+			e.operationCancelError(tracked, result)
+		}()
+	}
 	pendingCancel := tracked.data["cancel_requested"] == true
 	e.operations.mu.Unlock()
 	if pendingCancel {
@@ -154,6 +168,8 @@ func (e *Engine) startTerminalContext(ctx context.Context, args map[string]any) 
 	}
 	e.heavyMu.Unlock()
 	session.operationContext = detachedContext
+	e.operationProcess(detachedContext, session.PID)
+	e.operationActivity(detachedContext, "waiting_input", 0)
 	e.persistTerminal(session)
 	e.writeCommandAuditContext(detachedContext, "start", session.LogID, "start_terminal_session", shell, directory, 0, 0, 0, "running")
 	go func() {
@@ -170,6 +186,7 @@ func (e *Engine) startTerminalContext(ctx context.Context, args map[string]any) 
 		if cancelled {
 			status = "cancelled"
 		}
+		e.operationProcess(detachedContext, 0)
 		e.operations.finish(tracked, status)
 	}()
 	go e.watchTerminalIdle(session)
@@ -229,6 +246,7 @@ func (e *Engine) readTerminalOutput(session *terminalSession, store *artifactSto
 		count, err := session.pty.Read(buffer)
 		if count > 0 {
 			text := buffer[:count]
+			e.operationActivity(session.operationContext, "waiting_input", int64(count))
 			session.mu.Lock()
 			session.LastActivity = time.Now().UTC()
 			session.mu.Unlock()

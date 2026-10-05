@@ -17,7 +17,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from .operations import checkpoint
+from .operations import checkpoint, OperationCancelled, process_started, process_stopped
 from .config import Settings
 from .resource_profile import HeavyOperationLease, ResourceBusyError, acquire_heavy_operation
 from .security import (
@@ -52,12 +52,26 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[:max_chars] + "\n...[truncated]"
 
 
+def _read_bytes(path: Path, limit: int | None = None) -> bytes:
+    checkpoint(phase="reading")
+    chunks = []
+    size = 0
+    with path.open("rb") as handle:
+        while limit is None or size < limit:
+            checkpoint(phase="reading")
+            chunk = handle.read(65536 if limit is None else min(65536, limit - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+    checkpoint(phase="reading")
+    return b"".join(chunks)
+
+
 def _read_text(path: Path, settings: Settings) -> str:
-    data = path.read_bytes()
+    data = _read_bytes(path)
     if len(data) > settings.max_file_bytes:
-        raise ValueError(
-            f"file exceeds MAX_FILE_BYTES ({len(data)} > {settings.max_file_bytes}): {path.name}"
-        )
+        raise ValueError(f"file exceeds MAX_FILE_BYTES ({len(data)} > {settings.max_file_bytes}): {path.name}")
     return data.decode("utf-8", errors="replace")
 
 
@@ -172,6 +186,7 @@ def repo_info(settings: Settings) -> dict[str, Any]:
 
 
 def list_dir(path: str, settings: Settings, include_hidden: bool = True, limit: int = 200) -> dict[str, Any]:
+    checkpoint(phase="enumerating")
     context = resolve_path_context(path, settings, allow_hidden=include_hidden)
     target = context.target
     if not target.is_dir():
@@ -179,7 +194,8 @@ def list_dir(path: str, settings: Settings, include_hidden: bool = True, limit: 
 
     entries: list[dict[str, str | int | None]] = []
     root = context.root
-    for entry in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+    for entry in _sorted_entries(target):
+        checkpoint(phase="listing", files=0 if entry.is_dir() else 1)
         ok, rel = _entry_allowed(root, entry, settings, allow_hidden=include_hidden)
         if not ok or rel is None:
             continue
@@ -202,6 +218,7 @@ def list_dir(path: str, settings: Settings, include_hidden: bool = True, limit: 
 
 
 def tree(path: str, settings: Settings, depth: int = 4, include_hidden: bool = True) -> dict[str, Any]:
+    checkpoint(phase="enumerating")
     context = resolve_path_context(path, settings, allow_hidden=include_hidden)
     target = context.target
     if not target.is_dir():
@@ -219,7 +236,7 @@ def tree(path: str, settings: Settings, depth: int = 4, include_hidden: bool = T
             return
 
         children = []
-        for child in sorted(node.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        for child in _sorted_entries(node):
             checkpoint(files=0 if child.is_dir() else 1)
             ok, _ = _entry_allowed(root, child, settings, allow_hidden=include_hidden)
             if not ok:
@@ -290,14 +307,18 @@ def read_multiple_files(paths: list[str], settings: Settings) -> dict[str, Any]:
 
     results = []
     for item in paths:
+        checkpoint(phase="reading")
         try:
             results.append(read_text_file(item, settings))
+        except OperationCancelled:
+            raise
         except Exception as exc:  # noqa: BLE001
             results.append({"path": item, "error": str(exc)})
     return {"files": results}
 
 
 def file_metadata(path: str, settings: Settings, include_stat: bool = True) -> dict[str, Any]:
+    checkpoint(phase="reading" if 'file_metadata' == "file_metadata" else "searching")
     context = resolve_path_context(path, settings, allow_hidden=settings.allow_hidden_default)
     target = context.target
     st = target.stat()
@@ -327,6 +348,8 @@ def find_files(
     include_hidden: bool = True,
     limit: int = 200,
 ) -> dict[str, Any]:
+    checkpoint(phase="reading" if 'find_files' == "file_metadata" else "searching")
+    checkpoint(phase="enumerating")
     context = resolve_path_context(path, settings, allow_hidden=include_hidden)
     target = context.target
     if not target.is_dir():
@@ -419,6 +442,7 @@ def _search_text_impl(
     complete = True
     reason: str | None = None
     for root, rel_paths in grouped.items():
+        checkpoint(phase="searching")
         cmd = [
             "rg", "--hidden", "-nI", "--with-filename", "--no-heading",
             "--color", "never", "--max-count", str(max(limit, 1)),
@@ -431,6 +455,7 @@ def _search_text_impl(
         cmd.extend(_rg_exclude_globs(settings))
         cmd.extend(["--", query, *rel_paths])
         with tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            checkpoint(phase="subprocess")
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(root),
@@ -439,9 +464,15 @@ def _search_text_impl(
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                start_new_session=True,
             )
             if heavy_lease is not None:
-                heavy_lease.set_cancel(proc.kill)
+                from .command_tools import _terminate_process_group
+                def cancel_search(process: subprocess.Popen[str] = proc) -> None:
+                    if process.poll() is None:
+                        _terminate_process_group(process.pid, grace_seconds=settings.kill_grace_ms / 1000)
+                process_started(proc.pid)
+                heavy_lease.set_cancel(cancel_search)
             assert proc.stdout is not None
             timed_out = threading.Event()
 
@@ -458,6 +489,7 @@ def _search_text_impl(
             hit_limit = False
             try:
                 for line in proc.stdout:
+                    checkpoint(phase="searching")
                     file_path, line_no, text = (
                         line.rstrip("\r\n").split(":", 2)
                         if line.count(":") >= 2
@@ -489,10 +521,18 @@ def _search_text_impl(
             except subprocess.TimeoutExpired:
                 proc.kill()
                 return_code = proc.wait()
+            except OperationCancelled:
+                cancel_search()
+                proc.wait()
+                raise
             finally:
                 timer.cancel()
+                if heavy_lease is not None:
+                    heavy_lease.clear_cancel()
                 proc.stdout.close()
+                process_stopped()
 
+            checkpoint(phase="searching")
             if timed_out.is_set():
                 raise TimeoutError(f"ripgrep search exceeded {settings.subprocess_timeout}s")
             if not hit_limit and return_code not in {0, 1}:
@@ -524,6 +564,7 @@ def search_text(
     limit: int = 100,
     mode: str = "quick",
 ) -> dict[str, Any]:
+    checkpoint(phase="reading" if 'search_text' == "file_metadata" else "searching")
     if mode == "exhaustive":
         return _search_text_impl(
             query, settings, path=path, paths=paths, regex=regex,
@@ -613,6 +654,7 @@ def symbol_search(
 
 
 def recent_changes(settings: Settings, path: str = ".", paths: list[str] | None = None, limit: int = 100) -> dict[str, Any]:
+    checkpoint(phase="reading" if 'recent_changes' == "file_metadata" else "searching")
     limit = min(max(limit, 0), settings.max_tree_entries)
     if limit == 0:
         return {"path": path, "paths": paths if paths else [path], "files": [], "count": 0}
@@ -751,6 +793,19 @@ def dependency_map(settings: Settings, path: str = ".") -> dict[str, Any]:
                 parsed[display_path(manifest, settings)] = _parse_go_mod(manifest)
             elif manifest.name == "Cargo.toml":
                 parsed[display_path(manifest, settings)] = _parse_cargo_toml(manifest)
+        except OperationCancelled:
+            raise
         except Exception as exc:  # noqa: BLE001
             parsed[display_path(manifest, settings)] = {"error": str(exc)}
     return {"manifests": parsed, "count": len(parsed)}
+
+
+def _sorted_entries(target: Path) -> list[Path]:
+    rows = []
+    checkpoint(phase="enumerating")
+    for entry in target.iterdir():
+        checkpoint(phase="enumerating")
+        rows.append((not entry.is_dir(), entry.name.lower(), entry))
+    rows.sort(key=lambda row: row[:2])
+    checkpoint(phase="enumerating")
+    return [row[2] for row in rows]

@@ -17,6 +17,7 @@ import (
 )
 
 type job struct {
+	OperationID         string
 	mu                  sync.RWMutex
 	ID                  string
 	LogID               string
@@ -347,15 +348,30 @@ func (e *Engine) runShell(parent context.Context, command, directory string, tim
 	process.Stdout = capture.stdout
 	process.Stderr = capture.stderr
 	configureProcessGroup(process)
+	if ctx.Err() != nil {
+		return processResult{ExitCode: -1, Stderr: ctx.Err().Error()}
+	}
 	err := process.Start()
 	if err == nil {
 		done := make(chan error, 1)
+		e.operationProcess(parent, process.Process.Pid)
+		defer e.operationProcess(parent, 0)
 		go func() { done <- process.Wait() }()
 		select {
 		case err = <-done:
 		case <-ctx.Done():
-			_, _ = terminateProcessGroup(process.Process.Pid, e.settings.KillGrace)
-			err = <-done
+			select {
+			case err = <-done:
+			default:
+				if ctx.Err() == context.Canceled {
+					e.acknowledgeCancellation(parent)
+				}
+				_, stopErr := terminateProcessGroup(process.Process.Pid, e.settings.KillGrace)
+				if stopErr != nil {
+					e.operationCancelError(currentOperation(parent), failure("process_stop_failed", stopErr.Error()))
+				}
+				err = <-done
+			}
 		}
 	}
 	exitCode := 0
@@ -544,6 +560,8 @@ func (e *Engine) startJobRequest(parent context.Context, args map[string]any, po
 			if onConflict == "wait" {
 				select {
 				case <-existing.done:
+				case <-parent.Done():
+					return failure("operation_cancelled", parent.Err().Error())
 				case <-time.After(min(request.Timeout, 30*time.Second)):
 					return map[string]any{"ok": false, "error_kind": "job_lock_conflict", "job_id": existing.ID, "concurrency_key": request.ConcurrencyKey}
 				}
@@ -552,6 +570,9 @@ func (e *Engine) startJobRequest(parent context.Context, args map[string]any, po
 				return map[string]any{"ok": false, "error_kind": "job_lock_conflict", "job_id": existing.ID, "concurrency_key": request.ConcurrencyKey}
 			}
 		}
+	}
+	if parent.Err() != nil {
+		return failure("operation_cancelled", parent.Err().Error())
 	}
 	id := randomID()
 	heavyLease, acquired := e.acquireHeavyOperation(heavyOperationSpec{Tool: "start_command_job", CWD: directory, RequestID: id, CancelTool: "cancel_command_job", CancelID: id})
@@ -573,7 +594,7 @@ func (e *Engine) startJobRequest(parent context.Context, args map[string]any, po
 		heavy.Spec.Context = detachedContext
 	}
 	e.heavyMu.Unlock()
-	entry := &job{ID: id, LogID: randomID(), Command: normalized, CWD: directory, Status: "running", Timeout: request.Timeout, StartedAt: time.Now().UTC(), ExitCode: -1, ConcurrencyKey: request.ConcurrencyKey, cancel: cancel, heavyLease: heavyLease, done: make(chan struct{})}
+	entry := &job{OperationID: tracked.id, ID: id, LogID: randomID(), Command: normalized, CWD: directory, Status: "running", Timeout: request.Timeout, StartedAt: time.Now().UTC(), ExitCode: -1, ConcurrencyKey: request.ConcurrencyKey, cancel: cancel, heavyLease: heavyLease, done: make(chan struct{})}
 	e.jobsMu.Lock()
 	e.jobs[id] = entry
 	e.jobsMu.Unlock()
@@ -595,6 +616,13 @@ func (e *Engine) runJob(ctx context.Context, entry *job, request commandRequest)
 	}()
 	defer close(entry.done)
 	defer entry.heavyLease.Release()
+	if ctx.Err() != nil {
+		entry.mu.Lock()
+		entry.Status = "cancelled"
+		entry.FinishedAt = time.Now().UTC()
+		entry.mu.Unlock()
+		return
+	}
 	store, storeErr := e.artifactStore()
 	if storeErr != nil {
 		entry.mu.Lock()
@@ -644,9 +672,19 @@ func (e *Engine) runJob(ctx context.Context, entry *job, request commandRequest)
 	}
 	configureProcessGroup(process)
 	process.Stdout, process.Stderr = capture.stdout, capture.stderr
+	if ctx.Err() != nil {
+		_ = capture.Close()
+		entry.mu.Lock()
+		entry.Status = "cancelled"
+		entry.FinishedAt = time.Now().UTC()
+		entry.mu.Unlock()
+		return
+	}
 	err := process.Start()
 	if err == nil {
 		entry.mu.Lock()
+		e.operationProcess(ctx, process.Process.Pid)
+		defer e.operationProcess(ctx, 0)
 		entry.pid = process.Process.Pid
 		entry.pgid = process.Process.Pid
 		entry.mu.Unlock()
@@ -766,7 +804,7 @@ func (e *Engine) jobResult(entry *job, tailLines int, concise bool) map[string]a
 		receipt["applied"].(map[string]any)["source_complete"] = false
 	}
 	result := map[string]any{
-		"ok": entry.Status == "running" || entry.Status == "completed", "job_id": entry.ID,
+		"ok": entry.Status == "running" || entry.Status == "completed", "job_id": entry.ID, "background_operation_id": entry.OperationID,
 		"log_id": entry.LogID, "status": entry.Status, "command": entry.Command,
 		"cwd": e.perimeter.Display(entry.CWD), "exit_code": entry.ExitCode,
 		"started_at": entry.StartedAt.Format(time.RFC3339Nano), "timed_out": entry.TimedOut,

@@ -242,9 +242,10 @@ def _tool(*args: Any, **kwargs: Any):
                         if isinstance(result,dict):
                             result.setdefault("operation_id", operation.id)
                             result["tracking_operation_id"] = operation.id
-                        if operation.event.is_set():
+                        if operation.event.is_set() and isinstance(result, dict) and (result.get("ok") is False or operation.data.get("cancel_acknowledged")):
                             operation.finish("cancelled")
-                            return {"ok": False, "error_kind": "operation_cancelled", "error": "Operation stopped; already applied changes are not rolled back", "operation_id": operation.id, "tracking_operation_id": operation.id}
+                            result.update(ok=False, error_kind="operation_cancelled", error="Operation stopped; already applied changes are not rolled back")
+                            return result
                         status = "failed" if isinstance(result, dict) and result.get("ok") is False else "completed"
                         if isinstance(result, dict) and result.get("timed_out") is True:
                             status = "timed_out"

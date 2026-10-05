@@ -39,6 +39,7 @@ def test_search_text_streams_and_stops_ripgrep_after_global_limit(
         def __init__(self, cmd: list[str], **_: object) -> None:
             assert "--max-columns" in cmd
             assert cmd[cmd.index("--max-columns") + 1] == "4096"
+            self.pid = 1_000_000_000
             self.stdout = _Stdout()
             self.returncode: int | None = None
             self.terminated = False

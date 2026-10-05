@@ -17,6 +17,7 @@ from typing import Any
 
 from . import profile as _profile_module
 from .bounded_subprocess import run_bounded
+from .operations import CURRENT, OperationCancelled, cancellation_acknowledged, checkpoint, process_started, process_stopped
 from .config import Settings
 from .git_tools import _repo_rel, _resolve_repo_toplevel
 from .output_store import (
@@ -444,7 +445,6 @@ def _command_env(extra_env: dict[str, str] | None = None, settings: Settings | N
 
 
 def _audit(settings: Settings, payload: dict[str, Any]) -> None:
-    from .operations import CURRENT
     operation = CURRENT.get()
     if operation is not None and "operation_id" not in payload:
         payload = {**payload, "operation_id": operation.id,
@@ -547,6 +547,7 @@ def run_command(
     try:
         stdout_artifact = store.open(log_id, "stdout", out_path, output_limit)
         stderr_artifact = store.open(log_id, "stderr", err_path, output_limit)
+        checkpoint(phase="starting_process")
         proc = subprocess.Popen(
             ["/bin/bash", "-lc", _bash_command(normalized, settings)],
             cwd=str(run_cwd),
@@ -555,9 +556,14 @@ def run_command(
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
+        owner = CURRENT.get()
         def cancel_process() -> None:
+            if proc.poll() is not None:
+                return
+            cancellation_acknowledged(owner)
             _terminate_process_group(proc.pid, grace_seconds=settings.kill_grace_ms / 1000)
 
+        process_started(proc.pid)
         heavy_lease.set_cancel(cancel_process)
         drain_errors: list[BaseException] = []
 
@@ -670,6 +676,14 @@ def run_command(
             "stdout_bytes": stdout_artifact.bytes_written,
             "stderr_bytes": stderr_artifact.bytes_written,
         }
+    except OperationCancelled:
+        for artifact in (stdout_artifact, stderr_artifact):
+            if artifact is not None:
+                artifact.abort()
+        store.abort_artifact(log_id)
+        process_stopped()
+        heavy_lease.release()
+        raise
     except (OSError, ArtifactQuotaError) as exc:
         for artifact in (stdout_artifact, stderr_artifact):
             if artifact is not None:
@@ -710,6 +724,7 @@ def run_command(
             "policy_source": "preset" if policy_exempt else "direct",
         },
     )
+    process_stopped()
     heavy_lease.release()
     result["policy_source"] = "preset" if policy_exempt else "direct"
     return result
@@ -891,6 +906,7 @@ def start_command_job(
             if on_conflict == "wait":
                 deadline = time.time() + min(effective_timeout_ms / 1000, 30)
                 while time.time() < deadline:
+                    checkpoint(phase="waiting_job")
                     time.sleep(0.2)
                     existing = _active_lock_job(settings, concurrency_key)
                     if not existing:
@@ -934,7 +950,7 @@ def start_command_job(
     err_artifact: OutputArtifact | None = None
     proc: subprocess.Popen[bytes] | None = None
 
-    def fail_start(exc: OSError | ValueError, error_kind: str) -> None:
+    def fail_start(exc: OSError | ValueError | OperationCancelled, error_kind: str) -> None:
         if proc is not None:
             _terminate_process_group(proc.pid, grace_seconds=0)
             try:
@@ -950,7 +966,7 @@ def start_command_job(
         store.abort_artifact(job_id)
         store.release_lifecycle(job_id)
         if heavy_lease.tracked is not None:
-            heavy_lease.tracked.finish("failed")
+            heavy_lease.tracked.finish("cancelled" if isinstance(exc, OperationCancelled) else "failed")
         heavy_lease.release()
         _audit(settings, {
             "timestamp": int(time.time()), "event": "heavy_finished", "request_id": job_id,
@@ -963,6 +979,8 @@ def start_command_job(
     try:
         out_artifact = store.open(job_id, "stdout", out_path, settings.max_command_output_chars)
         err_artifact = store.open(job_id, "stderr", err_path, settings.max_command_output_chars)
+        if heavy_lease.tracked is not None:
+            heavy_lease.tracked.checkpoint(phase="starting_process")
         proc = subprocess.Popen(
             ["/bin/bash", "-lc", _bash_command(normalized, settings)],
             cwd=str(run_cwd),
@@ -971,7 +989,7 @@ def start_command_job(
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, OperationCancelled) as exc:
         fail_start(exc, "artifact_capture_failed" if out_artifact is not None else "command_spawn_error")
         raise
 
@@ -990,7 +1008,6 @@ def start_command_job(
     out_thread = threading.Thread(target=drain, args=(proc.stdout, out_artifact), daemon=True, name=f"chatrepo-job-out-{job_id[:8]}")
     err_thread = threading.Thread(target=drain, args=(proc.stderr, err_artifact), daemon=True, name=f"chatrepo-job-err-{job_id[:8]}")
     def finish_heavy_audit() -> None:
-        from .operations import CURRENT
         token = CURRENT.set(heavy_lease.tracked)
         final_status = "failed"
         try:
@@ -1069,6 +1086,7 @@ def start_command_job(
             })
             final_status = str(finished_meta["status"])
         finally:
+            process_stopped(heavy_lease.tracked)
             if heavy_lease.tracked is not None:
                 heavy_lease.tracked.finish(final_status)
             heavy_lease.release()
@@ -1103,10 +1121,11 @@ def start_command_job(
         "output_truncated": False,
         "concurrency_key": concurrency_key,
         "policy_source": "preset" if policy_exempt else "direct",
+        "background_operation_id": heavy_lease.tracked.id if heavy_lease.tracked else None,
     }
     try:
         _write_job_meta(settings, job_id, meta)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, OperationCancelled) as exc:
         fail_start(exc, "artifact_metadata_failed")
         raise
     out_thread.start()
@@ -1114,8 +1133,11 @@ def start_command_job(
     with JOB_LOCK:
         JOB_PROCS[job_id] = proc
         JOB_DRAIN_THREADS[job_id] = (out_thread, err_thread)
+    process_started(proc.pid, heavy_lease.tracked)
     def cancel_owned_job() -> None:
-        cancel_command_job(job_id, settings)
+        result = cancel_command_job(job_id, settings)
+        if result.get("ok") is False:
+            raise OSError(str(result.get("error", "Job cancellation failed")))
 
     heavy_lease.set_cancel(cancel_owned_job)
     threading.Thread(
@@ -1134,6 +1156,7 @@ def start_command_job(
     return {
         "ok": True,
         "job_id": job_id,
+        "background_operation_id": heavy_lease.tracked.id if heavy_lease.tracked else None,
         "status": "running",
         "lock_status": "acquired" if concurrency_key else "none",
         "pid": proc.pid,
@@ -1331,6 +1354,8 @@ def _active_lock_job(settings: Settings, concurrency_key: str) -> dict[str, Any]
         return {
             "job_id": job_id,
             "attached_to_job_id": job_id,
+            "log_id": str(meta.get("log_id", job_id)),
+            "background_operation_id": meta.get("background_operation_id"),
             "pid": pid,
             "concurrency_key": concurrency_key,
             "timeout_ms": int(meta.get("timeout_ms", settings.command_job_timeout_ms)),
@@ -1412,6 +1437,7 @@ def get_command_job(job_id: str, settings: Settings, *, tail_lines: int | None =
     return {
         "ok": meta["status"] in {"running", "completed"},
         "job_id": job_id,
+        "background_operation_id": meta.get("background_operation_id"),
         "status": meta["status"],
         "running": running,
         "exit_code": meta.get("exit_code", return_code),

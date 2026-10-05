@@ -421,6 +421,8 @@ def test_background_job_lock_fail_attach_and_cancel(tmp_path: Path) -> None:
     assert conflict["error_kind"] == "job_lock_conflict"
     assert conflict["job_id"] == first["job_id"]
     assert attached["attached_to_job_id"] == first["job_id"]
+    from chatrepo_mcp.result_models import result_model_for_tool
+    result_model_for_tool("start_command_job").model_validate(attached)
     assert cancelled["status"] == "cancelled"
     assert cancelled["process_alive"] is False
     assert second["ok"] is True

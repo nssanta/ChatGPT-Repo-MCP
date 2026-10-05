@@ -144,6 +144,7 @@ def test_search_text_ignores_unparseable_ripgrep_lines(tmp_path: Path, monkeypat
     (tmp_path / "a.py").write_text("needle\n", encoding="utf-8")
 
     class _Process:
+        pid = 1_000_000_000
         returncode = 0
         stdout = io.StringIO("not-a-rg-line\nanother:bad:line")
 

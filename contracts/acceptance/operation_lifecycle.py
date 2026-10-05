@@ -35,6 +35,7 @@ async def lifecycle_acceptance(url: str, fixture: Path) -> None:
         async def call(session: ClientSession, name: str, args: dict[str, Any]) -> dict[str, Any]:
             result = await asyncio.wait_for(session.call_tool(name, args), 10)
             assert result.content and hasattr(result.content[0], "text"), result
+            assert result.content[0].text.startswith("{"), result
             return json.loads(result.content[0].text)
 
         async def wait_operation(tool: str, *, kind: str = "tool") -> dict[str, Any]:
@@ -50,6 +51,7 @@ async def lifecycle_acceptance(url: str, fixture: Path) -> None:
         work = asyncio.create_task(call(first, "recent_changes", {"paths": [str(scan)] * 500, "limit": 5}))
         op = await wait_operation("recent_changes")
         assert op["session_id"] and op["server_instance_id"]
+        assert op["last_progress_at"] and op["last_progress_age_ms"] >= 0
         assert (await call(second, "list_heavy_operations", {}))["used"] == 0
         mine = await call(first, "list_operations", {"scope": "session"})
         theirs = await call(second, "list_operations", {"scope": "session"})
@@ -73,10 +75,15 @@ async def lifecycle_acceptance(url: str, fixture: Path) -> None:
         assert (await batch)["error_kind"] == "operation_cancelled"
 
         # Detaching jobs must survive the launcher's completion and keep ownership.
-        job = await call(first, "start_command_job", {"command": "sleep 30", "cwd": str(scan)})
+        job_args = {"command": "trap '' TERM; sleep 30 & wait", "cwd": str(scan), "concurrency_key": "operation-cancellation-fixture", "on_conflict": "attach"}
+        job = await call(first, "start_command_job", job_args)
         assert job["ok"], job
         child = await wait_operation("start_command_job", kind="job")
         assert child["session_id"] == op["session_id"] and child["resource_id"] == job["job_id"]
+        assert job["background_operation_id"] == child["operation_id"]
+        attached = await call(second, "start_command_job", job_args)
+        assert attached["background_operation_id"] == job["background_operation_id"]
+        assert attached["job_id"] == job["job_id"]
         await call(second, "cancel_operation", {"operation_id": child["operation_id"]})
         for _ in range(200):
             state = (await call(second, "get_operation", {"operation_id": child["operation_id"]}))["operation"]
@@ -91,6 +98,8 @@ async def lifecycle_acceptance(url: str, fixture: Path) -> None:
             assert terminal["ok"], terminal
             child = await wait_operation("start_terminal_session", kind="terminal")
             assert child["resource_id"] == terminal["session_id"]
+            assert terminal["background_operation_id"] == child["operation_id"]
+            assert child["progress"]["phase"] == "waiting_input"
             await call(second, "cancel_operation", {"operation_id": child["operation_id"]})
             for _ in range(300):
                 state = (await call(second, "get_operation", {"operation_id": child["operation_id"]}))["operation"]
