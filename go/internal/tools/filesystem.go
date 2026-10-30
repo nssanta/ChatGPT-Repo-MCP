@@ -854,6 +854,7 @@ func readFileLimited(path string, maximum int64) ([]byte, error) {
 }
 
 func (e *Engine) doctor(ctx context.Context) map[string]any {
+	storage := e.artifactStorageHealth(ctx)
 	capabilities := map[string]any{}
 	for _, name := range []string{"git", "rg", "gh", "ctags", "bash", "go", "python3", "node", "ruff", "mypy", "pyright"} {
 		if e.operationCheckpoint(ctx, "diagnostics", 0, 0) != nil {
@@ -888,7 +889,7 @@ func (e *Engine) doctor(ctx context.Context) map[string]any {
 	}
 	capabilities["subagents"] = map[string]any{"available": false, "enabled": false, "reason": "No executor configured in V1"}
 	return map[string]any{
-		"ok": true, "implementation": "go", "tool_count": len(e.toolNames), "tools": e.toolNames,
+		"ok": storage["ok"], "artifact_storage": storage, "implementation": "go", "tool_count": len(e.toolNames), "tools": e.toolNames,
 		"namespace": e.settings.CanonicalNamespace, "access_mode": e.settings.AccessMode,
 		"capabilities": capabilities, "effective_path": paths, "path_warnings": warnings,
 		"resource_limits": map[string]any{"profile": e.settings.ResourceProfile, "profile_applied": e.settings.ResourceProfileApplied, "buffer_bytes": e.settings.ResourceBufferBytes, "buffer_enforced": false, "buffer_semantics": "diagnostic_estimate_only", "heavy_operations": e.settings.MaxHeavyOperations, "active_heavy_operations": e.listHeavyOperations(), "detected_memory_bytes": e.settings.DetectedMemoryBytes, "persist_full_output": e.settings.PersistFullOutput},

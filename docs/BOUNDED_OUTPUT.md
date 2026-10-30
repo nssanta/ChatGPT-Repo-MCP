@@ -37,12 +37,19 @@ Defaults:
 | `ARTIFACT_TTL_SECONDS` | 7 days |
 | `ARTIFACT_DISK_RESERVE_BYTES` | 2 GiB |
 
-The effective free-space reserve is the larger of
-`ARTIFACT_DISK_RESERVE_BYTES` and 10% of the artifact filesystem capacity.
+The free-space reserve is exactly `ARTIFACT_DISK_RESERVE_BYTES`, independent
+of filesystem capacity. Set it to `0` to disable the free-space reserve;
+filesystem write errors still fail closed.
 Active artifacts are never evicted. Cleanup removes expired completed
 artifacts first, then least-recently-used completed artifacts when space is
 needed. Legacy command logs remain readable and are not silently treated as a
 complete new-format artifact.
+
+`doctor` reports `artifact_storage` with `ok`, `available_bytes`,
+`capacity_bytes`, and `reserve_bytes` when disk information is available.
+It checks the reserve and writes, syncs, and removes a temporary probe in the
+artifact directory. Storage initialization, disk-space, or probe failures set
+both storage and overall `ok` to `false` and include a storage `error`.
 
 `PERSIST_FULL_OUTPUT=true` is mandatory in this release. The server rejects a
 false value at startup rather than pretending that an unavailable continuation

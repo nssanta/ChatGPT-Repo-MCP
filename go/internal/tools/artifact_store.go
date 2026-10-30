@@ -277,7 +277,7 @@ func (s *artifactStore) reserveWrite(id string, physicalAmount, logicalAmount in
 		}
 		s.diskAvailable, s.diskCapacity, s.diskChecked = available, capacity, time.Now()
 	}
-	reserve := max(s.reserve, s.diskCapacity/10)
+	reserve := s.reserve
 	if s.diskAvailable-physicalAmount < reserve {
 		return fmt.Errorf("artifact_quota: disk reserve %d bytes would be crossed", reserve)
 	}
